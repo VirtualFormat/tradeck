@@ -1,0 +1,16 @@
+{
+  "name": "tradeck",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "dev:api": "pnpm -F @tradeck/api dev",
+    "dev:web": "pnpm -F @tradeck/web dev"
+  }
+}

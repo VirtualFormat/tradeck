@@ -1,0 +1,88 @@
+# Container-only dev environment. Source is bind-mounted; node_modules live in
+# named/anonymous volumes inside the containers so nothing is written back to
+# the WSL host. All node images are official multi-arch (amd64 + arm64).
+#
+# First-time setup (run inside the container, not on WSL):
+#   docker compose up -d
+#   docker compose exec api pnpm install
+# Then the api/web watchers pick up the installed deps.
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradeck}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradeck}
+      POSTGRES_DB: ${POSTGRES_DB:-tradeck}
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-tradeck}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-bookworm
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - '${API_PORT:-3000}:3000'
+    volumes:
+      # bind-mount source for hot reload
+      - .:/app
+      # keep node_modules inside the container (shadow the bind mount)
+      - root_node_modules:/app/node_modules
+      - api_node_modules:/app/packages/api/node_modules
+      - web_node_modules:/app/packages/web/node_modules
+      - shared_node_modules:/app/packages/shared/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - '${WEB_PORT:-5173}:5173'
+    volumes:
+      - .:/app
+      - root_node_modules:/app/node_modules
+      - api_node_modules:/app/packages/api/node_modules
+      - web_node_modules:/app/packages/web/node_modules
+      - shared_node_modules:/app/packages/shared/node_modules
+
+volumes:
+  pgdata:
+  redisdata:
+  root_node_modules:
+  api_node_modules:
+  web_node_modules:
+  shared_node_modules:
