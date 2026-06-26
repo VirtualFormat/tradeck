@@ -55,7 +55,11 @@ Tradeck —— 小团队内部共享的实时市场数据仪表盘（深色专�
 
 ### 容器内开发铁律（重要）
 
-- **项目运行/调试全部在自身 Docker Compose 容器内进行**，不污染 WSL 开发环境。
+- **环境拓扑**：Windows 上的 CodeBuddy IDE 远程打开 WSL Ubuntu 裸机目录；WSL 只装 git/docker 等必要工具。"宿主/不要污染" 指的就是这个 WSL。
+- **开发用 Dev Container，部署用 docker compose**（两套配置独立）。
+  - 开发：CodeBuddy IDE「Reopen in Container」→ IDE backend 跑在 `api` 容器内，语言服务读容器卷里的 node_modules，跳转/补全/类型检查可用，且**不污染 WSL**。配置见 `.devcontainer/devcontainer.json`（复用根 `docker-compose.yml`，service=api，`postCreateCommand` 自动 `pnpm install`）。
+  - 部署：`docker compose`（用各 Dockerfile 的 prod target）。
+- **项目运行/调试全部在容器内进行**，不污染 WSL。
 - **不要在 WSL 里跑 `pnpm/npm install` 生成 node_modules**，也不要在 WSL 安装多余工具。所有 Node 相关命令（install/dev/build/test/db）都在容器里执行。
 - compose 配置：源码 **bind mount** 进容器，**node_modules 放在容器内的卷里**（命名卷/匿名卷，避免回写 WSL）。
 - 镜像选 **多架构（amd64+arm64）官方镜像**，保持多平台兼容（便于将来部署到 ARM 主机）。

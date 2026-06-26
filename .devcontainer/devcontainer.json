@@ -1,0 +1,36 @@
+{
+  "name": "tradeck-dev",
+  // Reuse the project's existing compose stack (web/api/postgres/redis).
+  // The IDE backend attaches to the `api` container, where it can see the
+  // workspace node_modules (kept in container volumes, never written to WSL).
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "api",
+  "workspaceFolder": "/app",
+
+  // Keep the container alive for the IDE to attach instead of running the
+  // service CMD (which would crash-loop on a fresh, empty node_modules volume).
+  // Start the dev servers manually via the terminal once deps are installed.
+  "overrideCommand": true,
+
+  // Install workspace deps into the container volume on first create.
+  "postCreateCommand": "corepack enable && pnpm install",
+
+  // Ports forwarded to the Windows host via WSL.
+  "forwardPorts": [3000, 5173],
+  "portsAttributes": {
+    "3000": { "label": "api" },
+    "5173": { "label": "web" }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  }
+}
