@@ -6,10 +6,12 @@ RUN corepack enable
 WORKDIR /app
 
 # --- dev target: source bind-mounted, node_modules in a container volume,
-# deps installed at runtime via `docker compose exec`. Vite dev server. ---
+# deps installed at runtime via `docker compose exec`. Container stays alive
+# (does NOT auto-run vite) so deps can be installed first; start the dev
+# server manually afterwards. Matches Dev Container `overrideCommand`. ---
 FROM base AS dev
 EXPOSE 5173
-CMD ["sh", "-c", "pnpm -F @tradeck/web dev"]
+CMD ["sleep", "infinity"]
 
 # --- build target (for future static production image) ---
 FROM base AS build

@@ -6,10 +6,13 @@ RUN corepack enable
 WORKDIR /app
 
 # --- dev target: source is bind-mounted, node_modules lives in a container
-# volume. Dependencies are installed at runtime via `docker compose exec`. ---
+# volume. Dependencies are installed at runtime via `docker compose exec`.
+# The container stays alive (does NOT auto-run the dev server) so it can be
+# exec'd into to `pnpm install` first; start the watcher manually afterwards.
+# This also matches the Dev Container `overrideCommand` behavior. ---
 FROM base AS dev
 EXPOSE 3000
-CMD ["sh", "-c", "pnpm -F @tradeck/api dev"]
+CMD ["sleep", "infinity"]
 
 # --- build target (for future production image) ---
 FROM base AS build
