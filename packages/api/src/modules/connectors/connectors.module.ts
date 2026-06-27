@@ -6,5 +6,6 @@ import { ConnectorRegistry } from './connector.registry';
 @Module({
   imports: [IngestionModule],
   providers: [ConnectorRegistry, ConnectorManager],
+  exports: [ConnectorManager],
 })
 export class ConnectorsModule {}

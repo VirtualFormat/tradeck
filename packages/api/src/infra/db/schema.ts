@@ -1,4 +1,13 @@
-import { pgTable, text, doublePrecision, bigint, uniqueIndex } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  text,
+  doublePrecision,
+  bigint,
+  boolean,
+  jsonb,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+import type { DataSourceConfigJson } from '@tradeck/shared';
 
 /**
  * OHLCV candle history. One row per (source, symbol, interval, bucket-start).
@@ -44,3 +53,18 @@ export const feedItems = pgTable(
     uq: uniqueIndex('feed_src_extid_uq').on(t.source, t.externalId),
   }),
 );
+
+/**
+ * Data source instances. Drives ConnectorManager: enabled rows are
+ * instantiated + started on boot; CRUD mutations hot-reload them.
+ * `id` doubles as ConnectorConfig.id and NormalizedEvent.source.
+ */
+export const dataSources = pgTable('data_sources', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),
+  name: text('name').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  config: jsonb('config').notNull().$type<DataSourceConfigJson>(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+});

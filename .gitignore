@@ -6,6 +6,9 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+# stray compiled output that can leak next to TS sources
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
 
 # env
 .env

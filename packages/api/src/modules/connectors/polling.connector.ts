@@ -8,7 +8,9 @@ import { BaseConnector } from './base.connector';
  */
 export abstract class PollingConnector extends BaseConnector {
   private timer?: NodeJS.Timeout;
-  protected abstract intervalMs: number;
+  // getter (not a field) so subclasses can read poll interval from this.config,
+  // which is only assigned in init() — after construction.
+  protected abstract get intervalMs(): number;
   protected abstract fetchOnce(): Promise<NormalizedEvent[]>;
 
   async start(): Promise<void> {

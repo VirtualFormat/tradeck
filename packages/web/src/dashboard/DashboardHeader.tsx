@@ -7,7 +7,7 @@ function utcClock(): string {
   return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
 }
 
-export function DashboardHeader(): JSX.Element {
+export function DashboardHeader({ onOpenSources }: { onOpenSources: () => void }): JSX.Element {
   const [clock, setClock] = useState(utcClock());
 
   useEffect(() => {
@@ -29,6 +29,13 @@ export function DashboardHeader(): JSX.Element {
         </div>
       </div>
       <div className="flex items-center gap-3 text-[11px]">
+        <button
+          type="button"
+          onClick={onOpenSources}
+          className="border border-border text-muted hover:text-fg rounded px-2 py-1"
+        >
+          DATA SOURCES
+        </button>
         <span className="flex items-center gap-1.5 border border-up/40 text-up rounded px-2 py-1">
           <span className="w-1.5 h-1.5 rounded-full bg-up animate-pulse" />
           LIVE · MAINNET

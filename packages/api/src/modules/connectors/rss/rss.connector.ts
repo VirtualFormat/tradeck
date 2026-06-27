@@ -7,7 +7,9 @@ import { PollingConnector } from '../polling.connector';
  * Network failures are isolated by PollingConnector (logged, retried next poll).
  */
 export class RssConnector extends PollingConnector {
-  protected intervalMs = 60_000;
+  protected get intervalMs(): number {
+    return (this.config.options?.intervalMs as number) ?? 60_000;
+  }
 
   private get url(): string {
     return (

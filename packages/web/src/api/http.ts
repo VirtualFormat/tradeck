@@ -1,6 +1,24 @@
-import type { FeedItem, OHLCV, OhlcvInterval } from '@tradeck/shared';
+import type {
+  CreateDataSourceDto,
+  DataSource,
+  DataSourceWithHealth,
+  FeedItem,
+  OHLCV,
+  OhlcvInterval,
+  UpdateDataSourceDto,
+} from '@tradeck/shared';
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+
+async function jsonReq<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
+  return res.json() as Promise<T>;
+}
 
 export async function fetchOhlcv(
   symbol: string,
@@ -18,3 +36,15 @@ export async function fetchFeed(limit = 30): Promise<FeedItem[]> {
   if (!res.ok) throw new Error(`fetchFeed failed: ${res.status}`);
   return res.json() as Promise<FeedItem[]>;
 }
+
+export const fetchDataSources = (): Promise<DataSourceWithHealth[]> =>
+  jsonReq('/api/datasources', 'GET');
+
+export const createDataSource = (dto: CreateDataSourceDto): Promise<DataSource> =>
+  jsonReq('/api/datasources', 'POST', dto);
+
+export const updateDataSource = (id: string, dto: UpdateDataSourceDto): Promise<DataSource> =>
+  jsonReq(`/api/datasources/${id}`, 'PATCH', dto);
+
+export const deleteDataSource = (id: string): Promise<{ ok: true }> =>
+  jsonReq(`/api/datasources/${id}`, 'DELETE');
