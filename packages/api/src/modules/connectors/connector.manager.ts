@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { IngestionService } from '../ingestion/ingestion.service';
 import { BaseConnector } from './base.connector';
+import { BinanceConnector } from './binance/binance.connector';
+import type { ConnectorConfig } from './connector.types';
 import { ConnectorRegistry } from './connector.registry';
 import { MockConnector } from './mock/mock.connector';
 
@@ -26,16 +28,25 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
 
   onApplicationBootstrap(): void {
     this.registry.register('mock', () => new MockConnector());
+    this.registry.register('binance', () => new BinanceConnector());
 
-    const connector = this.registry.create('mock');
-    connector.init(
-      { id: 'mock', symbols: ['BTCUSDT'], options: { intervalMs: 300, startPrice: 65000 } },
-      {
-        onData: (evt) => void this.ingestion.ingest(evt),
-        onError: (err) => this.logger.error('connector mock error', err),
-        onStatus: (status) => this.logger.log(`connector mock status: ${status}`),
-      },
-    );
+    // Real source: Binance public WS trade stream.
+    this.startConnector('binance', { id: 'binance', symbols: ['BTCUSDT'] });
+    // Fallback/demo source: mock random-walk on a separate symbol.
+    this.startConnector('mock', {
+      id: 'mock',
+      symbols: ['MOCKUSDT'],
+      options: { intervalMs: 300, startPrice: 65000 },
+    });
+  }
+
+  private startConnector(type: string, config: ConnectorConfig): void {
+    const connector = this.registry.create(type);
+    connector.init(config, {
+      onData: (evt) => void this.ingestion.ingest(evt),
+      onError: (err) => this.logger.error(`connector ${config.id} error`, err),
+      onStatus: (status) => this.logger.log(`connector ${config.id} status: ${status}`),
+    });
     void connector.start();
     this.running.push(connector);
   }
