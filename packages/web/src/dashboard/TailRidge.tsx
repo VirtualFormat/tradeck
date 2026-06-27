@@ -2,11 +2,14 @@ import { Card } from './widgets/Card';
 import { MetricRow } from './widgets/MetricRow';
 import { ridgeCurves, ridgeMetrics } from './mock/dashboardData';
 import { ridgePath } from './mock/svgPaths';
+import { useAnimationClock } from './hooks/useAnimationClock';
 
 const W = 600;
 const H = 220;
 
 export function TailRidge(): JSX.Element {
+  const t = useAnimationClock();
+
   return (
     <Card title="Tail Probability Ridge · strike landscape">
       <div className="grid grid-cols-1 lg:grid-cols-[180px_minmax(0,1fr)] gap-4">
@@ -21,7 +24,7 @@ export function TailRidge(): JSX.Element {
               .slice()
               .reverse()
               .map((c, i) => {
-                const d = ridgePath(c, W, H);
+                const d = ridgePath(c, W, H, t, i * 0.5);
                 return (
                   <path
                     key={i}
