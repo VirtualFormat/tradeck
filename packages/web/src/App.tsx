@@ -1,21 +1,15 @@
-import { OHLCV_INTERVALS, type MarketTick } from '@tradeck/shared';
+import { CandleChart } from './charts/CandleChart';
+import { useTickStream } from './api/useTickStream';
 
-// Smoke-test the shared contract: this compiles only if the workspace
-// type import resolves correctly across packages.
-const sample: MarketTick = {
-  source: 'mock',
-  symbol: 'BTCUSDT',
-  ts: Date.now(),
-  price: 0,
-};
+const SYMBOL = 'BTCUSDT';
 
 export function App(): JSX.Element {
+  useTickStream(SYMBOL);
   return (
-    <main style={{ fontFamily: 'monospace', padding: 24 }}>
+    <main style={{ fontFamily: 'monospace', padding: 24, background: '#0b0e14', minHeight: '100vh', color: '#d1d4dc' }}>
       <h1>Tradeck</h1>
-      <p>scaffold up — shared contracts wired.</p>
-      <p>sample tick source: {sample.source}</p>
-      <p>ohlcv intervals: {OHLCV_INTERVALS.join(', ')}</p>
+      <p>{SYMBOL} · 1m · live</p>
+      <CandleChart symbol={SYMBOL} interval="1m" />
     </main>
   );
 }

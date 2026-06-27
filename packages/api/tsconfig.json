@@ -11,7 +11,9 @@
     "emitDecoratorMetadata": true,
     "declaration": false,
     "noUnusedLocals": false,
-    "noUnusedParameters": false
+    "noUnusedParameters": false,
+    "baseUrl": ".",
+    "paths": {}
   },
   "include": ["src"]
 }
