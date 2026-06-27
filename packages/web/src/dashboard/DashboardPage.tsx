@@ -1,0 +1,30 @@
+import { useTickStream } from '../api/useTickStream';
+import { LIVE_SYMBOL } from './mock/dashboardData';
+import { DashboardHeader } from './DashboardHeader';
+import { PnlCard } from './PnlCard';
+import { TopWinsCard } from './TopWinsCard';
+import { ProbabilityLattice } from './ProbabilityLattice';
+import { TailRidge } from './TailRidge';
+import { RelationshipGraph } from './RelationshipGraph';
+import { DashboardFooter } from './DashboardFooter';
+
+export function DashboardPage(): JSX.Element {
+  // Single live tick subscription for the whole page (SSE -> Zustand).
+  useTickStream(LIVE_SYMBOL);
+
+  return (
+    <div className="min-h-screen bg-bg text-fg">
+      <div className="max-w-[1400px] mx-auto px-4 py-3 flex flex-col gap-3">
+        <DashboardHeader />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <PnlCard />
+          <TopWinsCard />
+        </div>
+        <ProbabilityLattice />
+        <TailRidge />
+        <RelationshipGraph />
+        <DashboardFooter />
+      </div>
+    </div>
+  );
+}

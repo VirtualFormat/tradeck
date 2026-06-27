@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-bg: #0b0e14;
+  --color-panel: #0e1117;
+  --color-panel-2: #11161f;
+  --color-border: #1c2230;
+  --color-fg: #d1d4dc;
+  --color-muted: #6b7280;
+  --color-up: #16c784;
+  --color-down: #ea3943;
+  --color-accent: #3b82f6;
+
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
+    "Fira Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --radius-card: 12px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+}
+
+/* terminal-style tabular numerals (no downloaded font) */
+.tab-nums {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
