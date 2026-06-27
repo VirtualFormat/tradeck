@@ -1,5 +1,7 @@
+import { useRef, useState } from 'react';
 import { Card } from './widgets/Card';
 import { MetricRow } from './widgets/MetricRow';
+import { Tooltip, type TooltipState } from './widgets/Tooltip';
 import { ridgeCurves, ridgeMetrics } from './mock/dashboardData';
 import { ridgePath } from './mock/svgPaths';
 import { useAnimationClock } from './hooks/useAnimationClock';
@@ -9,9 +11,45 @@ const H = 240;
 
 export function TailRidge(): JSX.Element {
   const t = useAnimationClock();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<TooltipState | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   // back-to-front: index 0 = farthest (top, dim), last = nearest (bottom, bright)
   const ordered = ridgeCurves.slice().reverse();
   const n = ordered.length;
+
+  const onMove = (e: React.MouseEvent): void => {
+    const rect = wrapRef.current!.getBoundingClientRect();
+    const ly = ((e.clientY - rect.top) / rect.height) * H;
+    // pick the ridge whose baseY is nearest below the cursor
+    let idx = 0;
+    let bestD = Infinity;
+    ordered.forEach((_, i) => {
+      const baseY = 40 + i * ((H - 70) / n);
+      const d = Math.abs(baseY - ly);
+      if (d < bestD) {
+        bestD = d;
+        idx = i;
+      }
+    });
+    const depth = idx / (n - 1);
+    setHoverIdx(idx);
+    setTip({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      content: (
+        <div>
+          <div className="text-fg">ridge {idx + 1} / {n}</div>
+          <div className="tab-nums text-muted">P(&lt;strike) {(0.2 + depth * 1.1).toFixed(2)}%</div>
+          <div className="tab-nums text-down">implied ×{(40 + depth * 440).toFixed(1)}</div>
+        </div>
+      ),
+    });
+  };
+  const onLeave = (): void => {
+    setHoverIdx(null);
+    setTip(null);
+  };
 
   return (
     <Card title="Tail Probability Ridge · strike landscape">
@@ -21,8 +59,14 @@ export function TailRidge(): JSX.Element {
             <MetricRow key={m.label} {...m} />
           ))}
         </div>
-        <div className="min-h-[240px]">
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 220 }}>
+        <div ref={wrapRef} className="relative min-h-[240px]">
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            className="w-full"
+            style={{ height: 220 }}
+            onMouseMove={onMove}
+            onMouseLeave={onLeave}
+          >
             <defs>
               {/* per-depth vertical fill: bright crest fading to dark base (3D body) */}
               <linearGradient id="ridgeFill" x1="0" y1="0" x2="0" y2="1">
@@ -44,9 +88,10 @@ export function TailRidge(): JSX.Element {
               const drift = Math.sin(t * 0.5 + driftPhase) * (1 - depth) * 16;
               const baseY = 40 + i * ((H - 70) / n);
               const d = ridgePath({ ...c, baseY }, W, H, t, driftPhase);
+              const isHover = hoverIdx === i;
               // nearer = brighter stroke + more opaque body; farther = dim
-              const strokeOpacity = 0.25 + depth * 0.65;
-              const bodyOpacity = 0.5 + depth * 0.5;
+              const strokeOpacity = isHover ? 1 : 0.25 + depth * 0.65;
+              const bodyOpacity = isHover ? 1 : 0.5 + depth * 0.5;
               return (
                 <g key={i} transform={`translate(${drift} 0)`}>
                   <path
@@ -57,8 +102,8 @@ export function TailRidge(): JSX.Element {
                   <path
                     d={d}
                     fill="none"
-                    stroke="var(--color-fg)"
-                    strokeWidth={depth > 0.8 ? 1.4 : 1}
+                    stroke={isHover ? 'var(--color-down)' : 'var(--color-fg)'}
+                    strokeWidth={isHover ? 2 : depth > 0.8 ? 1.4 : 1}
                     strokeOpacity={strokeOpacity}
                   />
                 </g>
@@ -78,6 +123,7 @@ export function TailRidge(): JSX.Element {
               opacity={0.6}
             />
           </svg>
+          <Tooltip tip={tip} />
         </div>
       </div>
     </Card>

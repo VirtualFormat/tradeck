@@ -1,5 +1,7 @@
+import { useRef, useState } from 'react';
 import { Card } from './widgets/Card';
 import { MetricRow } from './widgets/MetricRow';
+import { Tooltip, type TooltipState } from './widgets/Tooltip';
 import type { MetricItem } from './mock/dashboardData';
 import { galtonPins } from './mock/svgPaths';
 import { useGaltonBoard } from './hooks/useGaltonBoard';
@@ -12,6 +14,9 @@ const pins = galtonPins(ROWS, W, H);
 
 export function ProbabilityLattice(): JSX.Element {
   const { balls, bins, dropped } = useGaltonBoard({ rows: ROWS, bins: BINS });
+  const barsRef = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<TooltipState | null>(null);
+  const [hoverBin, setHoverBin] = useState<number | null>(null);
 
   const maxBin = Math.max(1, ...bins);
   const greenPct = dropped > 0 ? ((bins.slice(Math.floor(BINS / 2)).reduce((a, b) => a + b, 0) / dropped) * 100) : 0;
@@ -48,18 +53,40 @@ export function ProbabilityLattice(): JSX.Element {
               return <circle key={b.id} cx={b.x * W} cy={y} r={3.5} fill="var(--color-fg)" />;
             })}
           </svg>
-          {/* live histogram */}
-          <div className="flex items-end gap-1 h-16 mt-1">
+          {/* live histogram (hover for detail) */}
+          <div ref={barsRef} className="relative flex items-end gap-1 h-16 mt-1">
             {bins.map((count, i) => {
               const isProfit = i >= Math.floor(BINS / 2);
+              const isHover = hoverBin === i;
+              const pct = dropped > 0 ? ((count / dropped) * 100).toFixed(1) : '0.0';
               return (
                 <div
                   key={i}
-                  className={`flex-1 rounded-sm transition-[height] duration-300 ${isProfit ? 'bg-up/60' : 'bg-down/40'}`}
+                  className={`flex-1 rounded-sm transition-[height,opacity] duration-300 cursor-pointer ${isProfit ? 'bg-up/60' : 'bg-down/40'} ${isHover ? 'opacity-100 outline outline-1 outline-fg/60' : 'opacity-90'}`}
                   style={{ height: `${Math.max(2, (count / maxBin) * 100)}%` }}
+                  onMouseEnter={(e) => {
+                    setHoverBin(i);
+                    const rect = barsRef.current!.getBoundingClientRect();
+                    setTip({
+                      x: e.clientX - rect.left,
+                      y: e.clientY - rect.top,
+                      content: (
+                        <div>
+                          <div className="text-fg">bin {i + 1}</div>
+                          <div className="tab-nums text-muted">count {count}</div>
+                          <div className="tab-nums text-muted">{pct}% of drops</div>
+                        </div>
+                      ),
+                    });
+                  }}
+                  onMouseLeave={() => {
+                    setHoverBin(null);
+                    setTip(null);
+                  }}
                 />
               );
             })}
+            <Tooltip tip={tip} />
           </div>
         </div>
       </div>

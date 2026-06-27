@@ -105,18 +105,23 @@ export function useGalaxy(count = 46): Galaxy {
   }, [count]);
 }
 
-/** Rotate the galaxy around the Y axis by angle `t` and project to 2D screen. */
+/**
+ * Rotate the galaxy and project to 2D screen.
+ * `yaw`/`pitch` are absolute rotation angles (radians) — pass auto-rotation
+ * plus any manual drag offset.
+ */
 export function projectGalaxy(
   nodes: Node3D[],
-  t: number,
+  yaw: number,
+  pitch: number,
   w: number,
   h: number,
 ): ProjectedNode[] {
   const cx = w / 2;
   const cy = h / 2;
   const spread = Math.min(w, h) * 0.42;
-  const ay = t * 0.5; // yaw
-  const ax = Math.sin(t * 0.25) * 0.25; // gentle tilt
+  const ay = yaw;
+  const ax = pitch;
   const cosY = Math.cos(ay);
   const sinY = Math.sin(ay);
   const cosX = Math.cos(ax);
