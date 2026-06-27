@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Explicitly scan app source so v4 reliably detects utility classes
+   (auto-detection can miss files under this monorepo/container layout). */
+@source "../**/*.{ts,tsx,html}";
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
