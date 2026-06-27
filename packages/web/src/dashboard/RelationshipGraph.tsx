@@ -1,10 +1,12 @@
 import { Card } from './widgets/Card';
-import { graphMock, type GraphNode } from './mock/dashboardData';
+import { graphMock } from './mock/dashboardData';
+import { useAnimationClock } from './hooks/useAnimationClock';
+import { projectGalaxy, useGalaxy, type NodeKind } from './hooks/useGalaxy3D';
 
 const W = 720;
-const H = 260;
+const H = 300;
 
-const nodeFill: Record<GraphNode['kind'], string> = {
+const nodeColor: Record<NodeKind, string> = {
   up: 'var(--color-up)',
   down: 'var(--color-down)',
   neu: 'var(--color-muted)',
@@ -13,9 +15,16 @@ const nodeFill: Record<GraphNode['kind'], string> = {
 
 export function RelationshipGraph(): JSX.Element {
   const g = graphMock;
-  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  const t = useAnimationClock();
+  const galaxy = useGalaxy(46);
+
+  const projected = projectGalaxy(galaxy.nodes, t, W, H);
+  // painter's order: draw far (low z) first, near (high z) last
+  const order = projected.map((_, i) => i).sort((a, b) => projected[a].z - projected[b].z);
+  const iter = 720 + Math.floor(t * 7);
+
   return (
-    <Card title="Mirofish · relationship graph simulation">
+    <Card title="Mirofish · relationship graph simulation" corner={`iter ${iter}`}>
       <div className="grid grid-cols-1 lg:grid-cols-[160px_minmax(0,1fr)_180px] gap-4">
         <div className="space-y-1.5">
           {g.legend.map((l) => (
@@ -25,34 +34,60 @@ export function RelationshipGraph(): JSX.Element {
           ))}
         </div>
 
-        <div className="min-h-[260px]">
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 240 }}>
-            {g.edges.map((e, i) => {
-              const a = byId.get(e.from);
-              const b = byId.get(e.to);
-              if (!a || !b) return null;
+        <div className="min-h-[300px]">
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 280 }}>
+            <defs>
+              <radialGradient id="hubGlow" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="var(--color-fg)" stopOpacity="0.4" />
+                <stop offset="100%" stopColor="var(--color-fg)" stopOpacity="0" />
+              </radialGradient>
+            </defs>
+
+            {/* edges (depth-faded) */}
+            {galaxy.edges.map((e, i) => {
+              const a = projected[e.from];
+              const b = projected[e.to];
+              const op = Math.max(0.05, ((a.z + b.z) / 2 + 1) / 2) * 0.5;
               return (
                 <line
                   key={i}
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke="var(--color-border)"
-                  strokeWidth={1}
+                  x1={a.sx}
+                  y1={a.sy}
+                  x2={b.sx}
+                  y2={b.sy}
+                  stroke="var(--color-accent)"
+                  strokeWidth={0.6}
+                  strokeOpacity={op}
                 />
               );
             })}
-            {g.nodes.map((n) => (
-              <g key={n.id}>
-                <circle cx={n.x} cy={n.y} r={n.r} fill={nodeFill[n.kind]} opacity={0.85} />
-                {n.r >= 14 && (
-                  <text x={n.x} y={n.y - n.r - 4} fill="var(--color-muted)" fontSize={9} textAnchor="middle">
-                    {n.id}
-                  </text>
-                )}
-              </g>
-            ))}
+
+            {/* nodes back-to-front for correct 3D occlusion */}
+            {order.map((idx) => {
+              const p = projected[idx];
+              const depthOpacity = 0.35 + ((p.z + 1) / 2) * 0.65;
+              const pulse = p.kind === 'hub' ? 1 + Math.sin(t * 2) * 0.06 : 1;
+              const r = p.r * pulse;
+              return (
+                <g key={p.id} opacity={depthOpacity}>
+                  {(p.kind === 'hub' || r > 12) && (
+                    <circle cx={p.sx} cy={p.sy} r={r * 2.4} fill="url(#hubGlow)" />
+                  )}
+                  <circle cx={p.sx} cy={p.sy} r={r} fill={nodeColor[p.kind]} />
+                  {p.label && p.scale > 0.7 && (
+                    <text
+                      x={p.sx}
+                      y={p.sy - r - 4}
+                      fill="var(--color-muted)"
+                      fontSize={9}
+                      textAnchor="middle"
+                    >
+                      {p.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
           </svg>
         </div>
 
