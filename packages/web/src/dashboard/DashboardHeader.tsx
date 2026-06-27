@@ -7,7 +7,21 @@ function utcClock(): string {
   return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
 }
 
-export function DashboardHeader({ onOpenSources }: { onOpenSources: () => void }): JSX.Element {
+interface HeaderProps {
+  onOpenSources: () => void;
+  editing: boolean;
+  onToggleEdit: () => void;
+  onSaveLayout: () => void;
+  onResetLayout: () => void;
+}
+
+export function DashboardHeader({
+  onOpenSources,
+  editing,
+  onToggleEdit,
+  onSaveLayout,
+  onResetLayout,
+}: HeaderProps): JSX.Element {
   const [clock, setClock] = useState(utcClock());
 
   useEffect(() => {
@@ -29,6 +43,32 @@ export function DashboardHeader({ onOpenSources }: { onOpenSources: () => void }
         </div>
       </div>
       <div className="flex items-center gap-3 text-[11px]">
+        {editing ? (
+          <>
+            <button
+              type="button"
+              onClick={onSaveLayout}
+              className="border border-up/40 text-up rounded px-2 py-1"
+            >
+              SAVE
+            </button>
+            <button
+              type="button"
+              onClick={onResetLayout}
+              className="border border-border text-muted hover:text-fg rounded px-2 py-1"
+            >
+              RESET
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggleEdit}
+            className="border border-border text-muted hover:text-fg rounded px-2 py-1"
+          >
+            EDIT LAYOUT
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenSources}

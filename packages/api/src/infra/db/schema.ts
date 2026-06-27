@@ -7,7 +7,7 @@ import {
   jsonb,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import type { DataSourceConfigJson } from '@tradeck/shared';
+import type { DashboardLayout, DataSourceConfigJson } from '@tradeck/shared';
 
 /**
  * OHLCV candle history. One row per (source, symbol, interval, bucket-start).
@@ -66,5 +66,12 @@ export const dataSources = pgTable('data_sources', {
   enabled: boolean('enabled').notNull().default(true),
   config: jsonb('config').notNull().$type<DataSourceConfigJson>(),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+});
+
+/** Persisted dashboard grid layout. Single global row (id='default') for now. */
+export const dashboards = pgTable('dashboards', {
+  id: text('id').primaryKey(),
+  layout: jsonb('layout').notNull().$type<DashboardLayout>(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 });

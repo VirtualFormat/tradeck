@@ -1,5 +1,6 @@
 import type {
   CreateDataSourceDto,
+  DashboardLayout,
   DataSource,
   DataSourceWithHealth,
   FeedItem,
@@ -48,3 +49,9 @@ export const updateDataSource = (id: string, dto: UpdateDataSourceDto): Promise<
 
 export const deleteDataSource = (id: string): Promise<{ ok: true }> =>
   jsonReq(`/api/datasources/${id}`, 'DELETE');
+
+export const fetchLayout = (): Promise<DashboardLayout> =>
+  jsonReq('/api/dashboard/layout', 'GET');
+
+export const saveLayout = (layout: DashboardLayout): Promise<DashboardLayout> =>
+  jsonReq('/api/dashboard/layout', 'PUT', layout);

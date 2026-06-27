@@ -41,3 +41,31 @@ body {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
+
+/* react-grid-layout: edit-mode affordances */
+.rgl-editing .card-drag-handle {
+  cursor: move;
+}
+.rgl-editing .react-grid-item {
+  outline: 1px dashed var(--color-border);
+}
+.react-grid-item.react-grid-placeholder {
+  background: var(--color-accent);
+  opacity: 0.2;
+  border-radius: var(--radius-card);
+}
+/* resize handle (react-resizable css not imported; draw a small corner grip) */
+.react-resizable-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  right: 2px;
+  bottom: 2px;
+  cursor: se-resize;
+  opacity: 0.5;
+  border-right: 2px solid var(--color-muted);
+  border-bottom: 2px solid var(--color-muted);
+}
+.rgl-editing .react-resizable-handle {
+  opacity: 0.9;
+}
