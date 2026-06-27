@@ -24,3 +24,23 @@ export const ohlcv = pgTable(
     uq: uniqueIndex('ohlcv_src_sym_int_ts_uq').on(t.source, t.symbol, t.interval, t.ts),
   }),
 );
+
+/**
+ * Aggregated feed (news / articles) from RSS + http connectors. Dedup by
+ * (source, externalId). `tags` stored as a JSON-encoded string.
+ */
+export const feedItems = pgTable(
+  'feed_items',
+  {
+    source: text('source').notNull(),
+    externalId: text('external_id').notNull(),
+    title: text('title').notNull(),
+    url: text('url').notNull(),
+    summary: text('summary'),
+    publishedAt: bigint('published_at', { mode: 'number' }).notNull(),
+    tags: text('tags'),
+  },
+  (t) => ({
+    uq: uniqueIndex('feed_src_extid_uq').on(t.source, t.externalId),
+  }),
+);

@@ -21,9 +21,10 @@ export class MockConnector extends BaseConnector {
   }
 
   private produce(): void {
-    const startPrice = (this.config.options?.startPrice as number) ?? 65000;
+    const startPrices = (this.config.options?.startPrices as Record<string, number>) ?? {};
+    const fallback = (this.config.options?.startPrice as number) ?? 65000;
     for (const symbol of this.config.symbols) {
-      const prev = this.lastPrice.get(symbol) ?? startPrice;
+      const prev = this.lastPrice.get(symbol) ?? startPrices[symbol] ?? fallback;
       const next = Math.max(1, prev + (Math.random() - 0.5) * prev * 0.001);
       this.lastPrice.set(symbol, next);
       this.emit(this.normalize(symbol, next));

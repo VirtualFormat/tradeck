@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTickStream } from '../api/useTickStream';
 import { LIVE_SYMBOL } from './mock/dashboardData';
 import { DashboardHeader } from './DashboardHeader';
@@ -6,11 +7,13 @@ import { TopWinsCard } from './TopWinsCard';
 import { ProbabilityLattice } from './ProbabilityLattice';
 import { TailRidge } from './TailRidge';
 import { RelationshipGraph } from './RelationshipGraph';
+import { FeedList } from './FeedList';
 import { DashboardFooter } from './DashboardFooter';
 
 export function DashboardPage(): JSX.Element {
-  // Single live tick subscription for the whole page (SSE -> Zustand).
-  useTickStream(LIVE_SYMBOL);
+  const [symbol, setSymbol] = useState<string>(LIVE_SYMBOL);
+  // Live tick subscription follows the selected symbol (SSE -> Zustand).
+  useTickStream(symbol);
 
   return (
     <div className="min-h-screen bg-bg text-fg">
@@ -18,11 +21,12 @@ export function DashboardPage(): JSX.Element {
         <DashboardHeader />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <PnlCard />
-          <TopWinsCard />
+          <TopWinsCard symbol={symbol} onSymbolChange={setSymbol} />
         </div>
         <ProbabilityLattice />
         <TailRidge />
         <RelationshipGraph />
+        <FeedList />
         <DashboardFooter />
       </div>
     </div>

@@ -10,6 +10,8 @@ import { BinanceConnector } from './binance/binance.connector';
 import type { ConnectorConfig } from './connector.types';
 import { ConnectorRegistry } from './connector.registry';
 import { MockConnector } from './mock/mock.connector';
+import { MockFeedConnector } from './mock/mock-feed.connector';
+import { RssConnector } from './rss/rss.connector';
 
 /**
  * Wires connectors to the ingestion pipeline and manages their lifecycle.
@@ -29,15 +31,27 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
   onApplicationBootstrap(): void {
     this.registry.register('mock', () => new MockConnector());
     this.registry.register('binance', () => new BinanceConnector());
+    this.registry.register('mock-feed', () => new MockFeedConnector());
+    this.registry.register('rss', () => new RssConnector());
 
     // Real source: Binance public WS trade stream.
     this.startConnector('binance', { id: 'binance', symbols: ['BTCUSDT'] });
-    // Fallback/demo source: mock random-walk on a separate symbol.
+    // Fallback/demo market source: mock random-walk on several symbols.
     this.startConnector('mock', {
       id: 'mock',
-      symbols: ['MOCKUSDT'],
-      options: { intervalMs: 300, startPrice: 65000 },
+      symbols: ['MOCKUSDT', 'MOCKETH', 'MOCKSOL'],
+      options: {
+        intervalMs: 300,
+        startPrices: { MOCKUSDT: 65000, MOCKETH: 3400, MOCKSOL: 180 },
+      },
     });
+    // Feed sources: real RSS + mock fallback (always has content).
+    this.startConnector('rss', {
+      id: 'sina-finance',
+      symbols: [],
+      options: { url: 'https://rss.sina.com.cn/roll/finance/hot_roll.xml' },
+    });
+    this.startConnector('mock-feed', { id: 'mock-feed', symbols: [], options: { intervalMs: 8000 } });
   }
 
   private startConnector(type: string, config: ConnectorConfig): void {

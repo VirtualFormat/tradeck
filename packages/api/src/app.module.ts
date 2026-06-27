@@ -4,6 +4,7 @@ import { ConfigModule } from './infra/config/config.module';
 import { DbModule } from './infra/db/db.module';
 import { RedisModule } from './infra/redis/redis.module';
 import { ConnectorsModule } from './modules/connectors/connectors.module';
+import { FeedModule } from './modules/feed/feed.module';
 import { IngestionModule } from './modules/ingestion/ingestion.module';
 import { MarketModule } from './modules/market/market.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
@@ -16,6 +17,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
     IngestionModule,
     MarketModule,
     RealtimeModule,
+    FeedModule,
     ConnectorsModule,
   ],
   controllers: [HealthController],

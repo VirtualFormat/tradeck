@@ -1,8 +1,9 @@
 // Placeholder data for the dashboard layout. Only the candle chart is wired to
 // real data; everything here is static mock for the visual shell.
 
-/** The only symbol with a live data source in this environment (mock connector). */
-export const LIVE_SYMBOL = 'MOCKUSDT';
+/** Symbols with a live mock data source in this environment. */
+export const LIVE_SYMBOLS = ['MOCKUSDT', 'MOCKETH', 'MOCKSOL'] as const;
+export const LIVE_SYMBOL = LIVE_SYMBOLS[0];
 
 export interface RecentWin {
   symbol: string;
