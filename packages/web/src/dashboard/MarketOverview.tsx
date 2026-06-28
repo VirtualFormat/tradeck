@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { Card } from './widgets/Card';
+import { CardGridSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
 
 function fmtPrice(p: number): string {
@@ -25,7 +26,7 @@ export function MarketOverview(): JSX.Element {
 
   return (
     <Card title="行情总览" subtitle="Market Overview" corner="live">
-      {isLoading && <div className="text-muted text-xs">loading…</div>}
+      {isLoading && <CardGridSkeleton />}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {rows.map((t) => {
           const up = t.changePct >= 0;

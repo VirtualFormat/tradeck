@@ -12,6 +12,7 @@ import { Heatmap } from './Heatmap';
 import { RelationshipGraph } from './RelationshipGraph';
 import { FeedList } from './FeedList';
 import { DashboardFooter } from './DashboardFooter';
+import { DeckSkeleton } from './widgets/Skeleton';
 import { DataSourcesPanel } from './datasources/DataSourcesPanel';
 
 const Grid = WidthProvider(Responsive);
@@ -23,7 +24,7 @@ export function DashboardPage(): JSX.Element {
   const [editing, setEditing] = useState(false);
   useTickStream(symbol);
 
-  const { data: serverLayout } = useDashboardLayout();
+  const { data: serverLayout, isLoading: layoutLoading } = useDashboardLayout();
   const save = useSaveLayout();
   const [items, setItems] = useState<Layout[]>([]);
 
@@ -67,26 +68,30 @@ export function DashboardPage(): JSX.Element {
           onSaveLayout={handleSave}
           onResetLayout={handleReset}
         />
-        <Grid
-          className={`mt-3 ${editing ? 'rgl-editing' : ''}`}
-          layouts={{ lg: items, md: items, sm: items }}
-          breakpoints={{ lg: 996, md: 768, sm: 0 }}
-          cols={{ lg: 12, md: 12, sm: 1 }}
-          rowHeight={ROW_HEIGHT}
-          isDraggable={editing}
-          isResizable={editing}
-          onLayoutChange={onLayoutChange}
-          draggableHandle=".card-drag-handle"
-          margin={[12, 12]}
-        >
-          {items
-            .filter((l) => cards[l.i])
-            .map((l) => (
-              <div key={l.i} className="h-full">
-                {cards[l.i]}
-              </div>
-            ))}
-        </Grid>
+        {layoutLoading && items.length === 0 ? (
+          <DeckSkeleton />
+        ) : (
+          <Grid
+            className={`mt-3 ${editing ? 'rgl-editing' : ''}`}
+            layouts={{ lg: items, md: items, sm: items }}
+            breakpoints={{ lg: 996, md: 768, sm: 0 }}
+            cols={{ lg: 12, md: 12, sm: 1 }}
+            rowHeight={ROW_HEIGHT}
+            isDraggable={editing}
+            isResizable={editing}
+            onLayoutChange={onLayoutChange}
+            draggableHandle=".card-drag-handle"
+            margin={[12, 12]}
+          >
+            {items
+              .filter((l) => cards[l.i])
+              .map((l) => (
+                <div key={l.i} className="h-full">
+                  {cards[l.i]}
+                </div>
+              ))}
+          </Grid>
+        )}
         <DashboardFooter />
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { Card } from './widgets/Card';
+import { FeedSkeleton } from './widgets/Skeleton';
 import { useFeed } from '../api/useFeed';
 
 function relTime(ts: number): string {
@@ -14,8 +15,8 @@ export function FeedList(): JSX.Element {
 
   return (
     <Card title="资讯流" subtitle="News Feed" corner="polling 10s" scroll>
+      {isLoading && <FeedSkeleton count={7} />}
       <div className="divide-y divide-border/50">
-        {isLoading && <div className="text-muted text-xs py-3">loading…</div>}
         {!isLoading && (data?.length ?? 0) === 0 && (
           <div className="text-muted text-xs py-3">no items yet</div>
         )}

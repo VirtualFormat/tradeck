@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
 import type { EChartsOption } from 'echarts';
 import { Card } from './widgets/Card';
+import { BarsSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
 import { useEChart } from '../charts/useEChart';
 
 export function MoversBar(): JSX.Element {
-  const { data } = useTickers();
+  const { data, isLoading } = useTickers();
 
   const option = useMemo<EChartsOption>(() => {
     const sorted = (data ?? []).slice().sort((a, b) => a.changePct - b.changePct);
@@ -63,7 +64,14 @@ export function MoversBar(): JSX.Element {
 
   return (
     <Card title="涨跌排行" subtitle="Movers" corner="live">
-      <div ref={ref} className="w-full h-full" />
+      <div className="relative h-full w-full">
+        <div ref={ref} className="h-full w-full" />
+        {isLoading && (
+          <div className="absolute inset-0">
+            <BarsSkeleton />
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { EChartsOption } from 'echarts';
 import { Card } from './widgets/Card';
+import { TilesSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
 import { useEChart } from '../charts/useEChart';
 
@@ -14,7 +15,7 @@ function heatColor(changePct: number): string {
 }
 
 export function Heatmap(): JSX.Element {
-  const { data } = useTickers();
+  const { data, isLoading } = useTickers();
 
   const option = useMemo<EChartsOption>(() => {
     const nodes = (data ?? []).map((t) => ({
@@ -60,7 +61,14 @@ export function Heatmap(): JSX.Element {
 
   return (
     <Card title="热力图" subtitle="Heatmap · vol × change" corner="live">
-      <div ref={ref} className="w-full h-full" />
+      <div className="relative h-full w-full">
+        <div ref={ref} className="h-full w-full" />
+        {isLoading && (
+          <div className="absolute inset-0">
+            <TilesSkeleton />
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

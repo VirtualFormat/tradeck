@@ -10,6 +10,7 @@ import {
 import type { OHLCV, OhlcvInterval } from '@tradeck/shared';
 import { useOhlcv } from '../api/useOhlcv';
 import { useMarketStore } from '../stores/marketStore';
+import { ChartSkeleton } from '../dashboard/widgets/Skeleton';
 
 /** OHLCV (epoch ms) -> lightweight-charts candle (UNIX seconds). */
 function toLwcCandle(c: OHLCV): CandlestickData {
@@ -31,7 +32,7 @@ export function CandleChart({ symbol, interval }: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
 
-  const { data: history } = useOhlcv(symbol, interval);
+  const { data: history, isLoading } = useOhlcv(symbol, interval);
   const liveCandle = useMarketStore((s) => s.liveCandleBySymbol[symbol]);
 
   // (a) create chart once; StrictMode-safe via full cleanup.
@@ -75,5 +76,14 @@ export function CandleChart({ symbol, interval }: Props): JSX.Element {
     }
   }, [liveCandle]);
 
-  return <div ref={containerRef} className="w-full h-full" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {isLoading && (
+        <div className="absolute inset-0 bg-panel">
+          <ChartSkeleton />
+        </div>
+      )}
+    </div>
+  );
 }
