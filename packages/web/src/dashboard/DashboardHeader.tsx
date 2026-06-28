@@ -37,9 +37,9 @@ export function DashboardHeader({
         </div>
         <div>
           <div className="text-muted text-[10px] uppercase tracking-[0.25em]">
-            Tradeck · live market deck
+            实时行情驾驶舱 · live market deck
           </div>
-          <div className="text-fg text-base tracking-widest">TRADECK · MIROFISH</div>
+          <div className="text-fg text-base tracking-widest">TRADECK</div>
         </div>
       </div>
       <div className="flex items-center gap-3 text-[11px]">

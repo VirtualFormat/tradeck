@@ -32,7 +32,7 @@ export function ProbabilityLattice(): JSX.Element {
   ];
 
   return (
-    <Card title="Probability Lattice · 5,944 trades, one board">
+    <Card title="概率分布" subtitle="Probability Distribution · Galton" demo>
       <div className="grid grid-cols-1 lg:grid-cols-[180px_minmax(0,1fr)] gap-4">
         <div>
           {metrics.map((m) => (

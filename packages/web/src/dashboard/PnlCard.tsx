@@ -6,7 +6,7 @@ import { pnlMock } from './mock/dashboardData';
 export function PnlCard(): JSX.Element {
   const d = pnlMock;
   return (
-    <Card title="Total PnL · crypto tail sniper" corner="anon 0x06dc…4524">
+    <Card title="累计盈亏" subtitle="PnL" demo corner="anon 0x06dc…4524">
       <DotMatrixNumber value={d.pnl} />
       <div className="grid grid-cols-4 gap-2 mt-4">
         <StatPill label="trades" value={d.trades.toLocaleString('en-US')} />

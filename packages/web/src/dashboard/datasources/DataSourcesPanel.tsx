@@ -19,7 +19,8 @@ export function DataSourcesPanel({ onClose }: { onClose: () => void }): JSX.Elem
     <div className="fixed inset-0 z-50 bg-bg/90 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-10">
       <div className="w-full max-w-2xl px-4">
         <Card
-          title="Data Sources · config-driven · hot-reload"
+          title="数据源管理"
+          subtitle="Data Sources · hot-reload"
           corner={
             <button type="button" onClick={onClose} className="text-muted hover:text-fg">
               ✕ close

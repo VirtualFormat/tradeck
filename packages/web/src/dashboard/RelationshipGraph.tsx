@@ -115,7 +115,12 @@ export function RelationshipGraph(): JSX.Element {
   };
 
   return (
-    <Card title="Mirofish · relationship graph simulation" corner={`iter ${iter} · drag to rotate`}>
+    <Card
+      title="关系图谱"
+      subtitle="Relationship Graph"
+      demo
+      corner={`iter ${iter} · drag to rotate`}
+    >
       <div className="grid grid-cols-1 lg:grid-cols-[160px_minmax(0,1fr)_180px] gap-4">
         <div className="space-y-1.5">
           {g.legend.map((l) => (

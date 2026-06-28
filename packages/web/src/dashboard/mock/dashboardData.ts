@@ -157,7 +157,7 @@ export interface FooterMock {
 }
 
 export const footerMock: FooterMock = {
-  model: 'claude-fable-5',
+  model: 'tradeck-core',
   fills: 5944,
   backtest: '41.6 GB',
   latencyMs: 12,

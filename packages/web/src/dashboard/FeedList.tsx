@@ -13,7 +13,7 @@ export function FeedList(): JSX.Element {
   const { data, isLoading } = useFeed(30);
 
   return (
-    <Card title="Feed · market intelligence" corner="polling 10s">
+    <Card title="资讯流" subtitle="News Feed" corner="polling 10s">
       <div className="max-h-[280px] overflow-y-auto divide-y divide-border/50">
         {isLoading && <div className="text-muted text-xs py-3">loading…</div>}
         {!isLoading && (data?.length ?? 0) === 0 && (

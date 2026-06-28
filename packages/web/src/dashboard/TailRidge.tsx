@@ -52,7 +52,7 @@ export function TailRidge(): JSX.Element {
   };
 
   return (
-    <Card title="Tail Probability Ridge · strike landscape">
+    <Card title="尾部概率山脊" subtitle="Tail Risk Ridge" demo>
       <div className="grid grid-cols-1 lg:grid-cols-[180px_minmax(0,1fr)] gap-4">
         <div>
           {ridgeMetrics.map((m) => (
