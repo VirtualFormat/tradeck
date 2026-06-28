@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Card } from './widgets/Card';
 import { CardGridSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
+import { filterByMarket, type Market } from './market';
 
 function fmtPrice(p: number): string {
   return p.toLocaleString('en-US', { maximumFractionDigits: p >= 100 ? 2 : 4 });
@@ -46,22 +47,25 @@ function Sparkline({ data, up }: { data: number[]; up: boolean }): JSX.Element |
   );
 }
 
-export function MarketOverview(): JSX.Element {
+export function MarketOverview({ market }: { market: Market }): JSX.Element {
   const { data, isLoading } = useTickers();
 
   const rows = useMemo(() => {
-    const list = data ?? [];
+    const list = filterByMarket(data, market);
     // a symbol served by >1 source gets disambiguated by source prefix
     const symbolCount = new Map<string, number>();
     for (const t of list) symbolCount.set(t.symbol, (symbolCount.get(t.symbol) ?? 0) + 1);
     return list
       .slice()
       .sort((a, b) => b.changePct - a.changePct)
-      .map((t) => ({
-        ...t,
-        label: (symbolCount.get(t.symbol) ?? 0) > 1 ? `${t.source}:${t.symbol}` : t.symbol,
-      }));
-  }, [data]);
+      .map((t) => {
+        const base = t.name ?? t.symbol;
+        return {
+          ...t,
+          label: (symbolCount.get(t.symbol) ?? 0) > 1 ? `${t.source}:${base}` : base,
+        };
+      });
+  }, [data, market]);
 
   return (
     <Card title="行情总览" subtitle="Market Overview" corner="live">

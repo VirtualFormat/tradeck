@@ -4,6 +4,7 @@ import { Card } from './widgets/Card';
 import { TilesSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
 import { useEChart } from '../charts/useEChart';
+import { filterByMarket, type Market } from './market';
 
 /** Blend a dim panel tone toward the theme up/down color by change magnitude. */
 function heatColor(changePct: number): string {
@@ -14,12 +15,12 @@ function heatColor(changePct: number): string {
   return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
 }
 
-export function Heatmap(): JSX.Element {
+export function Heatmap({ market }: { market: Market }): JSX.Element {
   const { data, isLoading } = useTickers();
 
   const option = useMemo<EChartsOption>(() => {
-    const nodes = (data ?? []).map((t) => ({
-      name: t.symbol,
+    const nodes = filterByMarket(data, market).map((t) => ({
+      name: t.name ?? t.symbol,
       value: Math.max(1, t.volume ?? 1),
       changePct: t.changePct,
       itemStyle: { color: heatColor(t.changePct) },
@@ -55,7 +56,7 @@ export function Heatmap(): JSX.Element {
         },
       ],
     };
-  }, [data]);
+  }, [data, market]);
 
   const ref = useEChart(option);
 

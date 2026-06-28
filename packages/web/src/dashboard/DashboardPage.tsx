@@ -13,13 +13,16 @@ import { RelationshipGraph } from './RelationshipGraph';
 import { FeedList } from './FeedList';
 import { DashboardFooter } from './DashboardFooter';
 import { DeckSkeleton } from './widgets/Skeleton';
+import { MarketTabs } from './widgets/MarketTabs';
 import { DataSourcesPanel } from './datasources/DataSourcesPanel';
+import type { Market } from './market';
 
 const Grid = WidthProvider(Responsive);
 const ROW_HEIGHT = 40;
 
 export function DashboardPage(): JSX.Element {
   const [symbol, setSymbol] = useState<string>(LIVE_SYMBOL);
+  const [market, setMarket] = useState<Market>('cn');
   const [showSources, setShowSources] = useState(false);
   const [editing, setEditing] = useState(false);
   useTickStream(symbol);
@@ -49,10 +52,10 @@ export function DashboardPage(): JSX.Element {
   };
 
   const cards: Record<string, JSX.Element> = {
-    overview: <MarketOverview />,
+    overview: <MarketOverview market={market} />,
     price: <TopWinsCard symbol={symbol} onSymbolChange={setSymbol} />,
-    movers: <MoversBar />,
-    heat: <Heatmap />,
+    movers: <MoversBar market={market} />,
+    heat: <Heatmap market={market} />,
     graph: <RelationshipGraph />,
     feed: <FeedList />,
   };
@@ -68,6 +71,12 @@ export function DashboardPage(): JSX.Element {
           onSaveLayout={handleSave}
           onResetLayout={handleReset}
         />
+        <div className="mt-3 flex items-center justify-between">
+          <MarketTabs value={market} onChange={setMarket} />
+          <span className="text-muted text-[10px] uppercase tracking-[0.15em]">
+            行情数据 · 东方财富（非交易时段回退 mock）
+          </span>
+        </div>
         {layoutLoading && items.length === 0 ? (
           <DeckSkeleton />
         ) : (

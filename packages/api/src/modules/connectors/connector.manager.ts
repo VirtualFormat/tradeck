@@ -13,6 +13,7 @@ import { IngestionService } from '../ingestion/ingestion.service';
 import { BaseConnector } from './base.connector';
 import { BinanceConnector } from './binance/binance.connector';
 import { ConnectorRegistry } from './connector.registry';
+import { EastmoneyConnector } from './eastmoney/eastmoney.connector';
 import { HttpJsonConnector } from './http-json/http-json.connector';
 import { MockConnector } from './mock/mock.connector';
 import { MockFeedConnector } from './mock/mock-feed.connector';
@@ -47,6 +48,7 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
   async onApplicationBootstrap(): Promise<void> {
     this.registry.register('mock', () => new MockConnector());
     this.registry.register('binance', () => new BinanceConnector());
+    this.registry.register('eastmoney', () => new EastmoneyConnector());
     this.registry.register('mock-feed', () => new MockFeedConnector());
     this.registry.register('rss', () => new RssConnector());
     this.registry.register('http-json', () => new HttpJsonConnector());
@@ -145,6 +147,43 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
         updatedAt: now,
       },
       {
+        id: 'eastmoney-cn',
+        type: 'eastmoney',
+        name: '东方财富 · A股',
+        enabled: true,
+        config: {
+          // secids: 1.=SH, 0.=SZ
+          symbols: ['1.000001', '1.600519', '0.300750', '0.000858', '1.601318'],
+          options: { market: 'cn', intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'eastmoney-hk',
+        type: 'eastmoney',
+        name: '东方财富 · 港股',
+        enabled: true,
+        config: {
+          symbols: ['116.00700', '116.09988', '116.03690', '100.HSI'],
+          options: { market: 'hk', intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'eastmoney-us',
+        type: 'eastmoney',
+        name: '东方财富 · 美股',
+        enabled: true,
+        config: {
+          symbols: ['105.AAPL', '105.TSLA', '105.NVDA', '105.MSFT', '105.AMZN'],
+          options: { market: 'us', intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
         id: 'sina-finance',
         type: 'rss',
         name: 'Sina Finance RSS',
@@ -166,6 +205,6 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
         updatedAt: now,
       },
     ]);
-    this.logger.log('seeded 4 default data_sources');
+    this.logger.log('seeded default data_sources');
   }
 }

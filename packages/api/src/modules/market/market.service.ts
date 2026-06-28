@@ -6,6 +6,12 @@ import { DRIZZLE, type Database } from '../../infra/db/db.types';
 import { ohlcv } from '../../infra/db/schema';
 import { REDIS_CLIENT } from '../../infra/redis/redis.tokens';
 
+/** Derive the frontend market tab from the eastmoney source id, else undefined. */
+function marketOf(source: string): string | undefined {
+  const m = /^eastmoney-(cn|hk|us)$/.exec(source);
+  return m ? m[1] : undefined;
+}
+
 @Injectable()
 export class MarketService {
   constructor(
@@ -43,9 +49,11 @@ export class MarketService {
         continue;
       }
       const recent = await this.recentCloses(tick.symbol, 30);
-      // intraday change from the current (newest) 1m candle's open vs live price
+      // Prefer the source's reported day-change (e.g. stock quotes); otherwise
+      // fall back to the intraminute delta vs the current 1m candle open.
       const open = recent.opens.at(-1);
-      const changePct = open && open !== 0 ? (tick.price - open) / open : 0;
+      const changePct =
+        tick.changePct ?? (open && open !== 0 ? (tick.price - open) / open : 0);
       // sparkline = recent closes oldest→newest, with the live price as the tip
       const spark = recent.closes.length > 0 ? [...recent.closes, tick.price] : [];
       tickers.push({
@@ -56,6 +64,8 @@ export class MarketService {
         ts: tick.ts,
         changePct,
         spark,
+        name: tick.name,
+        market: marketOf(tick.source),
       });
     }
     return tickers.sort((a, b) => b.changePct - a.changePct);

@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-export const DATA_SOURCE_TYPES = ['mock', 'binance', 'rss', 'mock-feed', 'http-json'] as const;
+export const DATA_SOURCE_TYPES = [
+  'mock',
+  'binance',
+  'eastmoney',
+  'rss',
+  'mock-feed',
+  'http-json',
+] as const;
 export type DataSourceType = (typeof DATA_SOURCE_TYPES)[number];
 
 export type ConnectorStatus =

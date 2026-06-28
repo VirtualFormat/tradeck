@@ -4,13 +4,16 @@ import { Card } from './widgets/Card';
 import { BarsSkeleton } from './widgets/Skeleton';
 import { useTickers } from '../api/useTickers';
 import { useEChart } from '../charts/useEChart';
+import { filterByMarket, type Market } from './market';
 
-export function MoversBar(): JSX.Element {
+export function MoversBar({ market }: { market: Market }): JSX.Element {
   const { data, isLoading } = useTickers();
 
   const option = useMemo<EChartsOption>(() => {
-    const sorted = (data ?? []).slice().sort((a, b) => a.changePct - b.changePct);
-    const names = sorted.map((t) => t.symbol);
+    const sorted = filterByMarket(data, market)
+      .slice()
+      .sort((a, b) => a.changePct - b.changePct);
+    const names = sorted.map((t) => t.name ?? t.symbol);
     const values = sorted.map((t) => Number((t.changePct * 100).toFixed(2)));
     return {
       grid: { left: 72, right: 48, top: 8, bottom: 8 },
@@ -58,7 +61,7 @@ export function MoversBar(): JSX.Element {
         },
       ],
     };
-  }, [data]);
+  }, [data, market]);
 
   const ref = useEChart(option);
 

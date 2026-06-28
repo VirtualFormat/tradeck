@@ -15,6 +15,14 @@ export const MarketTickSchema = z.object({
   price: z.number(),
   /** Trade or rolling volume, when the source provides it. */
   volume: z.number().nonnegative().optional(),
+  /**
+   * Day's change fraction (e.g. 0.0123 = +1.23%) when the source reports it
+   * directly (e.g. stock quotes). Carried into the snapshot so overview/movers
+   * can show real daily change instead of a recomputed intraminute delta.
+   */
+  changePct: z.number().optional(),
+  /** Human-friendly display name (e.g. "贵州茅台", "Apple"), source-provided. */
+  name: z.string().optional(),
 });
 
 export type MarketTick = z.infer<typeof MarketTickSchema>;

@@ -11,5 +11,9 @@ export const TickerSchema = z.object({
   changePct: z.number(),
   /** recent close prices (oldest→newest) for a background sparkline; may be empty */
   spark: z.array(z.number()).default([]),
+  /** human-friendly display name when the source provides one */
+  name: z.string().optional(),
+  /** market grouping for the frontend tabs: 'cn' | 'hk' | 'us' | undefined */
+  market: z.string().optional(),
 });
 export type Ticker = z.infer<typeof TickerSchema>;
