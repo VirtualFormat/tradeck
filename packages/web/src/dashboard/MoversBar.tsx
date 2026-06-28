@@ -12,18 +12,47 @@ export function MoversBar(): JSX.Element {
     const names = sorted.map((t) => t.symbol);
     const values = sorted.map((t) => Number((t.changePct * 100).toFixed(2)));
     return {
-      grid: { left: 70, right: 40, top: 8, bottom: 8 },
-      xAxis: { type: 'value', axisLabel: { color: '#6b7280', fontSize: 9 }, splitLine: { lineStyle: { color: '#1c2230' } } },
-      yAxis: { type: 'category', data: names, axisLabel: { color: '#d1d4dc', fontSize: 10 }, axisLine: { lineStyle: { color: '#1c2230' } } },
-      tooltip: { trigger: 'item', formatter: (p: any) => `${p.name}: ${p.value}%` },
+      grid: { left: 72, right: 48, top: 8, bottom: 8 },
+      xAxis: {
+        type: 'value',
+        axisLabel: { color: '#6b7280', fontSize: 9, formatter: '{value}%' },
+        splitLine: { lineStyle: { color: '#1c2230', type: 'dashed' } },
+      },
+      yAxis: {
+        type: 'category',
+        data: names,
+        axisLabel: { color: '#aab1bf', fontSize: 10 },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: '#0e1117',
+        borderColor: '#2a3344',
+        textStyle: { color: '#e6e9ef', fontSize: 11 },
+        formatter: (p: any) => {
+          const col = p.value >= 0 ? '#20cd8d' : '#f0556b';
+          return `<b>${p.name}</b>&nbsp;<span style="color:${col}">${p.value >= 0 ? '+' : ''}${p.value}%</span>`;
+        },
+      },
       series: [
         {
           type: 'bar',
+          barWidth: '55%',
           data: values.map((v) => ({
             value: v,
-            itemStyle: { color: v >= 0 ? '#16c784' : '#ea3943', borderRadius: 2 },
+            itemStyle: {
+              color: v >= 0 ? '#20cd8d' : '#f0556b',
+              borderRadius: v >= 0 ? [0, 3, 3, 0] : [3, 0, 0, 3],
+            },
           })),
-          label: { show: true, position: 'right', color: '#d1d4dc', fontSize: 9, formatter: '{c}%' },
+          label: {
+            show: true,
+            position: 'right',
+            color: '#aab1bf',
+            fontSize: 9,
+            formatter: (p: any) => `${p.value >= 0 ? '+' : ''}${p.value}%`,
+          },
           animationDurationUpdate: 500,
         },
       ],

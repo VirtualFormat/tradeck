@@ -25,16 +25,23 @@ export function FeedList(): JSX.Element {
             href={item.url}
             target="_blank"
             rel="noreferrer"
-            className="block py-2 hover:bg-panel-2 -mx-1 px-1 rounded transition-colors"
+            className="group block py-2 hover:bg-panel-2 -mx-1.5 px-1.5 rounded transition-colors"
           >
             <div className="flex items-start justify-between gap-2">
-              <span className="text-fg text-xs leading-snug">{item.title}</span>
-              <span className="tab-nums text-muted text-[10px] shrink-0">{relTime(item.publishedAt)}</span>
+              <span className="text-fg-dim text-xs leading-snug group-hover:text-fg transition-colors">
+                {item.title}
+              </span>
+              <span className="tab-nums text-muted text-[10px] shrink-0 pt-0.5">
+                {relTime(item.publishedAt)}
+              </span>
             </div>
             <div className="flex items-center gap-2 mt-1">
-              <span className="text-muted text-[10px] uppercase tracking-wider">{item.source}</span>
+              <span className="text-muted text-[9.5px] uppercase tracking-wider">{item.source}</span>
               {item.tags?.map((t) => (
-                <span key={t} className="text-accent text-[10px] border border-border rounded px-1">
+                <span
+                  key={t}
+                  className="text-accent/90 text-[9.5px] border border-accent/25 bg-accent/5 rounded px-1"
+                >
                   {t}
                 </span>
               ))}
