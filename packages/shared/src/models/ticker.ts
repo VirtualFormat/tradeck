@@ -9,5 +9,7 @@ export const TickerSchema = z.object({
   ts: z.number(),
   /** intraday change fraction, e.g. 0.0123 = +1.23% (from latest 1m candle (c-o)/o) */
   changePct: z.number(),
+  /** recent close prices (oldest→newest) for a background sparkline; may be empty */
+  spark: z.array(z.number()).default([]),
 });
 export type Ticker = z.infer<typeof TickerSchema>;

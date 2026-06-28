@@ -42,7 +42,12 @@ export class MarketService {
       } catch {
         continue;
       }
-      const changePct = await this.intradayChange(tick.symbol, tick.price);
+      const recent = await this.recentCloses(tick.symbol, 30);
+      // intraday change from the current (newest) 1m candle's open vs live price
+      const open = recent.opens.at(-1);
+      const changePct = open && open !== 0 ? (tick.price - open) / open : 0;
+      // sparkline = recent closes oldest→newest, with the live price as the tip
+      const spark = recent.closes.length > 0 ? [...recent.closes, tick.price] : [];
       tickers.push({
         source: tick.source,
         symbol: tick.symbol,
@@ -50,19 +55,24 @@ export class MarketService {
         volume: tick.volume,
         ts: tick.ts,
         changePct,
+        spark,
       });
     }
     return tickers.sort((a, b) => b.changePct - a.changePct);
   }
 
-  private async intradayChange(symbol: string, price: number): Promise<number> {
-    const [latest] = await this.db
+  /** Recent 1m candles (oldest→newest) as parallel opens/closes arrays. */
+  private async recentCloses(
+    symbol: string,
+    limit: number,
+  ): Promise<{ opens: number[]; closes: number[] }> {
+    const rows = await this.db
       .select()
       .from(ohlcv)
       .where(and(eq(ohlcv.symbol, symbol), eq(ohlcv.interval, '1m')))
       .orderBy(desc(ohlcv.ts))
-      .limit(1);
-    if (!latest || latest.o === 0) return 0;
-    return (price - latest.o) / latest.o;
+      .limit(limit);
+    rows.reverse(); // newest-first → oldest-first
+    return { opens: rows.map((r) => r.o), closes: rows.map((r) => r.c) };
   }
 }
