@@ -60,7 +60,7 @@ export function DashboardPage(): JSX.Element {
   return (
     <div className="min-h-screen bg-bg text-fg">
       {showSources && <DataSourcesPanel onClose={() => setShowSources(false)} />}
-      <div className="max-w-[1400px] mx-auto px-4 py-3">
+      <div className="w-full px-4 py-3">
         <DashboardHeader
           onOpenSources={() => setShowSources(true)}
           editing={editing}
