@@ -6,19 +6,29 @@ interface Props {
   subtitle?: string;
   /** Mark panels backed by mock/placeholder data. */
   demo?: boolean;
+  /** Allow the body to scroll (only the feed needs this); default fits/clips. */
+  scroll?: boolean;
   corner?: ReactNode;
   className?: string;
   children: ReactNode;
 }
 
-export function Card({ title, subtitle, demo, corner, className, children }: Props): JSX.Element {
+export function Card({
+  title,
+  subtitle,
+  demo,
+  scroll,
+  corner,
+  className,
+  children,
+}: Props): JSX.Element {
   return (
     <section
-      className={`bg-panel border border-border rounded-card p-4 h-full overflow-hidden flex flex-col ${className ?? ''}`}
+      className={`bg-panel border border-border rounded-card px-3 py-2.5 h-full overflow-hidden flex flex-col ${className ?? ''}`}
     >
       {(title || corner) && (
         // header doubles as the grid drag handle (active only in edit mode)
-        <header className="card-drag-handle flex items-center justify-between mb-3 shrink-0 gap-2">
+        <header className="card-drag-handle flex items-center justify-between mb-2 shrink-0 gap-2">
           <div className="flex items-baseline gap-2 min-w-0">
             {title && <h2 className="text-fg text-[12px] tracking-wide truncate">{title}</h2>}
             {subtitle && (
@@ -35,7 +45,9 @@ export function Card({ title, subtitle, demo, corner, className, children }: Pro
           {corner && <div className="text-muted text-[11px] shrink-0">{corner}</div>}
         </header>
       )}
-      <div className="flex-1 min-h-0 overflow-auto">{children}</div>
+      <div className={`flex-1 min-h-0 ${scroll ? 'overflow-auto' : 'overflow-hidden'}`}>
+        {children}
+      </div>
     </section>
   );
 }

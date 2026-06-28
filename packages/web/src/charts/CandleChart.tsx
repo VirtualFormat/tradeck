@@ -40,14 +40,18 @@ export function CandleChart({ symbol, interval }: Props): JSX.Element {
     if (!container) return;
     const chart: IChartApi = createChart(container, {
       width: container.clientWidth,
-      height: 400,
+      height: container.clientHeight,
+      autoSize: false,
       layout: { background: { color: '#0e1117' }, textColor: '#d1d4dc' },
       grid: { vertLines: { color: '#1c2230' }, horzLines: { color: '#1c2230' } },
       timeScale: { timeVisible: true, secondsVisible: false },
     });
     seriesRef.current = chart.addSeries(CandlestickSeries);
 
-    const ro = new ResizeObserver(() => chart.applyOptions({ width: container.clientWidth }));
+    // follow both width and height of the grid item
+    const ro = new ResizeObserver(() =>
+      chart.applyOptions({ width: container.clientWidth, height: container.clientHeight }),
+    );
     ro.observe(container);
 
     return () => {
@@ -71,5 +75,5 @@ export function CandleChart({ symbol, interval }: Props): JSX.Element {
     }
   }, [liveCandle]);
 
-  return <div ref={containerRef} style={{ width: '100%' }} />;
+  return <div ref={containerRef} className="w-full h-full" />;
 }

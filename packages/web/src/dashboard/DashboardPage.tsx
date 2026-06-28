@@ -5,10 +5,10 @@ import { useTickStream } from '../api/useTickStream';
 import { useDashboardLayout, useSaveLayout } from '../api/useDashboardLayout';
 import { LIVE_SYMBOL } from './mock/dashboardData';
 import { DashboardHeader } from './DashboardHeader';
-import { PnlCard } from './PnlCard';
+import { MarketOverview } from './MarketOverview';
 import { TopWinsCard } from './TopWinsCard';
-import { ProbabilityLattice } from './ProbabilityLattice';
-import { TailRidge } from './TailRidge';
+import { MoversBar } from './MoversBar';
+import { Heatmap } from './Heatmap';
 import { RelationshipGraph } from './RelationshipGraph';
 import { FeedList } from './FeedList';
 import { DashboardFooter } from './DashboardFooter';
@@ -27,7 +27,6 @@ export function DashboardPage(): JSX.Element {
   const save = useSaveLayout();
   const [items, setItems] = useState<Layout[]>([]);
 
-  // sync local layout from server when (re)loaded and not actively editing
   useEffect(() => {
     if (serverLayout && !editing) setItems(serverLayout.items as Layout[]);
   }, [serverLayout, editing]);
@@ -49,10 +48,10 @@ export function DashboardPage(): JSX.Element {
   };
 
   const cards: Record<string, JSX.Element> = {
-    pnl: <PnlCard />,
-    topwins: <TopWinsCard symbol={symbol} onSymbolChange={setSymbol} />,
-    lattice: <ProbabilityLattice />,
-    ridge: <TailRidge />,
+    overview: <MarketOverview />,
+    price: <TopWinsCard symbol={symbol} onSymbolChange={setSymbol} />,
+    movers: <MoversBar />,
+    heat: <Heatmap />,
     graph: <RelationshipGraph />,
     feed: <FeedList />,
   };
@@ -80,11 +79,13 @@ export function DashboardPage(): JSX.Element {
           draggableHandle=".card-drag-handle"
           margin={[12, 12]}
         >
-          {items.map((l) => (
-            <div key={l.i} className="h-full">
-              {cards[l.i] ?? null}
-            </div>
-          ))}
+          {items
+            .filter((l) => cards[l.i])
+            .map((l) => (
+              <div key={l.i} className="h-full">
+                {cards[l.i]}
+              </div>
+            ))}
         </Grid>
         <DashboardFooter />
       </div>

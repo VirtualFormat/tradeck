@@ -130,11 +130,11 @@ export function RelationshipGraph(): JSX.Element {
           ))}
         </div>
 
-        <div ref={wrapRef} className="relative min-h-[300px]">
+        <div ref={wrapRef} className="relative">
           <svg
             viewBox={`0 0 ${W} ${H}`}
             className={`w-full select-none ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
-            style={{ height: 280 }}
+            style={{ height: 200 }}
             onMouseDown={onDown}
             onMouseMove={onMove}
             onMouseUp={onUp}

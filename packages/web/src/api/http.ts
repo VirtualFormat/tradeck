@@ -6,6 +6,7 @@ import type {
   FeedItem,
   OHLCV,
   OhlcvInterval,
+  Ticker,
   UpdateDataSourceDto,
 } from '@tradeck/shared';
 
@@ -30,6 +31,12 @@ export async function fetchOhlcv(
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fetchOhlcv failed: ${res.status}`);
   return res.json() as Promise<OHLCV[]>;
+}
+
+export async function fetchTickers(): Promise<Ticker[]> {
+  const res = await fetch(`${API_BASE}/api/tickers`);
+  if (!res.ok) throw new Error(`fetchTickers failed: ${res.status}`);
+  return res.json() as Promise<Ticker[]>;
 }
 
 export async function fetchFeed(limit = 30): Promise<FeedItem[]> {

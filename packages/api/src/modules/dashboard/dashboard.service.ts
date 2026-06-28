@@ -9,12 +9,12 @@ const DEFAULT_ID = 'default';
 /** 12-column default layout, roughly matching the original stacked design. */
 const DEFAULT_LAYOUT: DashboardLayout = {
   items: [
-    { i: 'pnl', x: 0, y: 0, w: 6, h: 7, minW: 3, minH: 5 },
-    { i: 'topwins', x: 6, y: 0, w: 6, h: 7, minW: 4, minH: 6 },
-    { i: 'lattice', x: 0, y: 7, w: 12, h: 6, minW: 4, minH: 4 },
-    { i: 'ridge', x: 0, y: 13, w: 12, h: 6, minW: 4, minH: 4 },
-    { i: 'graph', x: 0, y: 19, w: 8, h: 7, minW: 4, minH: 5 },
-    { i: 'feed', x: 8, y: 19, w: 4, h: 7, minW: 3, minH: 5 },
+    { i: 'overview', x: 0, y: 0, w: 12, h: 5, minW: 4, minH: 4 },
+    { i: 'price', x: 0, y: 5, w: 7, h: 8, minW: 4, minH: 6 },
+    { i: 'movers', x: 7, y: 5, w: 5, h: 8, minW: 3, minH: 5 },
+    { i: 'heat', x: 0, y: 13, w: 7, h: 7, minW: 4, minH: 5 },
+    { i: 'feed', x: 7, y: 13, w: 5, h: 7, minW: 3, minH: 5 },
+    { i: 'graph', x: 0, y: 20, w: 12, h: 7, minW: 4, minH: 5 },
   ],
 };
 
