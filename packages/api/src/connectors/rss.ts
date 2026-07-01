@@ -36,14 +36,14 @@ function normalizeItem(it: RssRawItem, source: string): FeedItem | null {
   const link = it.link?.trim();
   if (!title || !link) return null;
   const guid = typeof it.guid === 'string' ? it.guid : it.guid?.['#text'];
-  const publishedAt = it.pubDate ? Date.parse(it.pubDate) : undefined;
+  const parsed = it.pubDate ? Date.parse(it.pubDate) : NaN;
   return {
     source,
     id: `${source}:${guid ?? link}`,
     title,
     url: link,
     summary: it.description ? stripHtml(it.description).slice(0, 200) : undefined,
-    publishedAt: Number.isNaN(publishedAt) ? undefined : publishedAt,
+    publishedAt: Number.isNaN(parsed) || parsed < 0 ? 0 : parsed,
   };
 }
 

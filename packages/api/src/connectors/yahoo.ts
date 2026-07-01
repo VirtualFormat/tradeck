@@ -45,11 +45,9 @@ function normalizeQuote(r: YahooQuoteRaw): MarketTick {
     symbol: r.symbol,
     ts: (r.regularMarketTime ?? Math.floor(Date.now() / 1000)) * 1000,
     price: r.regularMarketPrice ?? 0,
-    change: r.regularMarketChange,
-    changePercent: r.regularMarketChangePercent,
+    changePct: r.regularMarketChangePercent,
     volume: r.regularMarketVolume,
     name: r.shortName ?? r.longName,
-    currency: r.currency,
   };
 }
 
@@ -82,13 +80,13 @@ export async function fetchChart(
     out.push({
       source: 'yahoo',
       symbol,
-      interval,
+      interval: interval as OHLCV['interval'],
       ts: ts[i] * 1000,
       o: q.open[i]!,
       h: q.high?.[i] ?? q.open[i]!,
       l: q.low?.[i] ?? q.open[i]!,
       c: q.close[i]!,
-      v: q.volume?.[i],
+      v: q.volume?.[i] ?? 0,
     });
   }
   return out;
