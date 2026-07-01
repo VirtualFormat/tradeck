@@ -172,7 +172,7 @@ export function DashboardPage(): JSX.Element {
         />
         <div className="mt-3 flex justify-end">
           <span className="text-muted text-[10px] uppercase tracking-[0.15em]">
-            行情数据 · {sourceMode === 'auto' ? '自动' : sourceMode === 'eastmoney' ? '东方财富' : sourceMode.toUpperCase()}
+            行情数据 · {sourceMode === 'auto' ? '自动' : sourceMode === 'eastmoney' ? '东方财富' : sourceMode === 'yahoo' ? 'Yahoo Finance' : sourceMode.toUpperCase()}
           </span>
         </div>
         {layoutLoading && items.length === 0 ? (

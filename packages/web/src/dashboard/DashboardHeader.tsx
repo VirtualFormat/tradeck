@@ -72,7 +72,7 @@ export function DashboardHeader({
                 sourceMode === mode ? 'bg-accent/15 text-fg' : 'text-muted hover:text-fg'
               }`}
             >
-              {mode === 'auto' ? 'AUTO' : mode === 'eastmoney' ? '东方' : mode.toUpperCase()}
+              {mode === 'auto' ? 'AUTO' : mode === 'eastmoney' ? '东方' : mode === 'yahoo' ? 'Yahoo' : mode.toUpperCase()}
             </button>
           ))}
         </div>
