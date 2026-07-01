@@ -56,8 +56,9 @@ export function DashboardPage(): JSX.Element {
   const [popupSectorId, setPopupSectorId] = useState<string | null>(null);
   const [showSources, setShowSources] = useState(false);
   const [editing, setEditing] = useState(false);
-  // auto 模式用前端本地 mock sectors；eastmoney 模式调后端
-  const isMockDepth = sourceMode === 'auto';
+  // auto/yahoo 模式用前端本地 mock sectors；eastmoney 模式调后端
+  // （Yahoo 没有板块概念，只有东方财富有板块数据）
+  const isMockDepth = sourceMode === 'auto' || sourceMode === 'yahoo';
   const mockSectors = useMockMarketDepth(market, isMockDepth);
   const depthSource = sourceMode === 'eastmoney' ? 'eastmoney' : 'mock';
   const depth = useMarketDepth(depthSource, market, !isMockDepth);
