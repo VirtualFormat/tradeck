@@ -9,6 +9,7 @@ import type {
   Ticker,
 } from '@tradeck/shared';
 import { fetchEastmoneyTickers } from './connectors/eastmoney.js';
+import { fetchQuotes, fetchChart } from './connectors/yahoo.js';
 import { mockTickers } from './connectors/mock-tickers.js';
 import { mockOhlcv } from './connectors/mock-ohlcv.js';
 import { fetchRss } from './connectors/rss.js';
@@ -16,6 +17,9 @@ import { fetchRss } from './connectors/rss.js';
 // ASSETS 绑定：Cloudflare Workers Static Assets（前端构建产物）。
 interface Env {
   ASSETS: { fetch: (request: Request) => Promise<Response> };
+  // ENVIRONMENT=production 时禁用 Mock，只用东方财富 + Yahoo。
+  // 本地 dev 不设置或设为 dev，保留 Mock 兜底。
+  ENVIRONMENT?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -25,6 +29,9 @@ app.use('/api/*', cors());
 
 const CACHE_SHORT = 'public, max-age=5, s-maxage=15';
 const CACHE_FEED = 'public, max-age=30, s-maxage=120';
+
+// 生产环境判断：ENVIRONMENT=production 时为 true。
+const isProd = (c: { env: { ENVIRONMENT?: string } }) => c.env.ENVIRONMENT === 'production';
 
 // ─── 固定配置（MVP 无 DB / 无个性化）──────────────────────────────
 
@@ -72,6 +79,16 @@ const FIXED_DATASOURCES: DataSourceWithHealth[] = [
     status: 'running',
   },
   {
+    id: 'yahoo',
+    type: 'http-json',
+    name: 'Yahoo Finance',
+    enabled: true,
+    config: { symbols: ['^GSPC', '^IXIC', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'BTC-USD', 'ETH-USD'] },
+    createdAt: 0,
+    updatedAt: 0,
+    status: 'running',
+  },
+  {
     id: 'mock',
     type: 'mock',
     name: 'Mock 兜底',
@@ -98,30 +115,87 @@ const RSS_FEEDS: { url: string; source: string }[] = [
   { url: 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml', source: 'WSJ Markets' },
 ];
 
+// Yahoo Finance 关注列表（生产环境用，补充东方财富不覆盖的指数/美股）。
+const YAHOO_SYMBOLS = [
+  '^GSPC', '^IXIC', '^DJI',    // 美股指数
+  'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN',  // 美股
+  'BTC-USD', 'ETH-USD',        // 加密货币
+];
+
+// 把 Yahoo MarketTick 转成 Ticker（前端 /api/tickers 期望的格式）。
+function yahooTickToTicker(t: import('@tradeck/shared').MarketTick): Ticker {
+  return {
+    source: 'yahoo',
+    symbol: t.symbol,
+    price: t.price,
+    volume: t.volume,
+    ts: t.ts,
+    changePct: t.changePct ?? 0,
+    spark: [t.price * (1 - (t.changePct ?? 0)), t.price],
+    name: t.name,
+    market: 'us', // Yahoo 源主要是美股/指数/加密
+  };
+}
+
 // ─── 路由 ──────────────────────────────────────────────────────────
 
 app.get('/api/health', (c) => c.json({ ok: true, ts: Date.now() }));
 
-/** GET /api/tickers — 东方财富现拉 + Mock 兜底 */
+/** GET /api/tickers — 生产: 东方财富+Yahoo; dev: 东方财富+Mock 兜底 */
 app.get('/api/tickers', async (c) => {
   let tickers: Ticker[];
-  try {
-    const live = await fetchEastmoneyTickers();
-    tickers = live.length > 0 ? [...live, ...mockTickers()] : mockTickers();
-  } catch (err) {
-    console.error('eastmoney failed, mock fallback:', err);
-    tickers = mockTickers();
+  if (isProd(c)) {
+    // 生产：东方财富 + Yahoo，无 Mock
+    const [emResult, yhResult] = await Promise.allSettled([
+      fetchEastmoneyTickers(),
+      fetchQuotes(YAHOO_SYMBOLS).then((ticks) => ticks.map(yahooTickToTicker)),
+    ]);
+    const em = emResult.status === 'fulfilled' ? emResult.value : [];
+    const yh = yhResult.status === 'fulfilled' ? yhResult.value : [];
+    tickers = [...em, ...yh];
+    if (tickers.length === 0) {
+      // 两个源都挂了，返回空（生产不留 Mock 兜底）
+      console.error('prod: both eastmoney and yahoo failed');
+    }
+  } else {
+    // dev：东方财富 + Mock 兜底
+    try {
+      const live = await fetchEastmoneyTickers();
+      tickers = live.length > 0 ? [...live, ...mockTickers()] : mockTickers();
+    } catch (err) {
+      console.error('eastmoney failed, mock fallback:', err);
+      tickers = mockTickers();
+    }
   }
   tickers.sort((a, b) => b.changePct - a.changePct);
   c.header('Cache-Control', CACHE_SHORT);
   return c.json(tickers);
 });
 
-/** GET /api/ohlcv?symbol=&interval=&limit= — Mock 生成（Yahoo 本地被封） */
-app.get('/api/ohlcv', (c) => {
-  const symbol = c.req.query('symbol') ?? 'MOCKUSDT';
+/** GET /api/ohlcv?symbol=&interval=&limit= — 生产: Yahoo chart; dev: Mock */
+app.get('/api/ohlcv', async (c) => {
+  const symbol = c.req.query('symbol') ?? 'AAPL';
   const interval = (c.req.query('interval') ?? '1m') as OhlcvInterval;
   const limit = Math.min(Number(c.req.query('limit') ?? 500), 1000);
+
+  if (isProd(c)) {
+    // 生产：Yahoo chart 现拉
+    try {
+      // Yahoo range 映射：1m→1d, 5m→5d, 15m→5d, 1h→1mo, 4h→3mo, 1d→1y
+      const rangeMap: Record<OhlcvInterval, string> = {
+        '1m': '1d', '5m': '5d', '15m': '5d', '1h': '1mo', '4h': '3mo', '1d': '1y',
+      };
+      const range = rangeMap[interval] ?? '1mo';
+      const bars = await fetchChart(symbol, range, interval);
+      c.header('Cache-Control', 'public, max-age=30, s-maxage=300');
+      return c.json(bars);
+    } catch (err) {
+      console.error('yahoo chart failed:', err);
+      return c.json({ error: 'chart fetch failed' }, 502);
+    }
+  }
+
+  // dev：Mock 生成
   const bars = mockOhlcv(symbol, interval, limit);
   c.header('Cache-Control', CACHE_SHORT);
   return c.json(bars);
@@ -155,10 +229,13 @@ app.get('/api/feed', async (c) => {
   return c.json(items);
 });
 
-/** GET /api/datasources — 固定列表 */
+/** GET /api/datasources — 固定列表（生产环境过滤掉 mock） */
 app.get('/api/datasources', (c) => {
+  const sources = isProd(c)
+    ? FIXED_DATASOURCES.filter((s) => s.type !== 'mock')
+    : FIXED_DATASOURCES;
   c.header('Cache-Control', CACHE_SHORT);
-  return c.json(FIXED_DATASOURCES);
+  return c.json(sources);
 });
 
 /** POST /api/datasources — serverless 无状态，返回固定（no-op） */
