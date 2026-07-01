@@ -1,0 +1,35 @@
+# 自动部署到 Cloudflare Workers（前端静态 + Hono API 统一 Worker）。
+# 需要在 GitHub 仓库 Settings → Secrets 添加：
+#   CLOUDFLARE_API_TOKEN  — Cloudflare API 令牌（Workers 部署权限）
+#   CLOUDFLARE_ACCOUNT_ID — Cloudflare 账户 ID（仪表盘右侧可见）
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - run: pnpm install --frozen-lockfile
+
+      # 构建前端 → packages/web/dist（Worker 部署时作为静态资源一起上传）
+      - run: pnpm -F @tradeck/web build
+
+      # 部署 Worker（含静态资源）
+      - run: pnpm -F @tradeck/api deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

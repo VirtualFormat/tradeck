@@ -13,9 +13,14 @@ import { mockTickers } from './connectors/mock-tickers.js';
 import { mockOhlcv } from './connectors/mock-ohlcv.js';
 import { fetchRss } from './connectors/rss.js';
 
-const app = new Hono();
+// ASSETS 绑定：Cloudflare Workers Static Assets（前端构建产物）。
+interface Env {
+  ASSETS: { fetch: (request: Request) => Promise<Response> };
+}
 
-// 开发期允许 vite 前端跨域访问本 Worker。
+const app = new Hono<{ Bindings: Env }>();
+
+// 开发期允许 vite 前端跨域访问本 Worker（生产同域不需要，但无害）。
 app.use('/api/*', cors());
 
 const CACHE_SHORT = 'public, max-age=5, s-maxage=15';
@@ -173,6 +178,15 @@ app.get('/api/dashboard/layout', (c) => {
 app.put('/api/dashboard/layout', async (c) => {
   const body = await c.req.json<DashboardLayout>().catch(() => DEFAULT_LAYOUT);
   return c.json(body);
+});
+
+// SPA 兜底：非 /api 路径交给静态资源（前端构建产物）处理。
+// 本地 dev 时 ASSETS 未绑定（dist 不存在），返回提示；生产部署后自动服务静态文件。
+app.all('*', async (c) => {
+  if (c.env.ASSETS) {
+    return c.env.ASSETS.fetch(c.req.raw);
+  }
+  return c.text('API only. In dev, frontend runs on http://localhost:5173', 404);
 });
 
 export default app;
