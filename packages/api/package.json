@@ -14,6 +14,7 @@
     "@nestjs/platform-express": "^11.0.1",
     "@tradeck/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
+    "futu-api": "10.8.6808",
     "ioredis": "^5.11.1",
     "pg": "^8.22.0",
     "reflect-metadata": "^0.2.2",

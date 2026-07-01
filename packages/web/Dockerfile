@@ -15,6 +15,8 @@ CMD ["sleep", "infinity"]
 
 # --- build target (for future static production image) ---
 FROM base AS build
+ARG VITE_API_BASE_URL=http://localhost:3000
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 COPY . .
 RUN pnpm install --frozen-lockfile && pnpm -F @tradeck/web build
 

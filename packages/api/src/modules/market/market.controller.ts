@@ -1,5 +1,5 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import type { OHLCV, OhlcvInterval, Ticker } from '@tradeck/shared';
+import type { MarketDepthResponse, OHLCV, OhlcvInterval, Ticker } from '@tradeck/shared';
 import { MarketService } from './market.service';
 
 @Controller('api')
@@ -20,5 +20,14 @@ export class MarketController {
   @Get('tickers')
   getTickers(): Promise<Ticker[]> {
     return this.svc.listTickers();
+  }
+
+  /** GET /api/market-depth?source=futu&market=cn — sector/index depth data. */
+  @Get('market-depth')
+  getMarketDepth(
+    @Query('source') source = 'mock',
+    @Query('market') market = 'cn',
+  ): Promise<MarketDepthResponse> {
+    return this.svc.getMarketDepth(source, market);
   }
 }

@@ -4,6 +4,7 @@ import type {
   DataSource,
   DataSourceWithHealth,
   FeedItem,
+  MarketDepthResponse,
   OHLCV,
   OhlcvInterval,
   Ticker,
@@ -37,6 +38,16 @@ export async function fetchTickers(): Promise<Ticker[]> {
   const res = await fetch(`${API_BASE}/api/tickers`);
   if (!res.ok) throw new Error(`fetchTickers failed: ${res.status}`);
   return res.json() as Promise<Ticker[]>;
+}
+
+export async function fetchMarketDepth(
+  source: string,
+  market: string,
+): Promise<MarketDepthResponse> {
+  const url = `${API_BASE}/api/market-depth?source=${encodeURIComponent(source)}&market=${encodeURIComponent(market)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetchMarketDepth failed: ${res.status}`);
+  return res.json() as Promise<MarketDepthResponse>;
 }
 
 export async function fetchFeed(limit = 30): Promise<FeedItem[]> {

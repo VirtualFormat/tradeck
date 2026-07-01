@@ -4,6 +4,7 @@ export const DATA_SOURCE_TYPES = [
   'mock',
   'binance',
   'eastmoney',
+  'futu',
   'rss',
   'mock-feed',
   'http-json',

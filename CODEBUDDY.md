@@ -4,82 +4,90 @@
 
 ## 项目是什么
 
-Tradeck —— 小团队内部共享的实时市场数据仪表盘（深色专业终端风）。Trade + Deck（驾驶舱式看板）。
-功能：自定义市场数据可视化、重要指标卡片 + 阈值告警、可插拔数据源接入、资讯文章信息流。
+Tradeck —— 小团队内部共享的市场数据仪表盘（深色专业终端风）。Trade + Deck（驾驶舱式看板）。
+**定位收敛为：纯市场行情信息展示**（非量化交易平台、不要秒级、当前阶段只做数据源查询+展示）。
+功能：市场数据可视化、指标卡片、可插拔数据源、资讯文章信息流。
 
 - **定位**：内部团队工具，非对外 SaaS。无多租户、无计费。务实优先，避免过度设计。
-- **完整架构方案**：见 `docs/ARCHITECTURE.md`（已定稿，2026-06-25）。**动手前先读它**。
+- **架构**：**Serverless / 边缘**（Cloudflare Pages + Workers）。**完整方案见 `docs/ARCHITECTURE.md`（serverless 版定稿，2026-07-01）。动手前先读它**。
 
 ## 当前状态
 
-- 架构方案已定稿，**尚未开始编码**。目录仅含 `docs/` 与本文件。
-- 下一步（待开始）：搭 monorepo 脚手架 + Docker Compose + 跑通一条端到端实时链路（MVP 阶段一）。
+- 架构已重构为 serverless 并定稿，**尚未开始编码**。目录仅含 `docs/` 与本文件。
+- 下一步（待开始）：搭 monorepo 脚手架 + 跑通「前端定时轮询 → Worker 代理拉 Yahoo/RSS → 归一化返回 JSON → 前端展示」一条端到端链路（MVP 阶段一）。
 
-## 技术栈（定稿，勿擅自更换）
+## 技术栈（serverless 版定稿，勿擅自更换）
 
 | 层 | 选型 |
 |---|---|
 | 仓库结构 | pnpm monorepo：`packages/{shared, web, api}`，npm scope `@tradeck/*` |
-| 前端 | React18 + TS + Vite，TanStack Query(请求数据) + Zustand(实时流数据)，Lightweight-Charts(K线) + ECharts(3D/关系图/热力图)，Tailwind + shadcn/ui，react-grid-layout |
-| 后端 | NestJS modular monolith（不拆微服务），Drizzle ORM |
-| 实时 | SSE（单向；realtime 做成可替换网关，将来需双向再换 ws）。不用 Socket.IO |
-| 数据 | PostgreSQL 主库；Redis(快照/pub-sub扇出/限流)；TimescaleDB **延后** |
-| 部署 | Docker Compose 单机（web/api/postgres/redis） |
+| 前端 | React18 + TS + Vite → **Cloudflare Pages**；TanStack Query（轮询/缓存，用 `refetchInterval`）；Lightweight-Charts(K线) + ECharts(热力/关系/3D)；Tailwind + shadcn/ui；react-grid-layout |
+| 后端 | **Cloudflare Workers + Hono**（一组无状态 API 函数，代理拉取+归一化）；**Wrangler** 开发/部署 |
+| 刷新 | **前端定时轮询**（TanStack Query `refetchInterval`），**无 SSE / 无 WS / 无推送** |
+| 数据 | **无 DB / 无 Redis**；共享与限流靠**边缘缓存**（响应头 `Cache-Control: s-maxage`，进阶可 Cron Triggers + KV） |
+| 部署 | Cloudflare Pages（前端）+ Workers（API）。**无 Docker Compose** |
 
 ## 关键约定（来自架构方案）
 
-- **职责切分铁律**：TanStack Query 管「请求来的数据」，Zustand 管「推送来的实时数据」，两者不混用。
-- **Connector 框架**：所有数据源实现统一接口（`init/start/stop/health` + `onData/onError/onStatus`），Push 型(WS) 与 Pull 型(REST/RSS/HTTP) 统一出口，`normalize()` 映射到 `packages/shared` 的标准模型（MarketTick/OHLCV/FeedItem/GenericMetric）。Connector 只负责采集+归一化+emit，不直接写库/推前端。
-- **shared 标准模型**（`packages/shared`）：`MarketTick` / `OHLCV` / `FeedItem` / `GenericMetric`（自定义 HTTP 源兜底）。所有 `normalize()` 必须输出这四类之一。
-- **自定义 HTTP 源**：用 `http-json` 通用 Connector + JSONPath 字段映射，免代码接入。
-- **写库节流**：高频 tick 必须批量/节流落 PG（如每秒聚合一次），Redis 存最新快照。
-- **实时链路**：`Connector.emit → Ingestion(去重→Redis快照→节流落PG→Alert评估→Redis PUBLISH) → 订阅Hub → SSE → 前端Zustand → 图表局部更新`。首屏/历史走 TanStack Query（`GET /api/ohlcv`），实时增量走 SSE，两路在图表组件汇合。详见 ARCHITECTURE.md §3。
-- **后端模块边界**（`packages/api/src/modules/`）：`auth` / `connectors`(registry+manager+base+实现) / `ingestion`(归一化出口→快照→落库→扇出) / `realtime`(SSE 网关+订阅 hub，可替换) / `market`(ohlcv/快照查询) / `alerts` / `feed` / `dashboards`；基础设施在 `infra/`(drizzle/redis/config)。
-- **MVP 范围铁律**：只做阈值告警(`>/<`)、SSE 单向、纯 PG(不上 Timescale)、采集内嵌 api 进程(不拆 worker)。派生指标/复杂表达式/独立 worker/全文搜索全部延后，勿提前实现。
-- **MVP 取舍（用户已拍板）**：① 登录用**用户名+密码**（非邮箱）；② **MVP 不做通知**（前端推送+Webhook 延后到阶段二）；③ 首批源 = Binance 公开 WS + Mock 兜底 + RSS（占位：新浪财经 `https://rss.sina.com.cn/roll/finance/hot_roll.xml`，可随时换）。
+- **⚠️ 前端绝不直连外部源**：浏览器 CORS 会拦截 Yahoo/RSS（它们不返回跨域头）。前端只 fetch **自家 Worker API（同源）**，由 Worker 服务端去拉外网。这是 serverless 方案成立的前提。
+- **数据流**：`前端 setInterval/refetchInterval → 自家 Worker API → Worker 拉 Yahoo/RSS + normalize() + s-maxage 边缘缓存 → 返回 JSON → 前端渲染`。详见 ARCHITECTURE.md §1/§2。
+- **shared 标准模型**（`packages/shared`）：`MarketTick` / `OHLCV` / `FeedItem` / `GenericMetric`（自定义 HTTP 源兜底）。所有 `normalize()` 必须输出这四类之一。shared 同时被 web（类型）与 api（运行）引用，是前后端契约单一来源。
+- **归一化抽象**：采集模式只剩 **Pull 型**（serverless 无常驻进程，不做 WS Push）。每个源 = `fetchOnce()` + `normalize()` 纯逻辑，由 Worker 路由按请求调用。源封装在 `packages/api/src/connectors/`。
+- **数据职责**：所有数据都是「请求来的」，统一由 **TanStack Query** 管（`refetchInterval` 周期刷新）。旧的「Zustand 管推送流」一路已取消，Zustand 降级为可选纯 UI 状态工具。
+- **无持久化**：当前不落库；历史面板（若做）由前端临时调 `/api/chart` → Worker 现拉 Yahoo。将来任何持久化都用 **serverless 友好存储（localStorage / KV / D1 / R2）**，不引入常驻 DB。
+- **MVP 范围铁律**：只做「拉取行情/资讯 + 展示」。无登录、无 DB、无 SSE、无告警引擎、无自建文章。派生指标/自定义源/告警/个性化全部延后，勿提前实现。
+- **MVP 取舍（用户已拍板，2026-07-01）**：
+  ① **架构 serverless**，后续即使加用户注册/关注股票/布局配置也**继续沿用 serverless**；
+  ② **登录暂不做**，关注列表与布局**先固定**；
+  ③ **无 Redis**（非分布式，单边缘函数 + 边缘缓存足够）；
+  ④ **无 DB**（纯展示），历史临时查 Yahoo；
+  ⑤ 首批源 = **Yahoo Finance（主，quote/chart）** + Mock 兜底 + RSS（占位：新浪财经 `https://rss.sina.com.cn/roll/finance/hot_roll.xml`，可随时换）；**Binance WS 延后**（WS 不适合 serverless）。
 
 ## WSL Ubuntu 开发说明
 
 后续在 WSL Ubuntu 中开发，注意：
 
 - **代码放在 WSL 文件系统内**（如 `~/projects/tradeck`），不要放在 `/mnt/d/...`。跨 `/mnt` 访问 Windows 盘的 IO 极慢，会拖垮 pnpm install / Vite HMR / 文件监听。
-  - 迁移方式：在 WSL 里 `cp -r /mnt/d/Code/projects/tradeck ~/projects/`，或重新 `git clone` 到 WSL home。
 - **行尾**：仓库统一 LF。建议加 `.gitattributes`：`* text=auto eol=lf`；Windows 侧 `git config core.autocrlf input`。
 - **运行时**：Node **24**（用 nvm 装；根目录放 `.nvmrc` 内容 `24`，`engines` 钉死 `>=24 <25`），包管理用 **pnpm**（`corepack enable && corepack prepare pnpm@latest --activate`）。
   ```bash
   nvm install 24 && nvm alias default 24
   corepack enable && corepack prepare pnpm@latest --activate
   ```
-- **Docker**：用 Docker Desktop 的 WSL 集成，或在 Ubuntu 内装 docker engine。
-- **端口**：WSL 服务可直接从 Windows 浏览器经 `localhost` 访问（WSL2 自动转发）。
+- **端口**：容器内 `wrangler dev` / `vite dev` 端口 forward 出来后，可从 Windows 浏览器经 `localhost` 访问（WSL2 自动转发）。
 
-### 容器内开发铁律（重要）
+### 容器内开发铁律（重要，serverless 版）
 
-- **环境拓扑**：Windows 上的 CodeBuddy IDE 远程打开 WSL Ubuntu 裸机目录；WSL 只装 git/docker 等必要工具。"宿主/不要污染" 指的就是这个 WSL。
-- **开发用 Dev Container，部署用 docker compose**（两套配置独立）。
-  - 开发：CodeBuddy IDE「Reopen in Container」→ IDE backend 跑在 `api` 容器内，语言服务读容器卷里的 node_modules，跳转/补全/类型检查可用，且**不污染 WSL**。配置见 `.devcontainer/devcontainer.json`（复用根 `docker-compose.yml`，service=api，`postCreateCommand` 自动 `pnpm install`）。
-  - 部署：`docker compose`（用各 Dockerfile 的 prod target）。
-- **项目运行/调试全部在容器内进行**，不污染 WSL。
-- **不要在 WSL 里跑 `pnpm/npm install` 生成 node_modules**，也不要在 WSL 安装多余工具。所有 Node 相关命令（install/dev/build/test/db）都在容器里执行。
-- compose 配置：源码 **bind mount** 进容器，**node_modules 放在容器内的卷里**（命名卷/匿名卷，避免回写 WSL）。
-- 镜像选 **多架构（amd64+arm64）官方镜像**，保持多平台兼容（便于将来部署到 ARM 主机）。
+> **环境拓扑**：Windows 上 CodeBuddy IDE 远程打开 WSL Ubuntu 裸机目录；WSL 只装 git/docker 等必要工具。"宿主/不要污染" 指的就是这个 WSL。
+
+- **仍用 Dev Container 开发，以不污染 WSL**（用户硬诉求，serverless 不改变这一点）。`wrangler dev` 本质是 Node 进程（底层跑 `workerd`），照样要 `node_modules`、照样要 `pnpm install`；在 WSL 裸机装就污染了裸机，所以放容器里。
+- **与旧方案的区别**：Dev Container 从"复用多服务 compose（api+web+postgres+redis）"**简化为单个 node+pnpm+wrangler 开发容器**——serverless 无 DB/Redis，不需要那些 service。
+- **原则不变**：
+  - 项目运行/调试全部在容器内（`wrangler dev` + `vite dev`），不污染 WSL。
+  - **不在 WSL 裸机跑 `pnpm/npm install`**；所有 Node 命令（install/dev/build/test/deploy）在容器内执行。
+  - 源码 **bind mount** 进容器，**node_modules 放容器内的卷**（命名卷/匿名卷，避免回写 WSL）。
+  - IDE「Reopen in Container」→ 语言服务读容器卷里的 node_modules，跳转/补全/类型检查可用。
+- **部署不经容器**：直接 `wrangler deploy`（Worker）+ Pages 构建（前端），无需自建镜像/Compose。开发容器只服务本地开发。
+- 镜像选多架构（amd64+arm64）官方 node 镜像，保持多平台兼容。
 - GitHub 仓库为 **private**。
 
 ## 常用命令（脚手架建立后补充实际命令）
 
-> 项目尚未初始化，以下为规划中的命令，待脚手架落地后**以实际 package.json scripts / compose service 名为准**。
-> 所有 Node 命令都在容器内执行（见上「容器内开发铁律」），不要在 WSL 直接跑。
+> 项目尚未初始化，以下为规划中的命令，待脚手架落地后**以实际 package.json scripts 为准**。
+> 所有 Node 命令在**开发容器内**执行（见上「容器内开发铁律」），不要在 WSL 裸机直接跑。
 
 ```bash
-docker compose up -d              # 起全栈（web/api/postgres/redis）
-docker compose logs -f api        # 看后端日志
+# 进开发容器后执行（或 IDE Reopen in Container 后在集成终端）
+pnpm install                 # 安装依赖（装进容器卷，不落 WSL）
 
-# 在容器内执行（service 名以 compose 实际定义为准，下面假设为 api / web）
-docker compose exec api pnpm install            # 安装依赖（装进容器卷，不落 WSL）
-docker compose exec api pnpm -F @tradeck/api dev    # 后端 NestJS watch
-docker compose exec web pnpm -F @tradeck/web dev    # 前端 Vite
-docker compose exec api pnpm -F @tradeck/api db:push  # Drizzle 推送 schema
+# 本地开发
+pnpm -F @tradeck/api dev     # Worker 本地：wrangler dev（模拟 Cloudflare 运行时）
+pnpm -F @tradeck/web dev     # 前端：vite dev
 
-# 跑单个测试（脚手架定测试框架后以实际为准，示例 vitest/jest）
-docker compose exec api pnpm -F @tradeck/api test -- <文件或用例名>
+# 构建 / 部署
+pnpm -F @tradeck/web build   # 前端构建静态产物（部署 Pages）
+pnpm -F @tradeck/api deploy  # wrangler deploy 部署 Worker
+
+# 跑测试（脚手架定测试框架后以实际为准，示例 vitest）
+pnpm -F @tradeck/api test -- <文件或用例名>
 ```

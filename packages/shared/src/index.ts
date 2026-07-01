@@ -1,5 +1,6 @@
 export * from './constants.js';
 export * from './models/market-tick.js';
+export * from './models/market-depth.js';
 export * from './models/ohlcv.js';
 export * from './models/feed-item.js';
 export * from './models/generic-metric.js';

@@ -1,12 +1,19 @@
 import { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 
+type ChartEvents = {
+  click?: (params: unknown) => void;
+};
+
 /**
  * Mounts an ECharts instance into a div and applies `option` on every change.
  * notMerge:false preserves animations between live updates. StrictMode-safe:
  * disposes on unmount and resizes via ResizeObserver.
  */
-export function useEChart(option: echarts.EChartsOption): React.RefObject<HTMLDivElement> {
+export function useEChart(
+  option: echarts.EChartsOption,
+  events?: ChartEvents,
+): React.RefObject<HTMLDivElement> {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
@@ -26,6 +33,15 @@ export function useEChart(option: echarts.EChartsOption): React.RefObject<HTMLDi
   useEffect(() => {
     chartRef.current?.setOption(option, { notMerge: false });
   }, [option]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !events?.click) return;
+    chart.on('click', events.click);
+    return () => {
+      chart.off('click', events.click);
+    };
+  }, [events?.click]);
 
   return ref;
 }

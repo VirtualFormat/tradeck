@@ -14,12 +14,18 @@ FROM base AS dev
 EXPOSE 3000
 CMD ["sleep", "infinity"]
 
-# --- build target (for future production image) ---
+# --- build target ---
 FROM base AS build
 COPY . .
-RUN pnpm install --frozen-lockfile && pnpm -F @tradeck/api build
+RUN pnpm install --frozen-lockfile \
+  && pnpm -F @tradeck/shared build \
+  && pnpm -F @tradeck/api build
 
 FROM base AS prod
-COPY --from=build /app/packages/api/dist ./dist
+ENV NODE_ENV=production
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/api/package.json ./packages/api/package.json
+COPY --from=build /app/packages/api/dist ./packages/api/dist
+COPY --from=build /app/packages/shared ./packages/shared
 EXPOSE 3000
-CMD ["node", "dist/main.js"]
+CMD ["node", "packages/api/dist/main.js"]

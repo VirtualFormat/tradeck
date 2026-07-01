@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { DATA_SOURCE_MODES, type DataSourceMode, type Market } from './market';
+import { MarketTabs } from './widgets/MarketTabs';
 
 function utcClock(): string {
   const d = new Date();
@@ -12,6 +14,10 @@ interface HeaderProps {
   onToggleEdit: () => void;
   onSaveLayout: () => void;
   onResetLayout: () => void;
+  market: Market;
+  onMarketChange: (market: Market) => void;
+  sourceMode: DataSourceMode;
+  onSourceModeChange: (mode: DataSourceMode) => void;
 }
 
 export function DashboardHeader({
@@ -20,6 +26,10 @@ export function DashboardHeader({
   onToggleEdit,
   onSaveLayout,
   onResetLayout,
+  market,
+  onMarketChange,
+  sourceMode,
+  onSourceModeChange,
 }: HeaderProps): JSX.Element {
   const [clock, setClock] = useState(utcClock());
 
@@ -51,6 +61,21 @@ export function DashboardHeader({
         </div>
       </div>
       <div className="flex items-center gap-2 text-[11px]">
+        <MarketTabs value={market} onChange={onMarketChange} />
+        <div className="inline-flex rounded-md border border-border bg-panel-2 p-0.5">
+          {DATA_SOURCE_MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onSourceModeChange(mode)}
+              className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
+                sourceMode === mode ? 'bg-accent/15 text-fg' : 'text-muted hover:text-fg'
+              }`}
+            >
+              {mode === 'auto' ? 'AUTO' : mode === 'eastmoney' ? '东方' : mode.toUpperCase()}
+            </button>
+          ))}
+        </div>
         {editing ? (
           <>
             <button

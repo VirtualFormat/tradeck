@@ -14,6 +14,7 @@ import { BaseConnector } from './base.connector';
 import { BinanceConnector } from './binance/binance.connector';
 import { ConnectorRegistry } from './connector.registry';
 import { EastmoneyConnector } from './eastmoney/eastmoney.connector';
+import { FutuConnector } from './futu/futu.connector';
 import { HttpJsonConnector } from './http-json/http-json.connector';
 import { MockConnector } from './mock/mock.connector';
 import { MockFeedConnector } from './mock/mock-feed.connector';
@@ -49,11 +50,13 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
     this.registry.register('mock', () => new MockConnector());
     this.registry.register('binance', () => new BinanceConnector());
     this.registry.register('eastmoney', () => new EastmoneyConnector());
+    this.registry.register('futu', () => new FutuConnector());
     this.registry.register('mock-feed', () => new MockFeedConnector());
     this.registry.register('rss', () => new RssConnector());
     this.registry.register('http-json', () => new HttpJsonConnector());
 
     await this.seedIfEmpty();
+    await this.seedMissingFutuSources();
     await this.reloadAll();
   }
 
@@ -206,5 +209,62 @@ export class ConnectorManager implements OnApplicationBootstrap, OnModuleDestroy
       },
     ]);
     this.logger.log('seeded default data_sources');
+  }
+
+  private async seedMissingFutuSources(): Promise<void> {
+    const now = Date.now();
+    const enabled = /^(true|1|yes|on)$/i.test(process.env.FUTU_DEFAULT_ENABLED ?? '');
+    const host = process.env.FUTU_OPEND_HOST ?? 'futu-opend';
+    const port = Number(process.env.FUTU_OPEND_PORT ?? 33333);
+    const ssl = /^(true|1|yes|on)$/i.test(process.env.FUTU_OPEND_SSL ?? 'true');
+    const key = process.env.FUTU_OPEND_KEY ?? 'tradeck-local-opend';
+    const defaults = [
+      {
+        id: 'futu-cn',
+        type: 'futu',
+        name: 'Futu OpenD · A股',
+        enabled,
+        config: {
+          symbols: ['SH.600519', 'SZ.300750', 'SZ.000858', 'SH.601318', 'SZ.000001'],
+          options: { market: 'cn', host, port, ssl, key, intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'futu-hk',
+        type: 'futu',
+        name: 'Futu OpenD · 港股',
+        enabled,
+        config: {
+          symbols: ['HK.00700', 'HK.09988', 'HK.03690', 'HK.00941', 'HK.01810'],
+          options: { market: 'hk', host, port, ssl, key, intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'futu-us',
+        type: 'futu',
+        name: 'Futu OpenD · 美股',
+        enabled,
+        config: {
+          symbols: ['US.AAPL', 'US.TSLA', 'US.NVDA', 'US.MSFT', 'US.AMZN'],
+          options: { market: 'us', host, port, ssl, key, intervalMs: 3000 },
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    await this.db
+      .insert(dataSources)
+      .values(defaults)
+      .onConflictDoNothing({ target: dataSources.id });
+    for (const item of defaults) {
+      await this.db
+        .update(dataSources)
+        .set({ config: item.config, updatedAt: now })
+        .where(eq(dataSources.id, item.id));
+    }
   }
 }

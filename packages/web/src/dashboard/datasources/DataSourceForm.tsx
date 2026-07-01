@@ -6,6 +6,8 @@ import type { DataSourceType, DataSourceWithHealth } from '@tradeck/shared';
 const DATA_SOURCE_TYPES: readonly DataSourceType[] = [
   'mock',
   'binance',
+  'eastmoney',
+  'futu',
   'rss',
   'mock-feed',
   'http-json',

@@ -9,12 +9,13 @@ const DEFAULT_ID = 'default';
 /** 12-column default layout, roughly matching the original stacked design. */
 const DEFAULT_LAYOUT: DashboardLayout = {
   items: [
-    { i: 'overview', x: 0, y: 0, w: 12, h: 5, minW: 4, minH: 4 },
-    { i: 'price', x: 0, y: 5, w: 7, h: 8, minW: 4, minH: 6 },
-    { i: 'movers', x: 7, y: 5, w: 5, h: 8, minW: 3, minH: 5 },
-    { i: 'heat', x: 0, y: 13, w: 7, h: 7, minW: 4, minH: 5 },
-    { i: 'feed', x: 7, y: 13, w: 5, h: 7, minW: 3, minH: 5 },
-    { i: 'graph', x: 0, y: 20, w: 12, h: 7, minW: 4, minH: 5 },
+    { i: 'overview', x: 0, y: 0, w: 12, h: 3, minW: 6, minH: 3 },
+    { i: 'price', x: 0, y: 3, w: 7, h: 8, minW: 4, minH: 6 },
+    { i: 'movers', x: 7, y: 3, w: 5, h: 8, minW: 3, minH: 6 },
+    { i: 'heat', x: 0, y: 11, w: 6, h: 8, minW: 4, minH: 6 },
+    { i: 'sectorVolume', x: 6, y: 11, w: 6, h: 8, minW: 4, minH: 6 },
+    { i: 'graph', x: 0, y: 19, w: 7, h: 7, minW: 4, minH: 5 },
+    { i: 'feed', x: 7, y: 19, w: 5, h: 7, minW: 3, minH: 5 },
   ],
 };
 

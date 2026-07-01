@@ -1,6 +1,5 @@
-# Production-style single-host deployment. Development bind mounts, watch
-# commands, and container-only node_modules volumes live in
-# `.devcontainer/docker-compose.yml`.
+# Dev-only stack. All Node tooling runs inside these containers; dependencies
+# are stored in Docker volumes so the host workspace stays clean.
 
 services:
   postgres:
@@ -35,10 +34,11 @@ services:
 
   api:
     build:
-      context: .
+      context: ..
       dockerfile: packages/api/Dockerfile
-      target: prod
+      target: dev
     restart: unless-stopped
+    command: sleep infinity
     environment:
       API_PORT: 3000
       DATABASE_URL: ${DATABASE_URL:-postgres://tradeck:tradeck@postgres:5432/tradeck}
@@ -51,6 +51,15 @@ services:
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-0}
     ports:
       - '${API_PORT:-3000}:3000'
+    volumes:
+      - ..:/app
+      - root_node_modules:/app/node_modules
+      - api_node_modules:/app/packages/api/node_modules
+      - web_node_modules:/app/packages/web/node_modules
+      - shared_node_modules:/app/packages/shared/node_modules
+      - api_dist:/app/packages/api/dist
+      - web_dist:/app/packages/web/dist
+      - shared_dist:/app/packages/shared/dist
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,11 +68,11 @@ services:
 
   futu-opend:
     build:
-      context: ./infra/futu-opend
+      context: ../infra/futu-opend
     profiles: ['market-real']
     restart: unless-stopped
     env_file:
-      - .env
+      - ../.env
     environment:
       FUTU_OPEND_API_IP: 0.0.0.0
       FUTU_OPEND_API_PORT: ${FUTU_OPEND_API_PORT:-11111}
@@ -81,18 +90,36 @@ services:
 
   web:
     build:
-      context: .
+      context: ..
       dockerfile: packages/web/Dockerfile
-      target: prod
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
+      target: dev
     restart: unless-stopped
+    command: sleep infinity
+    environment:
+      WEB_PORT: 5173
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
     ports:
-      - '${PROD_WEB_PORT:-8080}:80'
+      - '${DEV_WEB_PORT:-5173}:5173'
+    volumes:
+      - ..:/app
+      - root_node_modules:/app/node_modules
+      - api_node_modules:/app/packages/api/node_modules
+      - web_node_modules:/app/packages/web/node_modules
+      - shared_node_modules:/app/packages/shared/node_modules
+      - api_dist:/app/packages/api/dist
+      - web_dist:/app/packages/web/dist
+      - shared_dist:/app/packages/shared/dist
     depends_on:
       - api
 
 volumes:
   pgdata:
   redisdata:
+  root_node_modules:
+  api_node_modules:
+  web_node_modules:
+  shared_node_modules:
+  api_dist:
+  web_dist:
+  shared_dist:
   futu_opend_logs:
