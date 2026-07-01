@@ -13,8 +13,12 @@ Tradeck —— 小团队内部共享的市场数据仪表盘（深色专业终�
 
 ## 当前状态
 
-- 架构已重构为 serverless 并定稿，**尚未开始编码**。目录仅含 `docs/` 与本文件。
-- 下一步（待开始）：搭 monorepo 脚手架 + 跑通「前端定时轮询 → Worker 代理拉 Yahoo/RSS → 归一化返回 JSON → 前端展示」一条端到端链路（MVP 阶段一）。
+- **serverless 脚手架已落地**（2026-07-01）：`packages/{shared, api, web}` 三包 + `.devcontainer` 单容器已建。旧的 NestJS/PG/Redis/东方财富实现已存档到 `archive/nestjs-eastmoney` 分支后推倒重来。
+  - `shared`：标准模型（MarketTick/OHLCV/FeedItem/GenericMetric）+ zod + 固定 watchlist/RSS 源。
+  - `api`：Hono on Workers，路由 `/api/quote`(Yahoo,失败降级 Mock) `/api/chart`(历史) `/api/feed`(RSS)，带 `s-maxage` 缓存头。
+  - `web`：Vite React + Tailwind 深色终端风，TanStack Query `refetchInterval` 轮询自家 API，vite proxy `/api`→`localhost:8787`。
+- **注意**：WSL 下 Docker 容器默认无 DNS，`.devcontainer/docker-compose.yml` 已给 dev 服务加 `dns: [1.1.1.1, 8.8.8.8]` 解决。
+- 下一步：跑通端到端后按 ARCHITECTURE.md 阶段二推进（历史面板、更多源、阈值标红、个性化）。
 
 ## 技术栈（serverless 版定稿，勿擅自更换）
 

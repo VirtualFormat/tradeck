@@ -1,125 +1,31 @@
-# Dev-only stack. All Node tooling runs inside these containers; dependencies
-# are stored in Docker volumes so the host workspace stays clean.
-
+# Dev Container（serverless 版）：单个 node+pnpm+wrangler 开发容器。
+# 无 postgres/redis。源码 bind mount，node_modules 放命名卷（不回写 WSL）。
 services:
-  postgres:
-    image: postgres:17-bookworm
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tradeck}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradeck}
-      POSTGRES_DB: ${POSTGRES_DB:-tradeck}
-    ports:
-      - '${POSTGRES_PORT:-5432}:5432'
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-tradeck}']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-bookworm
-    restart: unless-stopped
-    ports:
-      - '${REDIS_PORT:-6379}:6379'
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  api:
-    build:
-      context: ..
-      dockerfile: packages/api/Dockerfile
-      target: dev
-    restart: unless-stopped
+  dev:
+    image: node:24-bookworm-slim
+    working_dir: /workspace
     command: sleep infinity
-    environment:
-      API_PORT: 3000
-      DATABASE_URL: ${DATABASE_URL:-postgres://tradeck:tradeck@postgres:5432/tradeck}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      FUTU_OPEND_HOST: futu-opend
-      FUTU_OPEND_PORT: ${FUTU_OPEND_PORT:-33333}
-      FUTU_OPEND_SSL: ${FUTU_OPEND_SSL:-true}
-      FUTU_OPEND_KEY: ${FUTU_OPEND_KEY:-tradeck-local-opend}
-      FUTU_DEFAULT_ENABLED: ${FUTU_DEFAULT_ENABLED:-false}
-      NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-0}
+    volumes:
+      - ..:/workspace:cached
+      # node_modules 及各 package 的放命名卷，避免回写 WSL、避免 IO 慢
+      - tradeck_node_modules:/workspace/node_modules
+      - tradeck_shared_nm:/workspace/packages/shared/node_modules
+      - tradeck_api_nm:/workspace/packages/api/node_modules
+      - tradeck_web_nm:/workspace/packages/web/node_modules
+      - tradeck_pnpm_store:/root/.local/share/pnpm/store
     ports:
-      - '${API_PORT:-3000}:3000'
-    volumes:
-      - ..:/app
-      - root_node_modules:/app/node_modules
-      - api_node_modules:/app/packages/api/node_modules
-      - web_node_modules:/app/packages/web/node_modules
-      - shared_node_modules:/app/packages/shared/node_modules
-      - api_dist:/app/packages/api/dist
-      - web_dist:/app/packages/web/dist
-      - shared_dist:/app/packages/shared/dist
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  futu-opend:
-    build:
-      context: ../infra/futu-opend
-    profiles: ['market-real']
-    restart: unless-stopped
-    env_file:
-      - ../.env
+      - '5173:5173' # vite
+      - '8787:8787' # wrangler dev
     environment:
-      FUTU_OPEND_API_IP: 0.0.0.0
-      FUTU_OPEND_API_PORT: ${FUTU_OPEND_API_PORT:-11111}
-      FUTU_OPEND_WEBSOCKET_IP: 0.0.0.0
-      FUTU_OPEND_WEBSOCKET_PORT: ${FUTU_OPEND_PORT:-33333}
-      FUTU_OPEND_KEY: ${FUTU_OPEND_KEY:-tradeck-local-opend}
-      FUTU_OPEND_TELNET_IP: 127.0.0.1
-      FUTU_OPEND_TELNET_PORT: ${FUTU_OPEND_TELNET_PORT:-22222}
-      FUTU_OPEND_LANG: ${FUTU_OPEND_LANG:-chs}
-      FUTU_OPEND_LOG_LEVEL: ${FUTU_OPEND_LOG_LEVEL:-info}
-    volumes:
-      - futu_opend_logs:/var/log/futu-opend
-    depends_on:
-      - api
-
-  web:
-    build:
-      context: ..
-      dockerfile: packages/web/Dockerfile
-      target: dev
-    restart: unless-stopped
-    command: sleep infinity
-    environment:
-      WEB_PORT: 5173
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
-    ports:
-      - '${DEV_WEB_PORT:-5173}:5173'
-    volumes:
-      - ..:/app
-      - root_node_modules:/app/node_modules
-      - api_node_modules:/app/packages/api/node_modules
-      - web_node_modules:/app/packages/web/node_modules
-      - shared_node_modules:/app/packages/shared/node_modules
-      - api_dist:/app/packages/api/dist
-      - web_dist:/app/packages/web/dist
-      - shared_dist:/app/packages/shared/dist
-    depends_on:
-      - api
+      - PNPM_HOME=/root/.local/share/pnpm
+      - PATH=/root/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
 
 volumes:
-  pgdata:
-  redisdata:
-  root_node_modules:
-  api_node_modules:
-  web_node_modules:
-  shared_node_modules:
-  api_dist:
-  web_dist:
-  shared_dist:
-  futu_opend_logs:
+  tradeck_node_modules:
+  tradeck_shared_nm:
+  tradeck_api_nm:
+  tradeck_web_nm:
+  tradeck_pnpm_store:

@@ -1,0 +1,7 @@
+name = "tradeck-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+# 本地 wrangler dev 端口在 package.json 的 dev 脚本里指定（8787）。
+# 部署时如需 KV / Cron，在此追加 [[kv_namespaces]] / [triggers]。

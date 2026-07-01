@@ -1,39 +1,17 @@
 {
   "name": "tradeck-dev",
-  // Use the dev-only compose stack (web/api/postgres/redis).
-  // The IDE backend attaches to the `api` container, where it can see the
-  // workspace node_modules (kept in container volumes, never written to WSL).
-  "dockerComposeFile": ["docker-compose.yml"],
-  "service": "api",
-  "runServices": ["postgres", "redis", "api", "web"],
-  "workspaceFolder": "/app",
-
-  // Keep the container alive for the IDE to attach instead of running the
-  // service CMD (which would crash-loop on a fresh, empty node_modules volume).
-  // Start dev servers manually in container terminals once deps are installed:
-  //   pnpm -F @tradeck/api dev
-  //   pnpm -F @tradeck/web dev
-  "overrideCommand": true,
-
-  // Install workspace deps into the container volume on first create.
-  "postCreateCommand": "corepack enable && pnpm install && pnpm -F @tradeck/shared build",
-
-  // Ports forwarded to the Windows host via WSL.
-  "forwardPorts": [3000, 5173],
-  "portsAttributes": {
-    "3000": { "label": "api" },
-    "5173": { "label": "web" }
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
   },
-
+  "onCreateCommand": "corepack enable && corepack prepare pnpm@9.15.0 --activate",
+  "postCreateCommand": "pnpm install",
+  "forwardPorts": [5173, 8787],
   "customizations": {
     "vscode": {
-      "extensions": [
-        "dbaeumer.vscode-eslint",
-        "esbenp.prettier-vscode"
-      ],
-      "settings": {
-        "typescript.tsdk": "node_modules/typescript/lib"
-      }
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode", "bradlc.vscode-tailwindcss"]
     }
   }
 }
