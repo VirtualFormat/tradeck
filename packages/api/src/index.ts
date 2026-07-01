@@ -100,8 +100,6 @@ const RSS_FEEDS: { url: string; source: string }[] = [
 
 // ─── 路由 ──────────────────────────────────────────────────────────
 
-app.get('/', (c) => c.text('Tradeck API (Hono on Workers)'));
-
 app.get('/api/health', (c) => c.json({ ok: true, ts: Date.now() }));
 
 /** GET /api/tickers — 东方财富现拉 + Mock 兜底 */
