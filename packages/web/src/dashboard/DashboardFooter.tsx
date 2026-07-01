@@ -15,8 +15,8 @@ export function DashboardFooter(): JSX.Element {
       <span className="tab-nums">{sources.size} sources</span>
       <span className="tab-nums">{tickers?.length ?? 0} symbols</span>
       <span className="tab-nums">{feed?.length ?? 0} feed items</span>
-      <span>transport · SSE</span>
-      <span className="ml-auto opacity-80">stack · React · NestJS · Postgres · Redis</span>
+      <span>transport · polling</span>
+      <span className="ml-auto opacity-80">stack · React · Hono · Cloudflare Workers</span>
     </footer>
   );
 }

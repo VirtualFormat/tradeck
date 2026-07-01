@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { DATA_SOURCE_MODES, type DataSourceMode, type Market } from './market';
+import { VISIBLE_SOURCE_MODES, type DataSourceMode, type Market } from './market';
 import { MarketTabs } from './widgets/MarketTabs';
 
 function utcClock(): string {
@@ -63,7 +63,7 @@ export function DashboardHeader({
       <div className="flex items-center gap-2 text-[11px]">
         <MarketTabs value={market} onChange={onMarketChange} />
         <div className="inline-flex rounded-md border border-border bg-panel-2 p-0.5">
-          {DATA_SOURCE_MODES.map((mode) => (
+          {VISIBLE_SOURCE_MODES.map((mode) => (
             <button
               key={mode}
               type="button"

@@ -56,9 +56,10 @@ export function DashboardPage(): JSX.Element {
   const [popupSectorId, setPopupSectorId] = useState<string | null>(null);
   const [showSources, setShowSources] = useState(false);
   const [editing, setEditing] = useState(false);
-  const isMockDepth = sourceMode === 'auto' || sourceMode === 'mock';
+  // auto 模式用前端本地 mock sectors；eastmoney 模式调后端
+  const isMockDepth = sourceMode === 'auto';
   const mockSectors = useMockMarketDepth(market, isMockDepth);
-  const depthSource = sourceMode === 'eastmoney' ? 'eastmoney' : sourceMode;
+  const depthSource = sourceMode === 'eastmoney' ? 'eastmoney' : 'mock';
   const depth = useMarketDepth(depthSource, market, !isMockDepth);
   const sectors = isMockDepth ? mockSectors : depth.data?.sectors ?? [];
   const { data: tickers } = useTickers();
@@ -74,9 +75,9 @@ export function DashboardPage(): JSX.Element {
   useTickStream(symbol);
 
   useEffect(() => {
-    if (sourceMode === 'mock' || liveSymbols.length === 0 || liveSymbols.includes(symbol)) return;
+    if (liveSymbols.length === 0 || liveSymbols.includes(symbol)) return;
     setSymbol(liveSymbols[0]);
-  }, [liveSymbols, sourceMode, symbol]);
+  }, [liveSymbols, symbol]);
 
   const { data: serverLayout, isLoading: layoutLoading } = useDashboardLayout();
   const save = useSaveLayout();
