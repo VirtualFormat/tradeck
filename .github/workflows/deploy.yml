@@ -29,8 +29,8 @@ jobs:
       # 构建前端 → packages/web/dist（Worker 部署时作为静态资源一起上传）
       - run: pnpm -F @tradeck/web build
 
-      # 部署 Worker（含静态资源）
-      - run: pnpm -F @tradeck/api deploy
+      # 部署 Worker（含静态资源）。用 run deploy 避免被 pnpm 内置 deploy 命令拦截。
+      - run: pnpm -F @tradeck/api run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
