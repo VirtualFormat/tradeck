@@ -23,6 +23,19 @@ function toLwcCandle(c: OHLCV): CandlestickData {
   };
 }
 
+/**
+ * 去重 + 升序排序。lightweight-charts 的 setData 要求时间戳严格升序且无重复，
+ * 否则抛异常导致组件崩溃（切换数据源时 Yahoo 返回的数据可能乱序或含重复）。
+ */
+function dedupeAndSort(data: CandlestickData[]): CandlestickData[] {
+  const map = new Map<number, CandlestickData>();
+  for (const d of data) {
+    const key = d.time as number;
+    map.set(key, d); // 重复时后者覆盖
+  }
+  return [...map.values()].sort((a, b) => (a.time as number) - (b.time as number));
+}
+
 interface Props {
   symbol: string;
   interval: OhlcvInterval;
@@ -62,19 +75,29 @@ export function CandleChart({ symbol, interval }: Props): JSX.Element {
     };
   }, []);
 
-  // (b) history: bulk setData.
+  // (b) history: bulk setData. 去重 + 排序，try/catch 防止异常导致白屏。
   useEffect(() => {
     if (history && seriesRef.current) {
-      seriesRef.current.setData(history.map(toLwcCandle));
+      try {
+        const clean = dedupeAndSort(history.map(toLwcCandle));
+        seriesRef.current.setData(clean);
+      } catch (err) {
+        console.error('setData failed for', symbol, err);
+      }
     }
-  }, [history]);
+  }, [history, symbol]);
 
   // (c) realtime increment: update() overwrites last candle or appends a new one.
   useEffect(() => {
     if (liveCandle && seriesRef.current) {
-      seriesRef.current.update(toLwcCandle(liveCandle));
+      try {
+        seriesRef.current.update(toLwcCandle(liveCandle));
+      } catch (err) {
+        // update 失败通常是因为时间戳比已有数据更早，忽略即可
+        console.warn('update failed for', symbol, err);
+      }
     }
-  }, [liveCandle]);
+  }, [liveCandle, symbol]);
 
   return (
     <div className="relative h-full w-full">
