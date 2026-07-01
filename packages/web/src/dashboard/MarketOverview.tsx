@@ -157,7 +157,7 @@ export function MarketOverview({
     [popupSectorId, sectors],
   );
   const subtitle =
-    sourceMode === 'auto' || sourceMode === 'mock'
+    sourceMode === 'auto' || sourceMode === 'mock' || sourceMode === 'yahoo'
       ? 'Sector indices · mock live'
       : delayed
         ? 'US indices · Yahoo delayed'

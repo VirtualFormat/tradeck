@@ -119,7 +119,6 @@ export function DashboardPage(): JSX.Element {
         symbol={symbol}
         onSymbolChange={setSymbol}
         symbols={liveSymbols}
-        sourceMode={sourceMode}
       />
     ),
     movers: <MoversBar market={market} sourceMode={sourceMode} tickers={marketTickers} />,

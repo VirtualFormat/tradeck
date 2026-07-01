@@ -21,7 +21,8 @@ export function MoversBar({
   const [mode, setMode] = useState<Mode>('up');
 
   const rows = useMemo(() => {
-    if (sourceMode !== 'mock' && tickers.length > 0) {
+    // auto/eastmoney/yahoo 模式：有 tickers 就用 tickers，无则 fallback mock sectors
+    if (tickers.length > 0) {
       return tickers
         .map((t) => ({
           symbol: t.symbol,
@@ -97,7 +98,7 @@ export function MoversBar({
     };
   }, [mode, rows]);
 
-  const ref = useEChart(option);
+  useEChart(option);
 
   const maxAbs = Math.max(0.01, ...rows.map((row) => Math.abs(row.changePct * 100)));
 
@@ -123,45 +124,37 @@ export function MoversBar({
 
   return (
     <Card title="热门股票榜" subtitle="Dynamic ranking" corner={tabs}>
-      {sourceMode !== 'mock' && tickers.length === 0 ? (
-        <div className="flex h-full items-center justify-center text-xs text-muted">
-          等待 {sourceMode === 'futu' ? 'Futu OpenD' : '行情源'} 数据
-        </div>
-      ) : sourceMode !== 'mock' ? (
-        <div className="scroll-thin h-full overflow-y-auto pt-1">
-          <div className="space-y-1.5">
-            {rows.map((row, index) => {
-              const pct = row.changePct * 100;
-              const up = pct >= 0;
-              const width = `${Math.max(4, (Math.abs(pct) / maxAbs) * 100)}%`;
-              const ticker = tickers.find((t) => t.symbol === row.symbol);
-              return (
-                <div key={row.symbol} className="grid grid-cols-[22px_1fr_64px] items-center gap-2 text-[11px]">
-                  <span className="tab-nums text-muted">{String(index + 1).padStart(2, '0')}</span>
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-fg">{row.name}</span>
-                      <span className="tab-nums shrink-0 text-muted">{ticker?.price.toFixed(2) ?? '--'}</span>
-                    </div>
-                    <div className="mt-1 h-1.5 overflow-hidden rounded bg-panel-2">
-                      <div
-                        className={`h-full rounded ${up ? 'bg-up' : 'bg-down'}`}
-                        style={{ width }}
-                      />
-                    </div>
-                    <div className="mt-0.5 truncate text-[9px] text-muted">{row.symbol} · {row.sectorName}</div>
+      <div className="scroll-thin h-full overflow-y-auto pt-1">
+        <div className="space-y-1.5">
+          {rows.map((row, index) => {
+            const pct = row.changePct * 100;
+            const up = pct >= 0;
+            const width = `${Math.max(4, (Math.abs(pct) / maxAbs) * 100)}%`;
+            const ticker = tickers.find((t) => t.symbol === row.symbol);
+            return (
+              <div key={row.symbol} className="grid grid-cols-[22px_1fr_64px] items-center gap-2 text-[11px]">
+                <span className="tab-nums text-muted">{String(index + 1).padStart(2, '0')}</span>
+                <div className="min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-fg">{row.name}</span>
+                    <span className="tab-nums shrink-0 text-muted">{ticker?.price.toFixed(2) ?? '--'}</span>
                   </div>
-                  <span className={`tab-nums text-right ${up ? 'text-up' : 'text-down'}`}>
-                    {up ? '+' : ''}{pct.toFixed(2)}%
-                  </span>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded bg-panel-2">
+                    <div
+                      className={`h-full rounded ${up ? 'bg-up' : 'bg-down'}`}
+                      style={{ width }}
+                    />
+                  </div>
+                  <div className="mt-0.5 truncate text-[9px] text-muted">{row.symbol} · {row.sectorName}</div>
                 </div>
-              );
-            })}
-          </div>
+                <span className={`tab-nums text-right ${up ? 'text-up' : 'text-down'}`}>
+                  {up ? '+' : ''}{pct.toFixed(2)}%
+                </span>
+              </div>
+            );
+          })}
         </div>
-      ) : (
-        <div ref={ref} className="h-full w-full" />
-      )}
+      </div>
     </Card>
   );
 }
