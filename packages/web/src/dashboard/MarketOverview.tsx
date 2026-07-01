@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { EChartsOption } from 'echarts';
-import type { MarketDepthSector } from '@tradeck/shared';
+import type { Ticker } from '@tradeck/shared';
 import { Card } from './widgets/Card';
-import { Popup } from './widgets/Popup';
-import { useEChart } from '../charts/useEChart';
-import { MARKET_LABEL, type DataSourceMode, type Market } from './market';
+import { dedupeTickers, isIndex } from './tickerUtils';
 
 function fmtValue(value: number): string {
   return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
@@ -44,26 +41,43 @@ function Sparkline({ data, up }: { data: number[]; up: boolean }): JSX.Element |
   );
 }
 
-function IndexTile({
-  sector,
-  market,
-  onClick,
-}: {
-  sector: MarketDepthSector;
-  market: Market;
-  onClick: () => void;
-}): JSX.Element {
-  const previous = useRef(sector.indexValue);
+/** 指数 symbol → 显示名（中文名） */
+const INDEX_NAMES: Record<string, string> = {
+  '1.000001': '上证指数',
+  '100.HSI': '恒生指数',
+  '^GSPC': '标普500',
+  '^IXIC': '纳斯达克',
+  '^DJI': '道琼斯',
+  'BTC-USD': '比特币',
+  'ETH-USD': '以太坊',
+};
+
+/** 指数 symbol → 市场标签 */
+const INDEX_MARKET: Record<string, string> = {
+  '1.000001': 'A股',
+  '100.HSI': '港股',
+  '^GSPC': '美股',
+  '^IXIC': '美股',
+  '^DJI': '美股',
+  'BTC-USD': '加密',
+  'ETH-USD': '加密',
+};
+
+function IndexTile({ ticker, onClick }: { ticker: Ticker; onClick: () => void }): JSX.Element {
+  const previous = useRef(ticker.price);
   const [flash, setFlash] = useState<'up' | 'down' | null>(null);
-  const up = sector.changePct >= 0;
+  const up = ticker.changePct >= 0;
 
   useEffect(() => {
-    if (sector.indexValue > previous.current) setFlash('up');
-    if (sector.indexValue < previous.current) setFlash('down');
-    previous.current = sector.indexValue;
+    if (ticker.price > previous.current) setFlash('up');
+    if (ticker.price < previous.current) setFlash('down');
+    previous.current = ticker.price;
     const timer = setTimeout(() => setFlash(null), 450);
     return () => clearTimeout(timer);
-  }, [sector.indexValue]);
+  }, [ticker.price]);
+
+  const name = ticker.name ?? INDEX_NAMES[ticker.symbol] ?? ticker.symbol;
+  const marketLabel = INDEX_MARKET[ticker.symbol] ?? '';
 
   return (
     <button
@@ -73,22 +87,22 @@ function IndexTile({
         flash === 'up' ? 'bg-up/10' : flash === 'down' ? 'bg-down/10' : ''
       }`}
     >
-      <Sparkline data={sector.history.slice(-24)} up={up} />
+      <Sparkline data={ticker.spark.length >= 2 ? ticker.spark : [ticker.price * (1 - ticker.changePct), ticker.price]} up={up} />
       <div className="relative z-10 flex h-full min-h-[46px] flex-col justify-between">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[9px] uppercase tracking-[0.16em] text-muted">{MARKET_LABEL[market]}</span>
+          <span className="text-[9px] uppercase tracking-[0.16em] text-muted">{marketLabel}</span>
           <span className={`tab-nums text-[9px] ${up ? 'text-up' : 'text-down'}`}>
             {up ? '▲' : '▼'}
           </span>
         </div>
-        <div className="truncate text-[11px] font-medium leading-none text-fg-dim">{sector.name}</div>
+        <div className="truncate text-[11px] font-medium leading-none text-fg-dim">{name}</div>
         <div className="flex items-end justify-between gap-2">
           <span className={`tab-nums text-[15px] font-semibold leading-none ${up ? 'text-up' : 'text-down'}`}>
-            {fmtValue(sector.indexValue)}
+            {fmtValue(ticker.price)}
           </span>
           <span className={`tab-nums text-[10px] leading-none ${up ? 'text-up' : 'text-down'}`}>
             {up ? '+' : ''}
-            {(sector.changePct * 100).toFixed(2)}%
+            {(ticker.changePct * 100).toFixed(2)}%
           </span>
         </div>
       </div>
@@ -96,102 +110,53 @@ function IndexTile({
   );
 }
 
-function IndexTrendChart({ sector }: { sector: MarketDepthSector }): JSX.Element {
-  const option = useMemo<EChartsOption>(() => {
-    const up = sector.changePct >= 0;
-    return {
-      grid: { left: 46, right: 18, top: 16, bottom: 28 },
-      xAxis: {
-        type: 'category',
-        data: sector.history.map((_, i) => i),
-        axisLabel: { color: '#6b7280', fontSize: 9 },
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#1c2230' } },
-      },
-      yAxis: {
-        type: 'value',
-        scale: true,
-        axisLabel: { color: '#6b7280', fontSize: 9 },
-        splitLine: { lineStyle: { color: '#1c2230', type: 'dashed' } },
-      },
-      tooltip: {
-        trigger: 'axis',
-        backgroundColor: '#0e1117',
-        borderColor: '#2a3344',
-        textStyle: { color: '#e6e9ef', fontSize: 11 },
-        valueFormatter: (v) => fmtValue(Number(v)),
-      },
-      series: [
-        {
-          type: 'line',
-          smooth: true,
-          showSymbol: false,
-          data: sector.history,
-          lineStyle: { width: 2, color: up ? '#20cd8d' : '#f0556b' },
-          areaStyle: { color: up ? 'rgba(32,205,141,0.09)' : 'rgba(240,85,107,0.09)' },
-          animationDurationUpdate: 500,
-        },
-      ],
-    };
-  }, [sector]);
-  const ref = useEChart(option);
-  return <div ref={ref} className="h-full w-full" />;
-}
-
-export function MarketOverview({
-  market,
-  sourceMode,
-  sectors,
-  loading,
-  delayed,
-}: {
-  market: Market;
-  sourceMode: DataSourceMode;
-  sectors: MarketDepthSector[];
-  loading: boolean;
-  delayed: boolean;
-}): JSX.Element {
-  const [popupSectorId, setPopupSectorId] = useState<string | null>(null);
-  const popupSector = useMemo(
-    () => sectors.find((s) => s.id === popupSectorId) ?? null,
-    [popupSectorId, sectors],
+export function MarketOverview({ tickers }: { tickers: Ticker[] }): JSX.Element {
+  const [popupSymbol, setPopupSymbol] = useState<string | null>(null);
+  const indices = useMemo(() => dedupeTickers(tickers).filter(isIndex), [tickers]);
+  const popupTicker = useMemo(
+    () => indices.find((t) => t.symbol === popupSymbol) ?? null,
+    [indices, popupSymbol],
   );
-  const subtitle =
-    sourceMode === 'auto' || sourceMode === 'mock' || sourceMode === 'yahoo'
-      ? 'Sector indices · mock live'
-      : delayed
-        ? 'US indices · Yahoo delayed'
-        : 'Sector indices · live source';
 
   return (
-    <>
-      <Card title="指数总览" subtitle={subtitle} corner="点击看走势">
-        {sectors.length > 0 ? (
-          <div className="scroll-thin grid h-full min-h-0 grid-flow-col auto-cols-[minmax(154px,1fr)] gap-2 overflow-x-auto">
-            {sectors.map((sector) => (
-              <IndexTile
-                key={sector.id}
-                sector={sector}
-                market={market}
-                onClick={() => setPopupSectorId(sector.id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="flex h-full items-center justify-center text-xs text-muted">
-            {loading ? '加载指数数据...' : `等待 ${sourceMode === 'futu' ? 'Futu' : '真实'} 板块指数数据接入`}
-          </div>
-        )}
-      </Card>
-      {popupSector && (
-        <Popup
-          title={`${popupSector.name} 实时走势`}
-          subtitle={`${popupSector.changePct >= 0 ? '+' : ''}${(popupSector.changePct * 100).toFixed(2)}% · ${delayed ? 'Yahoo delayed' : sourceMode}`}
-          onClose={() => setPopupSectorId(null)}
-        >
-          <IndexTrendChart sector={popupSector} />
-        </Popup>
+    <Card title="指数总览" subtitle="Market indices · live" corner="点击看走势">
+      {indices.length > 0 ? (
+        <div className="scroll-thin grid h-full min-h-0 grid-flow-col auto-cols-[minmax(154px,1fr)] gap-2 overflow-x-auto">
+          {indices.map((ticker) => (
+            <IndexTile
+              key={ticker.symbol}
+              ticker={ticker}
+              onClick={() => setPopupSymbol(ticker.symbol)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="flex h-full items-center justify-center text-xs text-muted">
+          等待指数数据...
+        </div>
       )}
-    </>
+      {popupTicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setPopupSymbol(null)}>
+          <div className="rounded-lg border border-border bg-panel p-4 w-[480px] h-[320px]" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium text-fg">
+                {popupTicker.name ?? INDEX_NAMES[popupTicker.symbol] ?? popupTicker.symbol}
+              </span>
+              <button onClick={() => setPopupSymbol(null)} className="text-muted hover:text-fg">✕</button>
+            </div>
+            <div className="text-xs text-muted mb-2">
+              {popupTicker.price.toLocaleString('en-US', { maximumFractionDigits: 2 })} ·{' '}
+              <span className={popupTicker.changePct >= 0 ? 'text-up' : 'text-down'}>
+                {popupTicker.changePct >= 0 ? '+' : ''}
+                {(popupTicker.changePct * 100).toFixed(2)}%
+              </span>
+            </div>
+            <div className="h-[240px]">
+              <Sparkline data={popupTicker.spark.length >= 2 ? popupTicker.spark : [popupTicker.price]} up={popupTicker.changePct >= 0} />
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

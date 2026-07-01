@@ -3,23 +3,20 @@ import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import type { DashboardLayout } from '@tradeck/shared';
 import { useTickStream } from '../api/useTickStream';
 import { useTickers } from '../api/useTickers';
-import { useMarketDepth } from '../api/useMarketDepth';
 import { useDashboardLayout, useSaveLayout } from '../api/useDashboardLayout';
-import { LIVE_SYMBOL } from './mock/dashboardData';
 import { DashboardHeader } from './DashboardHeader';
 import { MarketOverview } from './MarketOverview';
 import { TopWinsCard } from './TopWinsCard';
 import { MoversBar } from './MoversBar';
 import { Heatmap } from './Heatmap';
 import { SectorTurnoverPanel } from './SectorTurnoverPanel';
-import { SectorStockPopup } from './SectorStockPopup';
 import { RelationshipGraph } from './RelationshipGraph';
 import { FeedList } from './FeedList';
 import { DashboardFooter } from './DashboardFooter';
 import { DeckSkeleton } from './widgets/Skeleton';
 import { DataSourcesPanel } from './datasources/DataSourcesPanel';
 import { filterByMarket, type DataSourceMode, type Market } from './market';
-import { useMockMarketDepth } from './mock/marketDepth';
+import { isIndex } from './tickerUtils';
 
 const Grid = WidthProvider(Responsive);
 const ROW_HEIGHT = 40;
@@ -49,30 +46,23 @@ function ensureCoreItems(layout: Layout[]): Layout[] {
 }
 
 export function DashboardPage(): JSX.Element {
-  const [symbol, setSymbol] = useState<string>(LIVE_SYMBOL);
+  const { data: tickers } = useTickers();
   const [market, setMarket] = useState<Market>('cn');
   const [sourceMode, setSourceMode] = useState<DataSourceMode>('auto');
-  const [selectedSectorId, setSelectedSectorId] = useState<string | null>(null);
-  const [popupSectorId, setPopupSectorId] = useState<string | null>(null);
   const [showSources, setShowSources] = useState(false);
   const [editing, setEditing] = useState(false);
-  // auto/yahoo 模式用前端本地 mock sectors；eastmoney 模式调后端
-  // （Yahoo 没有板块概念，只有东方财富有板块数据）
-  const isMockDepth = sourceMode === 'auto' || sourceMode === 'yahoo';
-  const mockSectors = useMockMarketDepth(market, isMockDepth);
-  const depthSource = sourceMode === 'eastmoney' ? 'eastmoney' : 'mock';
-  const depth = useMarketDepth(depthSource, market, !isMockDepth);
-  const sectors = isMockDepth ? mockSectors : depth.data?.sectors ?? [];
-  const { data: tickers } = useTickers();
+
+  // 当前市场下的个股（用于 K 线 symbol 切换）
   const marketTickers = useMemo(
     () => filterByMarket(tickers, market, sourceMode),
     [market, sourceMode, tickers],
   );
   const liveSymbols = useMemo(
-    () => marketTickers.map((t) => t.symbol).slice(0, 5),
+    () => marketTickers.filter((t) => !isIndex(t)).map((t) => t.symbol).slice(0, 5),
     [marketTickers],
   );
-  const popupSector = sectors.find((s) => s.id === popupSectorId) ?? null;
+  // 默认 K 线 symbol：第一只个股
+  const [symbol, setSymbol] = useState<string>('AAPL');
   useTickStream(symbol);
 
   useEffect(() => {
@@ -104,16 +94,11 @@ export function DashboardPage(): JSX.Element {
     setEditing(false);
   };
 
+  // 所有面板用同一份 tickers（不按 market 过滤，面板内部自己处理）
+  const allTickers = tickers ?? [];
+
   const cards: Record<string, JSX.Element> = {
-    overview: (
-      <MarketOverview
-        market={market}
-        sourceMode={sourceMode}
-        sectors={sectors}
-        loading={!isMockDepth && depth.isLoading}
-        delayed={depth.data?.delayed ?? false}
-      />
-    ),
+    overview: <MarketOverview tickers={allTickers} />,
     price: (
       <TopWinsCard
         symbol={symbol}
@@ -121,43 +106,16 @@ export function DashboardPage(): JSX.Element {
         symbols={liveSymbols}
       />
     ),
-    movers: <MoversBar market={market} sourceMode={sourceMode} tickers={marketTickers} />,
-    heat: (
-      <Heatmap
-        market={market}
-        sourceMode={sourceMode}
-        sectors={sectors}
-        loading={!isMockDepth && depth.isLoading}
-        selectedSectorId={selectedSectorId}
-        onSectorSelect={(id) => {
-          setSelectedSectorId(id);
-          setPopupSectorId(id);
-        }}
-      />
-    ),
-    sectorVolume: (
-      <SectorTurnoverPanel
-        market={market}
-        sourceMode={sourceMode}
-        sectors={sectors}
-        loading={!isMockDepth && depth.isLoading}
-        selectedSectorId={selectedSectorId}
-        onSectorSelect={(id) => {
-          setSelectedSectorId(id);
-          setPopupSectorId(id);
-        }}
-      />
-    ),
-    graph: <RelationshipGraph />,
+    movers: <MoversBar market={market} tickers={marketTickers} />,
+    heat: <Heatmap tickers={allTickers} />,
+    sectorVolume: <SectorTurnoverPanel tickers={allTickers} />,
+    graph: <RelationshipGraph tickers={allTickers} />,
     feed: <FeedList />,
   };
 
   return (
     <div className="min-h-screen bg-bg text-fg">
       {showSources && <DataSourcesPanel onClose={() => setShowSources(false)} />}
-      {popupSector && (
-        <SectorStockPopup sector={popupSector} onClose={() => setPopupSectorId(null)} />
-      )}
       <div className="w-full px-4 py-3">
         <DashboardHeader
           onOpenSources={() => setShowSources(true)}
