@@ -15,8 +15,8 @@
   --color-fg: #e6e9ef;
   --color-fg-dim: #aab1bf;
   --color-muted: #6b7280;
-  --color-up: #20cd8d;
-  --color-down: #f0556b;
+  --color-up: #f0556b;
+  --color-down: #20cd8d;
   --color-accent: #4d8dff;
 
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",

@@ -15,5 +15,19 @@ export const TickerSchema = z.object({
   name: z.string().optional(),
   /** market grouping for the frontend tabs: 'cn' | 'hk' | 'us' | undefined */
   market: z.string().optional(),
+  /** 今日开盘价 */
+  open: z.number().optional(),
+  /** 今日最高价 */
+  high: z.number().optional(),
+  /** 今日最低价 */
+  low: z.number().optional(),
+  /** 昨日收盘价 */
+  prevClose: z.number().optional(),
+  /** 绝对涨跌额（price - prevClose） */
+  change: z.number().optional(),
+  /** 成交额（元/港元/美元），与 volume(手) 区分 */
+  amount: z.number().optional(),
+  /** 振幅 fraction（0.0123 = 1.23%） */
+  amplitude: z.number().optional(),
 });
 export type Ticker = z.infer<typeof TickerSchema>;

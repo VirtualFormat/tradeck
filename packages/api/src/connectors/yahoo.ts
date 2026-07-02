@@ -68,6 +68,8 @@ async function fetchQuoteViaChart(symbol: string): Promise<MarketTick> {
     changePct,
     volume: meta.regularMarketVolume,
     name: meta.shortName ?? meta.longName,
+    prevClose,
+    change: meta.regularMarketPrice - prevClose,
   };
 }
 

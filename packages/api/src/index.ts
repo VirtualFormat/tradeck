@@ -118,8 +118,7 @@ const RSS_FEEDS: { url: string; source: string }[] = [
 // Yahoo Finance 关注列表（生产环境用，补充东方财富不覆盖的指数/美股）。
 const YAHOO_SYMBOLS = [
   '^GSPC', '^IXIC', '^DJI',    // 美股指数
-  'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN',  // 美股
-  'BTC-USD', 'ETH-USD',        // 加密货币
+  'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN',  // 美股个股（MoversBar 用）
 ];
 
 // 把 Yahoo MarketTick 转成 Ticker（前端 /api/tickers 期望的格式）。
@@ -134,6 +133,8 @@ function yahooTickToTicker(t: import('@tradeck/shared').MarketTick): Ticker {
     spark: [t.price * (1 - (t.changePct ?? 0)), t.price],
     name: t.name,
     market: 'us', // Yahoo 源主要是美股/指数/加密
+    prevClose: t.prevClose,
+    change: t.change,
   };
 }
 

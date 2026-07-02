@@ -4,7 +4,17 @@ import type { Ticker } from '@tradeck/shared';
  * 已知指数 symbol（eastmoney 指数不带 ^ 前缀，需显式枚举）。
  * yahoo 指数均以 ^ 开头（^GSPC / ^IXIC / ^DJI），由 isIndex 的 startsWith('^') 覆盖。
  */
-const EASTMONEY_INDEX_SYMBOLS = new Set(['1.000001', '100.HSI']);
+const EASTMONEY_INDEX_SYMBOLS = new Set([
+  '1.000001',   // 上证指数
+  '0.399001',   // 深证成指
+  '0.399006',   // 创业板指
+  '1.000688',   // 科创50
+  '1.000300',   // 沪深300
+  '1.000016',   // 上证50
+  '1.000905',   // 中证500
+  '100.HSI',    // 恒生指数
+  '100.HSTECH', // 恒生科技
+]);
 
 /** 判断一个 ticker 是否是市场指数（而非个股）。 */
 export function isIndex(t: Ticker): boolean {

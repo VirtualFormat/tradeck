@@ -98,7 +98,7 @@ export function DashboardPage(): JSX.Element {
   const allTickers = tickers ?? [];
 
   const cards: Record<string, JSX.Element> = {
-    overview: <MarketOverview tickers={allTickers} />,
+    overview: <MarketOverview tickers={allTickers} market={market} />,
     price: (
       <TopWinsCard
         symbol={symbol}
