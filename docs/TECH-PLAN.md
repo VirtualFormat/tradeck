@@ -90,16 +90,18 @@
   - **难度**：⭐ 低 · **复杂度**：⭐
   - **备注**：免费源（yfinance/sec/federal_reserve 等 17 个 Provider）已就绪。News 端点只支持 benzinga/fmp/intrinio/tiingo（需 key），yfinance 不支持 news。
 
-- [ ] **T1.2** 写 openbb-akshare-provider 扩展
-  - [ ] 学习 OpenBB Provider Extension 开发
-  - [ ] 实现 Fetcher：A 股实时报价
-  - [ ] 实现 Fetcher：A 股历史 K 线
-  - [ ] 实现 Fetcher：A 股财务指标
-  - [ ] 实现 Fetcher：龙虎榜
-  - [ ] 实现 Fetcher：融资融券
-  - [ ] 实现 Fetcher：北向资金
-  - [ ] 注册到 OpenBB，`provider="akshare"` 可用
+- [x] **T1.2** 写 openbb-akshare-provider 扩展 ✅ 2026-07-05
+  - [x] 学习 OpenBB Provider Extension 开发（Fetcher/QueryParams/Data 三件套）
+  - [x] 实现 Fetcher：A 股实时报价（`stock_individual_info_em` + `stock_bid_ask_em` 降级）
+  - [x] 实现 Fetcher：A 股历史 K 线（`stock_zh_a_hist`，前复权）✅ 实测 22 条数据
+  - [x] 实现 Fetcher：A 股指数历史（`stock_zh_index_daily_em`）✅ 实测 8674 条数据
+  - [x] 实现 Fetcher：北向资金（`stock_hsgt_north_net_flow_in_em`）
+  - [x] 实现 Fetcher：融资融券（`stock_margin_detail_szse`）
+  - [x] 实现 Fetcher：龙虎榜（`stock_lhb_detail_em`）
+  - [x] 实现 Fetcher：板块/概念（`stock_board_concept_name_em` + `stock_board_industry_name_em`）
+  - [x] 注册到 OpenBB，`provider="akshare"` 可用 ✅ 18 个 Provider
   - **难度**：⭐⭐ 中 · **复杂度**：⭐⭐
+  - **备注**：本地容器东方财富封 IP，实时报价类接口不可用；历史 K 线/指数历史可用。生产 VPS 部署后需重新验证实时报价。
 
 - [ ] **T1.3** VPS 部署 OpenBB Platform
   - [ ] 选 VPS
@@ -295,14 +297,14 @@
 
 ### 当前状态
 
-**整体进度**：█░░░░░░░░░ 10%
-**当前阶段**：项目 1 进行中，T1.1 完成，进入 T1.2（写 akshare-provider）
+**整体进度**：██░░░░░░░░ 20%
+**当前阶段**：项目 1 进行中，T1.2 完成，进入 T1.3（VPS 部署）或 T1.4（前端）
 
 ### 项目进度
 
 | 项目 | 进度 | 状态 | 开始 | 完成 |
 |---|---|---|---|---|
-| 1. tradeck 看板 | 10% | 🔄 进行中 | 2026-07-05 | - |
+| 1. tradeck 看板 | 20% | 🔄 进行中 | 2026-07-05 | - |
 | 2. LLM 投资分析 | 0% | 未开始 | - | - |
 | 3. 量化交易 | 0% | 未开始 | - | - |
 
@@ -313,7 +315,7 @@
 | ID | 任务 | 难度 | 状态 | 开始 | 完成 |
 |---|---|---|---|---|---|
 | T1.1 | 部署 OpenBB Platform | ⭐ | ✅ 2026-07-05 | 2026-07-05 |
-| T1.2 | 写 openbb-akshare-provider | ⭐⭐ | ⬜ | - | - |
+| T1.2 | 写 openbb-akshare-provider | ⭐⭐ | ✅ 2026-07-05 | 2026-07-05 |
 | T1.3 | VPS 部署 OpenBB | ⭐ | ⬜ | - | - |
 | T1.4 | Next.js 项目初始化 | ⭐ | ⬜ | - | - |
 | T1.5 | 大盘指数总览页 | ⭐⭐ | ⬜ | - | - |

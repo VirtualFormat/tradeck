@@ -8,7 +8,9 @@
 
 services:
   openbb:
-    build: ./docker/openbb
+    build:
+      context: .
+      dockerfile: ./docker/openbb/Dockerfile
     container_name: tradeck-openbb
     ports:
       - "6900:6900"
@@ -16,7 +18,7 @@ services:
       # 配置持久化（user_settings.json + 缓存）
       - openbb-config:/root/.openbb_platform
       # 自定义 provider 挂载（后续写 akshare-provider 用）
-      - ./docker/openbb/providers:/opt/openbb-providers
+      - ./packages/openbb-akshare-provider:/opt/openbb-akshare-provider
     environment:
       # 免费源不需要 key（yfinance/sec/fred 等开箱即用）
       # 付费源配 key 后启用（取消注释并填入）

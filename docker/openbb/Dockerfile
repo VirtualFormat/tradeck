@@ -16,6 +16,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 付费 Provider（fmp/intrinio/tiingo 等）装了但不配 key 不启用
 RUN pip install --no-cache-dir openbb
 
+# 安装 openbb-akshare-provider（本地包，A 股深度数据）
+COPY packages/openbb-akshare-provider /opt/openbb-akshare-provider
+RUN pip install --no-cache-dir /opt/openbb-akshare-provider
+
+# 重建 OpenBB 静态资产（注册新 Provider）
+RUN openbb-build
+
 # 配置目录
 WORKDIR /data
 ENV OPENBB_PLATFORM_CONFIG=/root/.openbb_platform
@@ -24,9 +31,9 @@ RUN mkdir -p /root/.openbb_platform
 # 默认端口 6900（OpenBB Platform API 标准）
 EXPOSE 6900
 
-# 健康检查
+# 健康检查（OpenBB 无 /health 端点，用 /openapi.json 替代）
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD curl -sf http://localhost:6900/api/v1/health || exit 1
+    CMD curl -sf http://localhost:6900/openapi.json > /dev/null || exit 1
 
 # 启动 OpenBB Platform API（FastAPI via uvicorn）
 CMD ["openbb-api", "--host", "0.0.0.0", "--port", "6900"]
