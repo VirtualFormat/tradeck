@@ -1,10 +1,12 @@
 # tradeck 项目 1 — 市场资讯看板
-# OpenBB 作为数据层 service，后续加 Next.js 前端 service
+# OpenBB 数据层 + Next.js 前端，均作为 docker service
 #
 # 使用：
 #   cp .env.example .env  # 填 API key（可选，免费源不需要）
 #   docker compose up -d --build
-#   验证：curl http://localhost:6900/api/v1/health
+#   前端：http://localhost:3000
+#   OpenBB API：http://localhost:6900
+#   Swagger UI：http://localhost:6900/docs
 
 services:
   openbb:
@@ -15,39 +17,46 @@ services:
     ports:
       - "6900:6900"
     volumes:
-      # 配置持久化（user_settings.json + 缓存）
       - openbb-config:/root/.openbb_platform
-      # 自定义 provider 挂载（后续写 akshare-provider 用）
       - ./packages/openbb-akshare-provider:/opt/openbb-akshare-provider
     environment:
-      # 免费源不需要 key（yfinance/sec/fred 等开箱即用）
-      # 付费源配 key 后启用（取消注释并填入）
       - FMP_API_KEY=${FMP_API_KEY:-}
       - FRED_API_KEY=${FRED_API_KEY:-}
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
       - TIINGO_API_KEY=${TIINGO_API_KEY:-}
       - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
-      # 可选：自定义 provider 路径
       - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6900/api/v1/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # 后续 T1.4 加 Next.js 前端 service
-  # web:
-  #   build: ./apps/web
-  #   container_name: tradeck-web
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - OPENBB_API_URL=http://openbb:6900
-  #   depends_on:
-  #     openbb:
-  #       condition: service_healthy
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: tradeck-web
+    ports:
+      - "3000:3000"
+    volumes:
+      # bind mount 源码，HMR 实时生效
+      - ./apps/web:/app
+      # node_modules 放容器内命名卷，不回写宿主机
+      - web-node-modules:/app/node_modules
+    environment:
+      - OPENBB_API_URL=http://openbb:6900
+      - NODE_ENV=development
+      # Next.js HMR 在 Docker/WSL 需要 polling
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      openbb:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   openbb-config:
+  web-node-modules:

@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* tradeck 深色终端风主题（复用 tradeck 旧项目配色） */
+:root {
+  --bg: #090b11;
+  --panel: #0e1117;
+  --panel-2: #141a24;
+  --border: #1c2230;
+  --border-strong: #2a3344;
+  --fg: #e6e9ef;
+  --fg-dim: #aab1bf;
+  --muted: #6b7280;
+  /* 红涨绿跌（A 股习惯） */
+  --up: #f0556b;
+  --down: #20cd8d;
+  --accent: #4d8dff;
+  --warn: #f0a050;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-dim: var(--fg-dim);
+  --color-muted: var(--muted);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-accent: var(--accent);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* 强制深色主题 */
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+}
+
+/* tabular numbers for financial data */
+.tab-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
