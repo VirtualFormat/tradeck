@@ -105,3 +105,80 @@ export async function getIndexHistorical(
   );
   return data.results;
 }
+
+// ─── 个股详情相关 ────────────────────────────────────────
+
+export interface EquityProfile {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
+  market_cap: number | null;
+  currency: string | null;
+  exchange: string | null;
+  description: string | null;
+  ceo: string | null;
+  employees: number | null;
+  website: string | null;
+}
+
+export interface FundamentalMetrics {
+  symbol: string;
+  market_cap: number | null;
+  pe_ratio: number | null;
+  forward_pe: number | null;
+  peg_ratio: number | null;
+  enterprise_to_ebitda: number | null;
+  earnings_growth: number | null;
+  revenue_growth: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  profit_margins: number | null;
+  return_on_equity: number | null;
+  debt_to_equity: number | null;
+  current_ratio: number | null;
+}
+
+export interface IncomeStatement {
+  fiscal_year: number | null;
+  total_revenue: number | null;
+  net_income: number | null;
+  gross_profit: number | null;
+  operating_income: number | null;
+  research_and_development: number | null;
+  ebitda: number | null;
+}
+
+export async function getEquityProfile(
+  symbol: string,
+  provider: string = "yfinance"
+): Promise<EquityProfile | null> {
+  const data = await fetchJSON<OpenBBResponse<EquityProfile>>(
+    `/equity/profile?provider=${provider}&symbol=${encodeURIComponent(symbol)}`
+  );
+  return data.results[0] ?? null;
+}
+
+export async function getFundamentalMetrics(
+  symbol: string,
+  provider: string = "yfinance"
+): Promise<FundamentalMetrics | null> {
+  const data = await fetchJSON<OpenBBResponse<FundamentalMetrics>>(
+    `/equity/fundamental/metrics?provider=${provider}&symbol=${encodeURIComponent(symbol)}`
+  );
+  return data.results[0] ?? null;
+}
+
+export async function getIncomeStatements(
+  symbol: string,
+  provider: string = "sec",
+  period: string = "annual",
+  limit: number = 3
+): Promise<IncomeStatement[]> {
+  const data = await fetchJSON<OpenBBResponse<IncomeStatement>>(
+    `/equity/fundamental/income?provider=${provider}&symbol=${encodeURIComponent(
+      symbol
+    )}&period=${period}&limit=${limit}`
+  );
+  return data.results;
+}

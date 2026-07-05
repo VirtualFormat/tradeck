@@ -1,7 +1,11 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
-/* tradeck 深色终端风主题（复用 tradeck 旧项目配色） */
+@custom-variant dark (&:is(.dark *));
+
+/* tradeck 深色终端风主题（强制深色，合并 shadcn 变量） */
 :root {
+  /* tradeck 配色 */
   --bg: #090b11;
   --panel: #0e1117;
   --panel-2: #141a24;
@@ -15,6 +19,25 @@
   --down: #20cd8d;
   --accent: #4d8dff;
   --warn: #f0a050;
+
+  /* shadcn 映射到 tradeck 配色（强制深色） */
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--panel-2);
+  --card-foreground: var(--fg);
+  --popover: var(--panel-2);
+  --popover-foreground: var(--fg);
+  --primary: var(--accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--panel);
+  --secondary-foreground: var(--fg-dim);
+  --muted-foreground: var(--muted);
+  --accent-foreground: var(--fg);
+  --destructive: var(--up);
+  --border: var(--border);
+  --input: var(--border-strong);
+  --ring: var(--accent);
+  --radius: 0.5rem;
 }
 
 @theme inline {
@@ -34,7 +57,6 @@
   --font-mono: var(--font-geist-mono);
 }
 
-/* 强制深色主题 */
 html {
   color-scheme: dark;
 }

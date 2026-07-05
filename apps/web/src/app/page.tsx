@@ -1,4 +1,5 @@
 import { MarketOverview } from "@/components/market-overview";
+import { StockSearch } from "@/components/stock-search";
 
 export default function Home() {
   return (
@@ -11,8 +12,11 @@ export default function Home() {
               Market Dashboard · Global
             </p>
           </div>
-          <div className="text-[10px] text-muted">
-            数据源：OpenBB Platform · yfinance
+          <div className="flex items-center gap-4">
+            <StockSearch />
+            <div className="text-[10px] text-muted">
+              OpenBB · yfinance
+            </div>
           </div>
         </header>
 
