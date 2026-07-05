@@ -35,6 +35,8 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
     ...init,
+    // Next.js 缓存：30 秒内复用相同请求（行情数据 30s 刷新够用）
+    next: { revalidate: 30 },
     headers: { Accept: "application/json", ...init?.headers },
   });
   if (!res.ok) {
