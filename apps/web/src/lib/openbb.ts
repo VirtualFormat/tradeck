@@ -184,3 +184,48 @@ export async function getIncomeStatements(
   );
   return data.results;
 }
+
+// ─── 新闻 ──────────────────────────────────────────────────
+
+export interface NewsArticle {
+  symbol: string;
+  title: string;
+  url: string;
+  text: string | null;
+  summary: string | null;
+  publisher: string | null;
+  date: string | null;
+  source: string | null;
+  symbols: string | null;
+}
+
+export async function getCompanyNews(
+  symbol: string,
+  limit: number = 20,
+  provider: string = "yfinance"
+): Promise<NewsArticle[]> {
+  const data = await fetchJSON<OpenBBResponse<NewsArticle>>(
+    `/news/company?provider=${provider}&symbol=${encodeURIComponent(
+      symbol
+    )}&limit=${limit}`
+  );
+  return data.results;
+}
+
+/** 多 symbol 并行拉新闻 + 合并按时间排序 */
+export async function getAggregatedNews(
+  symbols: string[],
+  perSymbol: number = 5
+): Promise<NewsArticle[]> {
+  const results = await Promise.all(
+    symbols.map((s) => getCompanyNews(s, perSymbol).catch(() => []))
+  );
+  const merged = results.flat();
+  // 按日期降序
+  merged.sort((a, b) => {
+    const da = a.date ? new Date(a.date).getTime() : 0;
+    const db = b.date ? new Date(b.date).getTime() : 0;
+    return db - da;
+  });
+  return merged;
+}

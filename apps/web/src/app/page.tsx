@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { MarketOverview } from "@/components/market-overview";
 import { StockSearch } from "@/components/stock-search";
 
@@ -13,6 +14,12 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-4">
+            <Link
+              href="/news"
+              className="text-xs text-muted hover:text-fg"
+            >
+              新闻流 →
+            </Link>
             <StockSearch />
             <div className="text-[10px] text-muted">
               OpenBB · yfinance
