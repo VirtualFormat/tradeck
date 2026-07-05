@@ -1,11 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // 允许容器内 dev server 被 host 访问
-  // Docker bind mount 下 Next.js 需要 polling
-  experimental: {
-    // Next.js 15+ 用 turbo，但 docker 下 polling 更稳
-  },
+  // Docker bind mount 下 Turbopack 文件监听不稳定，反复编译
+  // 用 webpack + polling watchOptions 解决
+  // 启动时加 --no-turbopack 关闭 Turbopack
+  outputFileTracingRoot: "/workspace/apps/web",
 };
 
 export default nextConfig;

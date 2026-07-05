@@ -40,7 +40,16 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     throw new Error(`OpenBB API ${path} failed: ${res.status}`);
   }
-  return res.json() as Promise<T>;
+  // 某些 OpenBB 端点返回 200 但空 body，res.json() 会抛 "Unexpected end of JSON input"
+  const text = await res.text();
+  if (!text) {
+    return { results: [] } as unknown as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { results: [] } as unknown as T;
+  }
 }
 
 interface OpenBBResponse<T> {
