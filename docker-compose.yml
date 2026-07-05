@@ -1,0 +1,51 @@
+# tradeck 项目 1 — 市场资讯看板
+# OpenBB 作为数据层 service，后续加 Next.js 前端 service
+#
+# 使用：
+#   cp .env.example .env  # 填 API key（可选，免费源不需要）
+#   docker compose up -d --build
+#   验证：curl http://localhost:6900/api/v1/health
+
+services:
+  openbb:
+    build: ./docker/openbb
+    container_name: tradeck-openbb
+    ports:
+      - "6900:6900"
+    volumes:
+      # 配置持久化（user_settings.json + 缓存）
+      - openbb-config:/root/.openbb_platform
+      # 自定义 provider 挂载（后续写 akshare-provider 用）
+      - ./docker/openbb/providers:/opt/openbb-providers
+    environment:
+      # 免费源不需要 key（yfinance/sec/fred 等开箱即用）
+      # 付费源配 key 后启用（取消注释并填入）
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - FRED_API_KEY=${FRED_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      # 可选：自定义 provider 路径
+      - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6900/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 后续 T1.4 加 Next.js 前端 service
+  # web:
+  #   build: ./apps/web
+  #   container_name: tradeck-web
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - OPENBB_API_URL=http://openbb:6900
+  #   depends_on:
+  #     openbb:
+  #       condition: service_healthy
+
+volumes:
+  openbb-config:
