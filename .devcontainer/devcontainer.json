@@ -1,17 +1,32 @@
+// devcontainer 配置 — tradeck 开发环境
+// 开发阶段所有依赖在容器内，不污染宿主机
+// VS Code Remote-Containers 自动识别此文件
 {
   "name": "tradeck-dev",
   "dockerComposeFile": "docker-compose.yml",
   "service": "dev",
   "workspaceFolder": "/workspace",
-  "features": {
-    "ghcr.io/devcontainers/features/git:1": {}
+  "shutdownAction": "stopCompose",
+  "extensions": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "ms-python.python",
+    "ms-python.black-formatter",
+    "bradlc.vscode-tailwindcss"
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "/usr/local/bin/python3",
+    "python.linting.enabled": true,
+    "python.formatting.provider": "black",
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "tailwindCSS.experimental.classRegex": [
+      "cva\\(([^)]*)\\)",
+      "cn\\(([^)]*)\\)"
+    ]
   },
-  "onCreateCommand": "corepack enable && corepack prepare pnpm@9.15.0 --activate",
-  "postCreateCommand": "pnpm install",
-  "forwardPorts": [5173, 8787],
-  "customizations": {
-    "vscode": {
-      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode", "bradlc.vscode-tailwindcss"]
-    }
-  }
+  "remoteEnv": {
+    "OPENBB_API_URL": "http://openbb:6900"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

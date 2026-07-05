@@ -1,31 +1,63 @@
-# Dev Container（serverless 版）：单个 node+pnpm+wrangler 开发容器。
-# 无 postgres/redis。源码 bind mount，node_modules 放命名卷（不回写 WSL）。
+# devcontainer 的 docker-compose — 开发环境
+# 与项目根的 docker-compose.yml（prod）独立
+# postCreateCommand 和 workspaceFolder 在 devcontainer.json 里
 services:
   dev:
-    image: node:24-bookworm-slim
-    working_dir: /workspace
-    command: sleep infinity
-    volumes:
-      - ..:/workspace:cached
-      # node_modules 及各 package 的放命名卷，避免回写 WSL、避免 IO 慢
-      - tradeck_node_modules:/workspace/node_modules
-      - tradeck_shared_nm:/workspace/packages/shared/node_modules
-      - tradeck_api_nm:/workspace/packages/api/node_modules
-      - tradeck_web_nm:/workspace/packages/web/node_modules
-      - tradeck_pnpm_store:/root/.local/share/pnpm/store
+    image: mcr.microsoft.com/devcontainers/python:3.12
+    container_name: tradeck-dev
     ports:
-      - '5173:5173' # vite
-      - '8787:8787' # wrangler dev
+      # 前端 dev server（宿主机浏览器访问）
+      - "3000:3000"
+    volumes:
+      # 项目源码 bind mount（实时编辑）
+      - ..:/workspace:cached
+      # Node 模块隔离（不回写宿主机）
+      - dev-node-modules:/workspace/apps/web/node_modules
+      # Python venv 隔离
+      - dev-venv:/workspace/.venv
+      # OpenBB user settings 隔离
+      - dev-openbb-config:/root/.openbb_platform
+      # Docker socket（devcontainer 里跑 docker compose）
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: sleep infinity
     environment:
-      - PNPM_HOME=/root/.local/share/pnpm
-      - PATH=/root/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+      - OPENBB_API_URL=http://openbb:6900
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - dev-net
+    depends_on:
+      openbb:
+        condition: service_healthy
+
+  # OpenBB Platform 作为依赖服务（dev 环境用）
+  openbb:
+    build:
+      context: ..
+      dockerfile: docker/openbb/Dockerfile
+    container_name: tradeck-dev-openbb
+    ports:
+      - "6900:6900"
+    volumes:
+      - dev-openbb-config:/root/.openbb_platform
+    environment:
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - FRED_API_KEY=${FRED_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - dev-net
 
 volumes:
-  tradeck_node_modules:
-  tradeck_shared_nm:
-  tradeck_api_nm:
-  tradeck_web_nm:
-  tradeck_pnpm_store:
+  dev-node-modules:
+  dev-venv:
+  dev-openbb-config:
+
+networks:
+  dev-net:
+    driver: bridge

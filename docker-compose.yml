@@ -41,21 +41,14 @@ services:
     container_name: tradeck-web
     ports:
       - "3000:3000"
-    volumes:
-      # bind mount 源码，HMR 实时生效
-      - ./apps/web:/app
-      # node_modules 放容器内命名卷，不回写宿主机
-      - web-node-modules:/app/node_modules
     environment:
       - OPENBB_API_URL=http://openbb:6900
-      - NODE_ENV=development
-      # Next.js HMR 在 Docker/WSL 需要 polling
-      - WATCHPACK_POLLING=true
-      - CHOKIDAR_USEPOLLING=true
+      - NODE_ENV=production
     depends_on:
       openbb:
         condition: service_healthy
     restart: unless-stopped
+    command: ["pnpm", "start", "-H", "0.0.0.0"]
 
 volumes:
   openbb-config:
