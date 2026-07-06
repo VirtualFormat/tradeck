@@ -194,46 +194,37 @@ export default async function StockDetailPage({
     lastPrice && prevClose ? (lastPrice - prevClose) / prevClose : null;
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        {/* 返回链接 */}
-        <a
-          href="/"
-          className="mb-4 inline-block text-xs text-muted hover:text-fg"
-        >
-          ← 返回首页
-        </a>
-
-        {/* 标题区 */}
-        <header className="mb-6 flex items-start justify-between border-b border-border pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-semibold">{displayName}</h1>
-              <Badge variant="secondary">{symbol}</Badge>
-            </div>
-            <div className="mt-1 flex items-center gap-3 text-xs text-muted">
-              {profile?.exchange && <span>{profile.exchange}</span>}
-              {profile?.currency && <span>{profile.currency}</span>}
-              {profile?.sector && <span>{profile.sector}</span>}
-            </div>
+    <>
+      {/* 标题区 */}
+      <header className="mb-6 flex items-start justify-between border-b border-border pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold">{displayName}</h1>
+            <Badge variant="secondary">{symbol}</Badge>
           </div>
-          {lastPrice && (
-            <div className="text-right">
-              <div className="tab-nums text-3xl font-bold">
-                {fmtPrice(lastPrice)}
-              </div>
-              {changePct && (
-                <div
-                  className={`tab-nums text-sm ${
-                    changePct >= 0 ? "text-up" : "text-down"
-                  }`}
-                >
-                  {fmtPct(changePct)}
-                </div>
-              )}
+          <div className="mt-1 flex items-center gap-3 text-xs text-muted">
+            {profile?.exchange && <span>{profile.exchange}</span>}
+            {profile?.currency && <span>{profile.currency}</span>}
+            {profile?.sector && <span>{profile.sector}</span>}
+          </div>
+        </div>
+        {lastPrice && (
+          <div className="text-right">
+            <div className="tab-nums text-3xl font-bold">
+              {fmtPrice(lastPrice)}
             </div>
-          )}
-        </header>
+            {changePct && (
+              <div
+                className={`tab-nums text-sm ${
+                  changePct >= 0 ? "text-up" : "text-down"
+                }`}
+              >
+                {fmtPct(changePct)}
+              </div>
+            )}
+          </div>
+        )}
+      </header>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* K 线图（占 2 列） */}
@@ -386,7 +377,6 @@ export default async function StockDetailPage({
             </CardContent>
           </Card>
         )}
-      </div>
-    </main>
+    </>
   );
 }

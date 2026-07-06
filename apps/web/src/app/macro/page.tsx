@@ -195,14 +195,7 @@ export default async function MacroPage() {
   const latestSOFR = sofr.length > 0 ? sofr[sofr.length - 1] : null;
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <Link
-          href="/"
-          className="mb-4 inline-block text-xs text-muted hover:text-fg"
-        >
-          ← 返回首页
-        </Link>
+    <>
 
         <header className="mb-6 border-b border-border pb-3">
           <h1 className="text-lg font-semibold">宏观经济数据</h1>
@@ -267,7 +260,6 @@ export default async function MacroPage() {
             formatValue={fmtPct}
           />
         </div>
-      </div>
-    </main>
+    </>
   );
 }

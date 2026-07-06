@@ -94,15 +94,8 @@ export default async function NewsPage({
   }
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
-      <div className="mx-auto max-w-3xl px-4 py-6">
-        {/* 返回 + 标题 */}
-        <Link
-          href="/"
-          className="mb-4 inline-block text-xs text-muted hover:text-fg"
-        >
-          ← 返回首页
-        </Link>
+    <>
+      <div className="mx-auto max-w-3xl">
         <header className="mb-6 border-b border-border pb-3">
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
@@ -154,6 +147,6 @@ export default async function NewsPage({
           </CardContent>
         </Card>
       </div>
-    </main>
+    </>
   );
 }

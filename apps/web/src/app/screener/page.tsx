@@ -139,12 +139,7 @@ export default function ScreenerPage() {
   }, [watchlist]);
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <Link href="/" className="mb-4 inline-block text-xs text-muted hover:text-fg">
-          ← 返回首页
-        </Link>
-
+    <>
         <header className="mb-6 border-b border-border pb-3">
           <h1 className="text-lg font-semibold">自选股 + 筛选器</h1>
           <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
@@ -338,7 +333,6 @@ export default function ScreenerPage() {
             </CardContent>
           </Card>
         </div>
-      </div>
-    </main>
+    </>
   );
 }

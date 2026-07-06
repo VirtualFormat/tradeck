@@ -1,44 +1,67 @@
 import Link from "next/link";
 import { MarketOverview } from "@/components/market-overview";
 import { StockSearch } from "@/components/stock-search";
+import { PageHeader } from "@/components/page-header";
+import { Flame, Newspaper, BarChart3, Star } from "lucide-react";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-bg text-fg">
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <header className="mb-6 flex items-center justify-between border-b border-border pb-3">
-          <div>
-            <h1 className="text-lg font-semibold tracking-wide">tradeck</h1>
-            <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
-              Market Dashboard · Global
-            </p>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/news" className="text-xs text-muted hover:text-fg">
-              新闻流 →
-            </Link>
-            <Link href="/macro" className="text-xs text-muted hover:text-fg">
-              宏观 →
-            </Link>
-            <Link href="/screener" className="text-xs text-muted hover:text-fg">
-              筛选器 →
-            </Link>
-            <Link href="/heatmap" className="text-xs text-muted hover:text-fg">
-              热力图 →
-            </Link>
-            <StockSearch />
-            <div className="text-[10px] text-muted">
-              OpenBB · yfinance
-            </div>
-          </div>
-        </header>
+    <>
+      <PageHeader
+        title="看板"
+        subtitle="Market Dashboard · Global"
+        right={<StockSearch />}
+      />
 
-        <section className="mb-6">
-          <h2 className="mb-3 text-sm font-medium text-fg-dim">大盘指数</h2>
-          {/* @ts-expect-error Server Component */}
-          <MarketOverview />
-        </section>
+      {/* 快捷入口卡片 */}
+      <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Link
+          href="/heatmap"
+          className="flex items-center gap-2 rounded-lg border border-border bg-panel-2 px-3 py-2.5 transition-colors hover:border-accent/50"
+        >
+          <Flame className="h-4 w-4 text-accent" />
+          <div>
+            <div className="text-xs font-medium">热力图</div>
+            <div className="text-[10px] text-muted">涨跌全景</div>
+          </div>
+        </Link>
+        <Link
+          href="/news"
+          className="flex items-center gap-2 rounded-lg border border-border bg-panel-2 px-3 py-2.5 transition-colors hover:border-accent/50"
+        >
+          <Newspaper className="h-4 w-4 text-accent" />
+          <div>
+            <div className="text-xs font-medium">新闻流</div>
+            <div className="text-[10px] text-muted">实时资讯</div>
+          </div>
+        </Link>
+        <Link
+          href="/macro"
+          className="flex items-center gap-2 rounded-lg border border-border bg-panel-2 px-3 py-2.5 transition-colors hover:border-accent/50"
+        >
+          <BarChart3 className="h-4 w-4 text-accent" />
+          <div>
+            <div className="text-xs font-medium">宏观数据</div>
+            <div className="text-[10px] text-muted">CPI/利率</div>
+          </div>
+        </Link>
+        <Link
+          href="/screener"
+          className="flex items-center gap-2 rounded-lg border border-border bg-panel-2 px-3 py-2.5 transition-colors hover:border-accent/50"
+        >
+          <Star className="h-4 w-4 text-accent" />
+          <div>
+            <div className="text-xs font-medium">自选筛选</div>
+            <div className="text-[10px] text-muted">涨跌榜</div>
+          </div>
+        </Link>
       </div>
-    </main>
+
+      <section>
+        <h2 className="mb-3 text-sm font-medium text-fg-dim">大盘指数</h2>
+        {/* @ts-expect-error Server Component */}
+        <MarketOverview />
+      </section>
+    </>
   );
 }
