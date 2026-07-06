@@ -20,6 +20,9 @@ export default function Home() {
             <Link href="/macro" className="text-xs text-muted hover:text-fg">
               宏观 →
             </Link>
+            <Link href="/screener" className="text-xs text-muted hover:text-fg">
+              筛选器 →
+            </Link>
             <StockSearch />
             <div className="text-[10px] text-muted">
               OpenBB · yfinance

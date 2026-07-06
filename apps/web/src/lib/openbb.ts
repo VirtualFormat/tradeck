@@ -5,6 +5,8 @@
 const OPENBB_API_URL =
   process.env.OPENBB_API_URL ?? "http://localhost:6900";
 
+export { OPENBB_API_URL };
+
 const BASE = `${OPENBB_API_URL}/api/v1`;
 
 export interface EquityQuote {
@@ -31,7 +33,7 @@ export interface HistoricalPrice {
   volume: number;
 }
 
-async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
     ...init,
@@ -54,7 +56,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
-interface OpenBBResponse<T> {
+export interface OpenBBResponse<T> {
   results: T[];
   warnings?: { message: string }[];
 }
