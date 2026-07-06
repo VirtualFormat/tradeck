@@ -2,13 +2,12 @@
  * 筛选器 API 路由
  * GET /api/screener?type=gainers|losers|active|undervalued_large_caps|undervalued_growth
  * 代理 OpenBB discovery 端点
- * 客户端调用，用 no-store 避免缓存（确保切换类型立即刷新）
+ * 加 60 秒内存缓存避免重复调 OpenBB（yfinance discovery 慢，10-30s/次）
  */
 import { NextRequest, NextResponse } from "next/server";
-import {
-  OPENBB_API_URL,
-  type OpenBBResponse,
-} from "@/lib/openbb";
+
+const OPENBB_API_URL =
+  process.env.OPENBB_API_URL ?? "http://localhost:6900";
 
 interface ScreenerItem {
   symbol: string;
@@ -30,6 +29,10 @@ const VALID_TYPES = [
   "aggressive_small_caps",
 ];
 
+// 内存缓存（60 秒，discovery 数据不需要实时）
+const CACHE_TTL = 60_000;
+const cache = new Map<string, { data: ScreenerItem[]; ts: number }>();
+
 export async function GET(request: NextRequest) {
   const type = request.nextUrl.searchParams.get("type") ?? "gainers";
 
@@ -38,6 +41,12 @@ export async function GET(request: NextRequest) {
       { error: `Invalid type: ${type}` },
       { status: 400 }
     );
+  }
+
+  // 检查缓存
+  const cached = cache.get(type);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return NextResponse.json(cached.data);
   }
 
   try {
@@ -53,8 +62,13 @@ export async function GET(request: NextRequest) {
     }
     const text = await res.text();
     if (!text) return NextResponse.json([]);
-    const data: OpenBBResponse<ScreenerItem> = JSON.parse(text);
-    return NextResponse.json(data.results ?? []);
+    const data = JSON.parse(text);
+    const results: ScreenerItem[] = data.results ?? [];
+
+    // 写缓存
+    cache.set(type, { data: results, ts: Date.now() });
+
+    return NextResponse.json(results);
   } catch (err) {
     console.error(`Screener ${type} failed:`, err);
     return NextResponse.json([]);
