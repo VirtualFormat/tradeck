@@ -9,6 +9,29 @@ export { OPENBB_API_URL };
 
 const BASE = `${OPENBB_API_URL}/api/v1`;
 
+/**
+ * 按市场自动选 provider（基于测速结果）
+ * - A 股（.SS/.SZ/.BJ）：akshare（350ms，比 yfinance 快 7 倍）
+ * - 美股/港股/其他：yfinance
+ */
+function pickProvider(symbol: string): string {
+  const sym = symbol.toUpperCase();
+  if (sym.endsWith(".SS") || sym.endsWith(".SZ") || sym.endsWith(".BJ")) {
+    return "akshare";
+  }
+  return "yfinance";
+}
+
+/** 按数据类型的缓存时间（秒） */
+const CACHE = {
+  quote: 30,        // 行情：30s
+  historical: 300,  // K 线：5 分钟
+  discovery: 300,   // 涨跌榜：5 分钟
+  profile: 3600,    // 公司信息：1 小时
+  fundamental: 3600, // 财报：1 小时
+  macro: 3600,      // 宏观：1 小时
+} as const;
+
 export interface EquityQuote {
   symbol: string;
   name: string | null;
@@ -33,12 +56,15 @@ export interface HistoricalPrice {
   volume: number;
 }
 
-export async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(
+  path: string,
+  init?: RequestInit,
+  revalidate: number = CACHE.quote
+): Promise<T> {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
     ...init,
-    // Next.js 缓存：30 秒内复用相同请求（行情数据 30s 刷新够用）
-    next: { revalidate: 30 },
+    next: { revalidate },
     headers: { Accept: "application/json", ...init?.headers },
   });
   if (!res.ok) {
@@ -63,35 +89,58 @@ export interface OpenBBResponse<T> {
 
 export async function getEquityQuote(
   symbol: string,
-  provider: string = "yfinance"
+  provider?: string
 ): Promise<EquityQuote | null> {
+  const p = provider ?? pickProvider(symbol);
   const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
-    `/equity/price/quote?provider=${provider}&symbol=${encodeURIComponent(symbol)}`
+    `/equity/price/quote?provider=${p}&symbol=${encodeURIComponent(symbol)}`,
+    undefined,
+    CACHE.quote
   );
   return data.results[0] ?? null;
 }
 
 export async function getEquityQuotes(
   symbols: string[],
-  provider: string = "yfinance"
+  provider?: string
 ): Promise<EquityQuote[]> {
-  const symbolStr = symbols.join(",");
-  const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
-    `/equity/price/quote?provider=${provider}&symbol=${encodeURIComponent(symbolStr)}`
-  );
-  return data.results;
+  // 多 symbol 时按市场分组（akshare 只支持 A 股）
+  const akshareSyms = symbols.filter((s) => pickProvider(s) === "akshare");
+  const yfinanceSyms = symbols.filter((s) => pickProvider(s) === "yfinance");
+  const results: EquityQuote[] = [];
+
+  if (akshareSyms.length > 0) {
+    const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
+      `/equity/price/quote?provider=akshare&symbol=${encodeURIComponent(akshareSyms.join(","))}`,
+      undefined,
+      CACHE.quote
+    );
+    results.push(...data.results);
+  }
+  if (yfinanceSyms.length > 0) {
+    const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
+      `/equity/price/quote?provider=yfinance&symbol=${encodeURIComponent(yfinanceSyms.join(","))}`,
+      undefined,
+      CACHE.quote
+    );
+    results.push(...data.results);
+  }
+  return results;
 }
 
 export async function getEquityHistorical(
   symbol: string,
   startDate: string,
   endDate: string,
-  provider: string = "yfinance"
+  provider?: string
 ): Promise<HistoricalPrice[]> {
+  const p = provider ?? pickProvider(symbol);
   const data = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
-    `/equity/price/historical?provider=${provider}&symbol=${encodeURIComponent(
+    `/equity/price/historical?provider=${p}&symbol=${encodeURIComponent(
       symbol
-    )}&start_date=${startDate}&end_date=${endDate}`
+    )}&start_date=${startDate}&end_date=${endDate}`,
+    undefined,
+    CACHE.historical
   );
   return data.results;
 }
@@ -105,7 +154,9 @@ export async function getIndexHistorical(
   const data = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
     `/index/price/historical?provider=${provider}&symbol=${encodeURIComponent(
       symbol
-    )}&start_date=${startDate}&end_date=${endDate}`
+    )}&start_date=${startDate}&end_date=${endDate}`,
+    undefined,
+    CACHE.historical
   );
   return data.results;
 }
@@ -158,7 +209,9 @@ export async function getEquityProfile(
   provider: string = "yfinance"
 ): Promise<EquityProfile | null> {
   const data = await fetchJSON<OpenBBResponse<EquityProfile>>(
-    `/equity/profile?provider=${provider}&symbol=${encodeURIComponent(symbol)}`
+    `/equity/profile?provider=${provider}&symbol=${encodeURIComponent(symbol)}`,
+    undefined,
+    CACHE.profile
   );
   return data.results[0] ?? null;
 }
@@ -168,7 +221,9 @@ export async function getFundamentalMetrics(
   provider: string = "yfinance"
 ): Promise<FundamentalMetrics | null> {
   const data = await fetchJSON<OpenBBResponse<FundamentalMetrics>>(
-    `/equity/fundamental/metrics?provider=${provider}&symbol=${encodeURIComponent(symbol)}`
+    `/equity/fundamental/metrics?provider=${provider}&symbol=${encodeURIComponent(symbol)}`,
+    undefined,
+    CACHE.fundamental
   );
   return data.results[0] ?? null;
 }
@@ -182,7 +237,9 @@ export async function getIncomeStatements(
   const data = await fetchJSON<OpenBBResponse<IncomeStatement>>(
     `/equity/fundamental/income?provider=${provider}&symbol=${encodeURIComponent(
       symbol
-    )}&period=${period}&limit=${limit}`
+    )}&period=${period}&limit=${limit}`,
+    undefined,
+    CACHE.fundamental
   );
   return data.results;
 }
@@ -209,7 +266,9 @@ export async function getCompanyNews(
   const data = await fetchJSON<OpenBBResponse<NewsArticle>>(
     `/news/company?provider=${provider}&symbol=${encodeURIComponent(
       symbol
-    )}&limit=${limit}`
+    )}&limit=${limit}`,
+    undefined,
+    CACHE.historical // 5 分钟
   );
   return data.results;
 }
@@ -250,7 +309,9 @@ export async function getCPI(
   limit: number = 12
 ): Promise<MacroSeries[]> {
   const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/cpi?provider=${provider}&limit=${limit}`
+    `/economy/cpi?provider=${provider}&limit=${limit}`,
+    undefined,
+    CACHE.macro
   );
   return data.results;
 }
@@ -260,7 +321,9 @@ export async function getUnemployment(
   limit: number = 12
 ): Promise<MacroSeries[]> {
   const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/unemployment?provider=${provider}&limit=${limit}`
+    `/economy/unemployment?provider=${provider}&limit=${limit}`,
+    undefined,
+    CACHE.macro
   );
   return data.results;
 }
@@ -270,7 +333,9 @@ export async function getGDPNominal(
   limit: number = 20
 ): Promise<MacroSeries[]> {
   const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/gdp/nominal?provider=${provider}&limit=${limit}`
+    `/economy/gdp/nominal?provider=${provider}&limit=${limit}`,
+    undefined,
+    CACHE.macro
   );
   return data.results;
 }
@@ -280,7 +345,9 @@ export async function getEFFR(
   limit: number = 12
 ): Promise<RateSeries[]> {
   const data = await fetchJSON<OpenBBResponse<RateSeries>>(
-    `/fixedincome/rate/effr?provider=${provider}&limit=${limit}`
+    `/fixedincome/rate/effr?provider=${provider}&limit=${limit}`,
+    undefined,
+    CACHE.macro
   );
   return data.results.map((r) => ({ date: r.date, rate: r.rate }));
 }
@@ -290,7 +357,9 @@ export async function getSOFR(
   limit: number = 12
 ): Promise<RateSeries[]> {
   const data = await fetchJSON<OpenBBResponse<RateSeries>>(
-    `/fixedincome/rate/sofr?provider=${provider}&limit=${limit}`
+    `/fixedincome/rate/sofr?provider=${provider}&limit=${limit}`,
+    undefined,
+    CACHE.macro
   );
   return data.results.map((r) => ({ date: r.date, rate: r.rate }));
 }
