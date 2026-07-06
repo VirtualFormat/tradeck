@@ -131,7 +131,8 @@ export default function ScreenerPage() {
       setWatchlistData([]);
       return;
     }
-    fetch(`/api/quotes?symbols=${watchlist.join(",")}`)
+    // 加时间戳避免浏览器缓存
+    fetch(`/api/quotes?symbols=${watchlist.join(",")}&_t=${Date.now()}`)
       .then((r) => r.json())
       .then((data: ScreenerItem[]) => setWatchlistData(data))
       .catch(() => setWatchlistData([]));

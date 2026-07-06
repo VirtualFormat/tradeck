@@ -2,11 +2,11 @@
  * 筛选器 API 路由
  * GET /api/screener?type=gainers|losers|active|undervalued_large_caps|undervalued_growth
  * 代理 OpenBB discovery 端点
+ * 客户端调用，用 no-store 避免缓存（确保切换类型立即刷新）
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
   OPENBB_API_URL,
-  fetchJSON,
   type OpenBBResponse,
 } from "@/lib/openbb";
 
@@ -41,9 +41,19 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const data = await fetchJSON<OpenBBResponse<ScreenerItem>>(
-      `/equity/discovery/${type}?provider=yfinance`
+    const res = await fetch(
+      `${OPENBB_API_URL}/api/v1/equity/discovery/${type}?provider=yfinance`,
+      {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }
     );
+    if (!res.ok) {
+      return NextResponse.json([]);
+    }
+    const text = await res.text();
+    if (!text) return NextResponse.json([]);
+    const data: OpenBBResponse<ScreenerItem> = JSON.parse(text);
     return NextResponse.json(data.results ?? []);
   } catch (err) {
     console.error(`Screener ${type} failed:`, err);
