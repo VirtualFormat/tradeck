@@ -23,6 +23,9 @@ export default function Home() {
             <Link href="/screener" className="text-xs text-muted hover:text-fg">
               筛选器 →
             </Link>
+            <Link href="/heatmap" className="text-xs text-muted hover:text-fg">
+              热力图 →
+            </Link>
             <StockSearch />
             <div className="text-[10px] text-muted">
               OpenBB · yfinance
