@@ -229,3 +229,66 @@ export async function getAggregatedNews(
   });
   return merged;
 }
+
+// ─── 宏观数据 ──────────────────────────────────────────────
+
+export interface MacroSeries {
+  date: string;
+  value: number;
+  country?: string;
+}
+
+export interface RateSeries {
+  date: string;
+  rate: number;
+}
+
+export async function getCPI(
+  provider: string = "oecd",
+  limit: number = 12
+): Promise<MacroSeries[]> {
+  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
+    `/economy/cpi?provider=${provider}&limit=${limit}`
+  );
+  return data.results;
+}
+
+export async function getUnemployment(
+  provider: string = "oecd",
+  limit: number = 12
+): Promise<MacroSeries[]> {
+  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
+    `/economy/unemployment?provider=${provider}&limit=${limit}`
+  );
+  return data.results;
+}
+
+export async function getGDPNominal(
+  provider: string = "oecd",
+  limit: number = 20
+): Promise<MacroSeries[]> {
+  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
+    `/economy/gdp/nominal?provider=${provider}&limit=${limit}`
+  );
+  return data.results;
+}
+
+export async function getEFFR(
+  provider: string = "federal_reserve",
+  limit: number = 12
+): Promise<RateSeries[]> {
+  const data = await fetchJSON<OpenBBResponse<RateSeries>>(
+    `/fixedincome/rate/effr?provider=${provider}&limit=${limit}`
+  );
+  return data.results.map((r) => ({ date: r.date, rate: r.rate }));
+}
+
+export async function getSOFR(
+  provider: string = "federal_reserve",
+  limit: number = 12
+): Promise<RateSeries[]> {
+  const data = await fetchJSON<OpenBBResponse<RateSeries>>(
+    `/fixedincome/rate/sofr?provider=${provider}&limit=${limit}`
+  );
+  return data.results.map((r) => ({ date: r.date, rate: r.rate }));
+}

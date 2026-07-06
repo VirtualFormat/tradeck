@@ -14,11 +14,11 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-4">
-            <Link
-              href="/news"
-              className="text-xs text-muted hover:text-fg"
-            >
+            <Link href="/news" className="text-xs text-muted hover:text-fg">
               新闻流 →
+            </Link>
+            <Link href="/macro" className="text-xs text-muted hover:text-fg">
+              宏观 →
             </Link>
             <StockSearch />
             <div className="text-[10px] text-muted">
