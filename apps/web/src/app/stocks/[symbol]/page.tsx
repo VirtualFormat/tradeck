@@ -6,10 +6,12 @@
 import { notFound } from "next/navigation";
 import {
   getEquityProfile,
+  getEquityQuote,
   getFundamentalMetrics,
   getIncomeStatements,
   getEquityHistorical,
   type EquityProfile,
+  type EquityQuote,
   type FundamentalMetrics,
   type IncomeStatement,
   type HistoricalPrice,
@@ -171,11 +173,16 @@ export default async function StockDetailPage({
   const { symbol } = await params;
   if (!symbol) notFound();
 
+  // A 股判断（profile/metrics 不支持 akshare，yfinance 调 A 股太慢 15s+）
+  const isAShare = /\.(SS|SZ|BJ)$/.test(symbol.toUpperCase());
+
   // 并行拉取所有数据
+  // A 股：只调 akshare historical（140ms 稳定），跳过 profile/metrics（yfinance 太慢）
+  // 美股：调 yfinance profile + metrics + sec income + yfinance historical
   const [profile, metrics, income, historical] = await Promise.all([
-    getEquityProfile(symbol).catch(() => null),
-    getFundamentalMetrics(symbol).catch(() => null),
-    getIncomeStatements(symbol).catch(() => []),
+    isAShare ? Promise.resolve(null) : getEquityProfile(symbol).catch(() => null),
+    isAShare ? Promise.resolve(null) : getFundamentalMetrics(symbol).catch(() => null),
+    isAShare ? Promise.resolve([]) : getIncomeStatements(symbol).catch(() => []),
     getEquityHistorical(
       symbol,
       new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)

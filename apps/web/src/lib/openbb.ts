@@ -135,6 +135,9 @@ export async function getEquityHistorical(
   provider?: string
 ): Promise<HistoricalPrice[]> {
   const p = provider ?? pickProvider(symbol);
+  // 先试首选 provider，空结果时降级到另一个
+  const fallback = p === "akshare" ? "yfinance" : "akshare";
+
   const data = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
     `/equity/price/historical?provider=${p}&symbol=${encodeURIComponent(
       symbol
@@ -142,7 +145,17 @@ export async function getEquityHistorical(
     undefined,
     CACHE.historical
   );
-  return data.results;
+  if (data.results.length > 0) return data.results;
+
+  // 降级
+  const fallbackData = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
+    `/equity/price/historical?provider=${fallback}&symbol=${encodeURIComponent(
+      symbol
+    )}&start_date=${startDate}&end_date=${endDate}`,
+    undefined,
+    CACHE.historical
+  );
+  return fallbackData.results;
 }
 
 export async function getIndexHistorical(
