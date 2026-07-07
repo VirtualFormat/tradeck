@@ -56,29 +56,66 @@ export interface HistoricalPrice {
   volume: number;
 }
 
+// 手动内存缓存（避免 Next.js Server Component fetch 缓存机制限制超时）
+const memCache = new Map<string, { data: unknown; ts: number }>();
+
 export async function fetchJSON<T>(
   path: string,
   init?: RequestInit,
   revalidate: number = CACHE.quote
 ): Promise<T> {
   const url = `${BASE}${path}`;
-  const res = await fetch(url, {
-    ...init,
-    next: { revalidate },
-    headers: { Accept: "application/json", ...init?.headers },
-  });
-  if (!res.ok) {
-    throw new Error(`OpenBB API ${path} failed: ${res.status}`);
+
+  // 检查内存缓存
+  const cached = memCache.get(url);
+  if (cached && Date.now() - cached.ts < revalidate * 1000) {
+    return cached.data as T;
   }
-  // 某些 OpenBB 端点返回 200 但空 body，res.json() 会抛 "Unexpected end of JSON input"
-  const text = await res.text();
-  if (!text) {
-    return { results: [] } as unknown as T;
-  }
+
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    return { results: [] } as unknown as T;
+    // Promise.race 超时（Next.js Server Component 的 fetch 不支持 AbortController）
+    const res = (await Promise.race([
+      fetch(url, {
+        ...init,
+        cache: "no-store", // 不用 Next.js 缓存，自己控制
+        headers: { Accept: "application/json", ...init?.headers },
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+    ])) as Response | null;
+
+    if (!res) {
+      console.warn(`OpenBB ${path} timeout (5s), returning empty`);
+      // 超时返回空，但如果有旧缓存就用旧的
+      if (cached) return cached.data as T;
+      return { results: [] } as unknown as T;
+    }
+
+    if (!res.ok) {
+      throw new Error(`OpenBB API ${path} failed: ${res.status}`);
+    }
+    const text = await res.text();
+    let data: T;
+    if (!text) {
+      data = { results: [] } as unknown as T;
+    } else {
+      try {
+        data = JSON.parse(text) as T;
+      } catch {
+        data = { results: [] } as unknown as T;
+      }
+    }
+
+    // 写缓存
+    memCache.set(url, { data, ts: Date.now() });
+
+    return data;
+  } catch (err) {
+    if (err instanceof Error && (err.message.includes("ECONNRESET") || err.message.includes("fetch failed"))) {
+      console.warn(`OpenBB ${path} reset, returning empty`);
+      if (cached) return cached.data as T;
+      return { results: [] } as unknown as T;
+    }
+    throw err;
   }
 }
 

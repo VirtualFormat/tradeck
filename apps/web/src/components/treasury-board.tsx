@@ -16,10 +16,17 @@ interface TreasuryRate {
 async function fetchTreasuryRates(): Promise<TreasuryRate | null> {
   const OPENBB_API_URL = process.env.OPENBB_API_URL ?? "http://localhost:6900";
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
     const res = await fetch(
       `${OPENBB_API_URL}/api/v1/economy/treasury_rates?provider=federal_reserve`,
-      { next: { revalidate: 3600 }, headers: { Accept: "application/json" } }
+      {
+        signal: controller.signal,
+        next: { revalidate: 3600 },
+        headers: { Accept: "application/json" },
+      }
     );
+    clearTimeout(timeout);
     if (!res.ok) return null;
     const text = await res.text();
     if (!text) return null;

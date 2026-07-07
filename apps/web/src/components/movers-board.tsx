@@ -21,10 +21,17 @@ async function fetchScreener(
   type: "gainers" | "losers" | "active"
 ): Promise<ScreenerItem[]> {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
     const res = await fetch(
       `${OPENBB_API_URL}/api/v1/equity/discovery/${type}?provider=yfinance`,
-      { next: { revalidate: 300 }, headers: { Accept: "application/json" } }
+      {
+        signal: controller.signal,
+        next: { revalidate: 300 },
+        headers: { Accept: "application/json" },
+      }
     );
+    clearTimeout(timeout);
     if (!res.ok) return [];
     const text = await res.text();
     if (!text) return [];
