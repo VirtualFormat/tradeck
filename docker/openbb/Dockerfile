@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 安装 OpenBB（含 Platform API + 30+ 官方 Provider）
 # 预装免费 Provider：yfinance/sec/fred/federal_reserve/bls/cftc/congress_gov/ecb/eia 等
 # 付费 Provider（fmp/intrinio/tiingo 等）装了但不配 key 不启用
-RUN pip install --no-cache-dir openbb
+RUN pip install --no-cache-dir openbb && \
+    pip uninstall -y openbb-cftc 2>/dev/null || true
 
 # 安装 openbb-akshare-provider（本地包，A 股深度数据）
 COPY packages/openbb-akshare-provider /opt/openbb-akshare-provider

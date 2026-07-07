@@ -1,16 +1,17 @@
 /**
  * 首页看板（借鉴 TickFlow Dashboard）
- * - 顶部：PageHeader + 搜索
- * - 大盘指数区（全宽）
+ * - 大盘指数（全宽）
  * - 主+侧布局：
- *   - 主：涨跌幅榜 + 热门资讯
- *   - 侧：宏观速览
+ *   - 主：涨幅榜/跌幅榜/活跃榜 Top 10 + 热门资讯
+ *   - 侧：宏观速览 + 大宗商品 + 国债收益率
  */
 import { MarketOverview } from "@/components/market-overview";
 import { StockSearch } from "@/components/stock-search";
 import { PageHeader } from "@/components/page-header";
 import { MoversBoard, TopNews } from "@/components/movers-board";
 import { MacroSnapshot } from "@/components/macro-snapshot";
+import { CommoditiesBoard } from "@/components/commodities-board";
+import { TreasuryBoard } from "@/components/treasury-board";
 
 export default function Home() {
   return (
@@ -28,11 +29,11 @@ export default function Home() {
         <MarketOverview />
       </section>
 
-      {/* 主+侧布局（借鉴 TickFlow grid-cols-[1fr_20rem]） */}
+      {/* 主+侧布局 */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_18rem]">
         {/* 主区 */}
         <div className="space-y-6">
-          {/* 涨跌幅榜 */}
+          {/* 涨跌幅榜 + 活跃榜 */}
           {/* @ts-expect-error Server Component */}
           <MoversBoard />
 
@@ -46,6 +47,14 @@ export default function Home() {
           {/* 宏观速览 */}
           {/* @ts-expect-error Server Component */}
           <MacroSnapshot />
+
+          {/* 大宗商品 */}
+          {/* @ts-expect-error Server Component */}
+          <CommoditiesBoard />
+
+          {/* 国债收益率 */}
+          {/* @ts-expect-error Server Component */}
+          <TreasuryBoard />
         </div>
       </div>
     </>
