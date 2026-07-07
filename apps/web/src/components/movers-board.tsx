@@ -1,9 +1,11 @@
 /**
  * 涨跌幅榜 + 活跃榜组件
  * 数据：OpenBB discovery gainers / losers / active
+ * 美股/全球：yfinance discovery
+ * A 股/港股：预定义列表 + 批量报价
  */
 import Link from "next/link";
-import { getAggregatedNews } from "@/lib/openbb";
+import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
 
 interface ScreenerItem {
   symbol: string;
@@ -17,10 +19,50 @@ interface ScreenerItem {
 const OPENBB_API_URL =
   process.env.OPENBB_API_URL ?? "http://localhost:6900";
 
+// A 股热门列表（按市值选）
+const CN_STOCKS = [
+  "600519.SH", "601318.SH", "600036.SH", "000858.SZ",
+  "002594.SZ", "300750.SZ", "601012.SH", "600900.SH",
+  "000001.SZ", "601166.SH", "600276.SH", "601398.SH",
+];
+
+// 港股热门列表
+const HK_STOCKS = [
+  "0700.HK", "9988.HK", "0005.HK", "1299.HK",
+  "0883.HK", "0939.HK", "0388.HK", "2318.HK",
+  "0941.HK", "1810.HK", "3690.HK", "9618.HK",
+];
+
 async function fetchScreener(
-  type: "gainers" | "losers" | "active"
+  type: "gainers" | "losers" | "active",
+  market: string = "global"
 ): Promise<ScreenerItem[]> {
   try {
+    if (market === "cn" || market === "hk") {
+      // A 股/港股用预定义列表 + 批量报价
+      const symbols = market === "cn" ? CN_STOCKS : HK_STOCKS;
+      const quotes = await getEquityQuotes(symbols);
+      const items: ScreenerItem[] = quotes.map((q) => ({
+        symbol: q.symbol,
+        name: q.name,
+        price: q.last_price,
+        change: q.change,
+        percent_change: q.change_percent,
+        volume: q.volume,
+      }));
+      // 按 type 排序
+      const sorted = [...items].sort((a, b) => {
+        const pa = a.percent_change ?? -999;
+        const pb = b.percent_change ?? -999;
+        if (type === "gainers") return pb - pa;
+        if (type === "losers") return pa - pb;
+        // active 按成交量
+        return (b.volume ?? 0) - (a.volume ?? 0);
+      });
+      return sorted.slice(0, 10);
+    }
+
+    // 美股/全球用 yfinance discovery
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     const res = await fetch(
@@ -139,11 +181,11 @@ function ScreenerColumn({
   );
 }
 
-export async function MoversBoard() {
+export async function MoversBoard({ market = "global" }: { market?: string }) {
   const [gainers, losers, active] = await Promise.all([
-    fetchScreener("gainers"),
-    fetchScreener("losers"),
-    fetchScreener("active"),
+    fetchScreener("gainers", market),
+    fetchScreener("losers", market),
+    fetchScreener("active", market),
   ]);
 
   return (
@@ -174,8 +216,16 @@ export async function MoversBoard() {
 }
 
 // 热门新闻（4 条）
-export async function TopNews() {
-  const articles = await getAggregatedNews(["AAPL", "MSFT", "NVDA", "TSLA"], 1);
+const NEWS_SYMBOLS: Record<string, string[]> = {
+  global: ["AAPL", "MSFT", "NVDA", "TSLA"],
+  us: ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META"],
+  cn: ["BABA", "PDD", "JD", "BIDU"],  // A 股新闻 yfinance 不支持，用 ADR
+  hk: ["0700.HK", "9988.HK", "1810.HK", "3690.HK"],
+};
+
+export async function TopNews({ market = "global" }: { market?: string }) {
+  const symbols = NEWS_SYMBOLS[market] ?? NEWS_SYMBOLS.global;
+  const articles = await getAggregatedNews(symbols, 1);
   const top4 = articles.slice(0, 4);
 
   return (

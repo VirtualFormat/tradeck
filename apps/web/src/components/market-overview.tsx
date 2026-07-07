@@ -11,20 +11,21 @@ import {
 import { fmtPrice, fmtPct } from "@/lib/format";
 
 // 全球大盘指数 watchlist（yfinance 代码）
-const INDICES = [
-  { symbol: "^GSPC", name: "标普500", market: "美股", type: "index" as const },
-  { symbol: "^IXIC", name: "纳斯达克", market: "美股", type: "index" as const },
-  { symbol: "^DJI", name: "道琼斯", market: "美股", type: "index" as const },
-  { symbol: "^HSI", name: "恒生指数", market: "港股", type: "index" as const },
-  { symbol: "000001.SS", name: "上证指数", market: "A股", type: "equity" as const },
-  { symbol: "399001.SZ", name: "深证成指", market: "A股", type: "equity" as const },
-  { symbol: "399006.SZ", name: "创业板指", market: "A股", type: "equity" as const },
+const ALL_INDICES = [
+  { symbol: "^GSPC", name: "标普500", market: "us", type: "index" as const },
+  { symbol: "^IXIC", name: "纳斯达克", market: "us", type: "index" as const },
+  { symbol: "^DJI", name: "道琼斯", market: "us", type: "index" as const },
+  { symbol: "^HSI", name: "恒生指数", market: "hk", type: "index" as const },
+  { symbol: "^HSCEI", name: "恒生国企", market: "hk", type: "index" as const },
+  { symbol: "000001.SS", name: "上证指数", market: "cn", type: "equity" as const },
+  { symbol: "399001.SZ", name: "深证成指", market: "cn", type: "equity" as const },
+  { symbol: "399006.SZ", name: "创业板指", market: "cn", type: "equity" as const },
 ];
 
 const MARKET_LABEL: Record<string, string> = {
-  美股: "US",
-  港股: "HK",
-  A股: "CN",
+  us: "US",
+  hk: "HK",
+  cn: "CN",
 };
 
 interface IndexQuote {
@@ -65,9 +66,13 @@ async function fetchIndexQuote(
   }
 }
 
-async function fetchIndices(): Promise<IndexQuote[]> {
+async function fetchIndices(market: string = "global"): Promise<IndexQuote[]> {
+  const indices = market === "global"
+    ? ALL_INDICES
+    : ALL_INDICES.filter((i) => i.market === market);
+
   const results = await Promise.all(
-    INDICES.map(async (idx) => {
+    indices.map(async (idx) => {
       const { price, changePct } = await fetchIndexQuote(idx.symbol, idx.type);
       return {
         symbol: idx.symbol,
@@ -112,8 +117,8 @@ function IndexCard({ quote }: { quote: IndexQuote }) {
   );
 }
 
-export async function MarketOverview() {
-  const indices = await fetchIndices();
+export async function MarketOverview({ market = "global" }: { market?: string }) {
+  const indices = await fetchIndices(market);
 
   if (indices.length === 0) {
     return (
