@@ -8,6 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.jobs.daily_kline import run_daily_kline_job
 from app.jobs.indices import run_indices_job
+from app.jobs.movers import run_movers_job
 from app.jobs.realtime_quotes import run_realtime_quotes_job
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,14 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # 涨跌榜：每 5 分钟
+    _scheduler.add_job(
+        run_movers_job,
+        CronTrigger(minute="*/5", timezone="UTC"),
+        id="movers",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Scheduler started")
 
@@ -60,6 +69,7 @@ async def start_scheduler() -> None:
     logger.info("=== initial fetch ===")
     await run_indices_job()
     await run_realtime_quotes_job()
+    await run_movers_job()
     await run_daily_kline_job()
     logger.info("=== initial fetch done ===")
 

@@ -39,3 +39,18 @@ CREATE TABLE IF NOT EXISTS index_prices (
     UNIQUE(symbol, date)
 );
 CREATE INDEX IF NOT EXISTS idx_index_prices_symbol_date ON index_prices(symbol, date DESC);
+
+-- 涨跌榜缓存
+CREATE TABLE IF NOT EXISTS movers_cache (
+    id BIGSERIAL PRIMARY KEY,
+    type VARCHAR(20) NOT NULL,          -- gainers / losers / active
+    market CHAR(2) NOT NULL,
+    rank INT,
+    symbol VARCHAR(20),
+    name VARCHAR(100),
+    price DECIMAL(12,4),
+    percent_change DECIMAL(8,6),
+    volume BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_movers_type_market ON movers_cache(type, market);

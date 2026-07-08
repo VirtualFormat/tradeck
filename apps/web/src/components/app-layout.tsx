@@ -22,27 +22,26 @@ const SIDEBAR_INDICES = [
 ];
 
 async function fetchSidebarIndices() {
-  const OPENBB_API_URL = process.env.OPENBB_API_URL ?? "http://localhost:6900";
+  const BACKEND_API_URL =
+    process.env.BACKEND_API_URL ?? "http://localhost:8080";
   try {
     const results = await Promise.all(
       SIDEBAR_INDICES.map(async (idx) => {
         const end = new Date();
-        const start = new Date(end.getTime() - 2 * 24 * 60 * 60 * 1000);
+        const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
         const fmt = (d: Date) => d.toISOString().slice(0, 10);
         const res = await fetch(
-          `${OPENBB_API_URL}/api/v1/index/price/historical?provider=yfinance&symbol=${encodeURIComponent(
+          `${BACKEND_API_URL}/api/indices?symbol=${encodeURIComponent(
             idx.symbol
           )}&start_date=${fmt(start)}&end_date=${fmt(end)}`,
-          { next: { revalidate: 60 }, headers: { Accept: "application/json" } }
+          { headers: { Accept: "application/json" } }
         );
         if (!res.ok) return { ...idx, price: null, changePct: null };
-        const text = await res.text();
-        if (!text) return { ...idx, price: null, changePct: null };
-        const data = JSON.parse(text);
-        const results = data.results ?? [];
-        if (results.length === 0) return { ...idx, price: null, changePct: null };
-        const last = results[results.length - 1];
-        const prev = results.length > 1 ? results[results.length - 2] : last;
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0)
+          return { ...idx, price: null, changePct: null };
+        const last = data[data.length - 1];
+        const prev = data.length > 1 ? data[data.length - 2] : last;
         return {
           ...idx,
           price: last.close,

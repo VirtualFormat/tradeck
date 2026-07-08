@@ -16,9 +16,6 @@ interface ScreenerItem {
   volume: number | null;
 }
 
-const OPENBB_API_URL =
-  process.env.OPENBB_API_URL ?? "http://localhost:6900";
-
 // A 股热门列表（按市值选）
 const CN_STOCKS = [
   "600519.SH", "601318.SH", "600036.SH", "000858.SZ",
@@ -50,35 +47,26 @@ async function fetchScreener(
         percent_change: q.change_percent,
         volume: q.volume,
       }));
-      // 按 type 排序
       const sorted = [...items].sort((a, b) => {
         const pa = a.percent_change ?? -999;
         const pb = b.percent_change ?? -999;
         if (type === "gainers") return pb - pa;
         if (type === "losers") return pa - pb;
-        // active 按成交量
         return (b.volume ?? 0) - (a.volume ?? 0);
       });
       return sorted.slice(0, 10);
     }
 
-    // 美股/全球用 yfinance discovery
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    // 美股/全球用 backend /api/movers（从 DB 读，<10ms）
+    const BACKEND_API_URL =
+      process.env.BACKEND_API_URL ?? "http://localhost:8080";
     const res = await fetch(
-      `${OPENBB_API_URL}/api/v1/equity/discovery/${type}?provider=yfinance`,
-      {
-        signal: controller.signal,
-        next: { revalidate: 300 },
-        headers: { Accept: "application/json" },
-      }
+      `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=10`,
+      { headers: { Accept: "application/json" } }
     );
-    clearTimeout(timeout);
     if (!res.ok) return [];
-    const text = await res.text();
-    if (!text) return [];
-    const data = JSON.parse(text);
-    return (data.results ?? []).slice(0, 10);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }

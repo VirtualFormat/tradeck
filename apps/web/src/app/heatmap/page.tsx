@@ -22,32 +22,26 @@ interface HeatmapItem {
 }
 
 async function fetchHeatmapData(): Promise<HeatmapItem[]> {
-  const OPENBB_API_URL =
-    process.env.OPENBB_API_URL ?? "http://localhost:6900";
+  const BACKEND_API_URL =
+    process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
   try {
-    // 并行拉涨幅榜 + 跌幅榜（各 50 条）
+    // 并行拉涨幅榜 + 跌幅榜（从 backend DB 读，<10ms）
     const [gainersRes, losersRes] = await Promise.all([
       fetch(
-        `${OPENBB_API_URL}/api/v1/equity/discovery/gainers?provider=yfinance`,
-        { next: { revalidate: 60 }, headers: { Accept: "application/json" } }
+        `${BACKEND_API_URL}/api/movers?type=gainers&market=US&limit=30`,
+        { headers: { Accept: "application/json" } }
       ),
       fetch(
-        `${OPENBB_API_URL}/api/v1/equity/discovery/losers?provider=yfinance`,
-        { next: { revalidate: 60 }, headers: { Accept: "application/json" } }
+        `${BACKEND_API_URL}/api/movers?type=losers&market=US&limit=30`,
+        { headers: { Accept: "application/json" } }
       ),
     ]);
 
     const parseResults = async (res: Response): Promise<HeatmapItem[]> => {
       if (!res.ok) return [];
-      const text = await res.text();
-      if (!text) return [];
-      try {
-        const data = JSON.parse(text);
-        return data.results ?? [];
-      } catch {
-        return [];
-      }
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
     };
 
     const [gainers, losers] = await Promise.all([
