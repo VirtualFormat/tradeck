@@ -20,14 +20,28 @@ def _parse_date(s: str | None) -> date | None:
         return None
 
 
-# 默认跟踪的股票（阶段 1：热门股，后续可扩展）
+# 跟踪的股票（100 只）
 TRACKED_SYMBOLS = [
-    # 美股
+    # ── 美股科技（30）──
     "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "NFLX",
-    # A 股
-    "600519.SH", "000001.SZ", "300750.SZ", "601318.SH",
-    # 港股
-    "0700.HK", "9988.HK", "1810.HK",
+    "AMD", "INTC", "AVGO", "QCOM", "ADBE", "CRM", "ORCL", "CSCO",
+    "ACN", "IBM", "NOW", "UBER", "LYFT", "SNAP", "PINS", "SHOP",
+    "SQ", "PYPL", "COIN", "PLTR", "SNOW", "ZM",
+    # ── 美股金融/消费/医疗（20）──
+    "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "V", "MA", "AXP",
+    "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "DIS", "KO", "PEP", "PG",
+    # ── 美股能源/工业（10）──
+    "XOM", "CVX", "COP", "SLB", "EOG", "BA", "CAT", "GE", "HON", "UPS",
+    # ── A 股（30）──
+    "600519.SH", "601318.SH", "600036.SH", "000858.SZ", "002594.SZ",
+    "300750.SZ", "601012.SH", "600900.SH", "000001.SZ", "601166.SH",
+    "600276.SH", "601398.SH", "000333.SZ", "600030.SH", "601888.SH",
+    "600031.SH", "000651.SZ", "002415.SZ", "300059.SZ", "600009.SH",
+    "601628.SH", "600585.SH", "000568.SZ", "002714.SZ", "600436.SH",
+    "603259.SH", "601857.SH", "600028.SH", "601088.SH", "600019.SH",
+    # ── 港股（10）──
+    "0700.HK", "9988.HK", "1810.HK", "3690.HK", "9618.HK",
+    "0005.HK", "1299.HK", "0883.HK", "0939.HK", "2318.HK",
 ]
 
 

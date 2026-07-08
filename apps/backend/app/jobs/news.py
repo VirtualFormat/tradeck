@@ -9,8 +9,12 @@ from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
 
-# 新闻跟踪的 symbol
-NEWS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "BABA"]
+# 新闻跟踪的 symbol（热门股 + ADR）
+NEWS_SYMBOLS = [
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "NFLX",
+    "AMD", "JPM", "BAC", "V", "MA", "WMT", "DIS", "XOM",
+    "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI",
+]
 
 
 async def fetch_and_store_news(symbol: str, limit: int = 10) -> int:

@@ -6,6 +6,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.jobs.cleanup import run_cleanup_job
 from app.jobs.daily_kline import run_daily_kline_job
 from app.jobs.fundamentals import run_fundamentals_job
 from app.jobs.indices import run_indices_job
@@ -89,6 +90,14 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # 数据清理：每天 03:00 UTC
+    _scheduler.add_job(
+        run_cleanup_job,
+        CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="cleanup",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Scheduler started")
 
@@ -101,6 +110,7 @@ async def start_scheduler() -> None:
     await run_news_job()
     await run_fundamentals_job()
     await run_daily_kline_job()
+    await run_cleanup_job()
     logger.info("=== initial fetch done ===")
 
 

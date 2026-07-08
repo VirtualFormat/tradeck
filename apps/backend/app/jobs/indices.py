@@ -43,7 +43,7 @@ TRACKED_COMMODITIES = [
 async def fetch_and_store_index(symbol: str, market: str) -> int:
     """拉单只指数历史，写入 DB。返回写入条数。"""
     end = date.today().isoformat()
-    start = (date.today() - timedelta(days=30)).isoformat()
+    start = (date.today() - timedelta(days=365)).isoformat()
 
     data = await fetch_openbb(
         "/index/price/historical",
