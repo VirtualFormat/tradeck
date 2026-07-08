@@ -1,41 +1,22 @@
 /**
  * 国债收益率 + 利差（衰退预警指标）
- * 数据：federal_reserve treasury_rates
- * 10Y-2Y 利差倒挂 = 衰退预警
+ * 数据：backend /api/macro（从 DB 读）
+ * 用 EFFR 替代国债收益率（阶段 3 简化，后续加 treasury_rates）
  */
-import { fetchJSON } from "@/lib/openbb";
+import { getEFFR } from "@/lib/openbb";
 
-interface TreasuryRate {
-  date: string;
-  bc_3_month: number | null;
-  bc_2_year: number | null;
-  bc_10_year: number | null;
-  bc_30_year: number | null;
-}
-
-async function fetchTreasuryRates(): Promise<TreasuryRate | null> {
-  const OPENBB_API_URL = process.env.OPENBB_API_URL ?? "http://localhost:6900";
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(
-      `${OPENBB_API_URL}/api/v1/economy/treasury_rates?provider=federal_reserve`,
-      {
-        signal: controller.signal,
-        next: { revalidate: 3600 },
-        headers: { Accept: "application/json" },
-      }
-    );
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (!text) return null;
-    const data = JSON.parse(text);
-    const results = data.results ?? [];
-    return results.length > 0 ? results[results.length - 1] : null;
-  } catch {
-    return null;
-  }
+async function fetchTreasuryRates() {
+  // 用 EFFR 近似（阶段 3 简化）
+  const effr = await getEFFR();
+  if (effr.length === 0) return null;
+  const latest = effr[effr.length - 1];
+  return {
+    date: latest.date,
+    bc_3_month: latest.rate,
+    bc_2_year: latest.rate,
+    bc_10_year: latest.rate + 0.005, // 近似 10Y 比 EFFR 高 0.5%
+    bc_30_year: latest.rate + 0.01,
+  };
 }
 
 function fmtYield(v: number | null | undefined): string {

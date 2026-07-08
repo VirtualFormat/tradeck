@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import historical, indices, movers, quotes
+from app.api import fundamentals, historical, indices, macro, movers, news, profile, quotes
 from app.db import close_pool, get_pool
 from app.scheduler import start_scheduler, stop_scheduler
 
@@ -56,6 +56,10 @@ app.include_router(quotes.router)
 app.include_router(historical.router)
 app.include_router(indices.router)
 app.include_router(movers.router)
+app.include_router(news.router)
+app.include_router(macro.router)
+app.include_router(profile.router)
+app.include_router(fundamentals.router)
 
 
 @app.get("/health")

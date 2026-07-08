@@ -7,8 +7,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.jobs.daily_kline import run_daily_kline_job
+from app.jobs.fundamentals import run_fundamentals_job
 from app.jobs.indices import run_indices_job
+from app.jobs.macro import run_macro_job
 from app.jobs.movers import run_movers_job
+from app.jobs.news import run_news_job
 from app.jobs.realtime_quotes import run_realtime_quotes_job
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,30 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # 新闻：每 30 分钟
+    _scheduler.add_job(
+        run_news_job,
+        CronTrigger(minute="*/30", timezone="UTC"),
+        id="news",
+        replace_existing=True,
+    )
+
+    # 宏观数据：每天 06:00 UTC
+    _scheduler.add_job(
+        run_macro_job,
+        CronTrigger(hour=6, minute=0, timezone="UTC"),
+        id="macro",
+        replace_existing=True,
+    )
+
+    # 财报/公司信息：每周一 07:00 UTC
+    _scheduler.add_job(
+        run_fundamentals_job,
+        CronTrigger(day_of_week="mon", hour=7, minute=0, timezone="UTC"),
+        id="fundamentals",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Scheduler started")
 
@@ -70,6 +97,9 @@ async def start_scheduler() -> None:
     await run_indices_job()
     await run_realtime_quotes_job()
     await run_movers_job()
+    await run_macro_job()
+    await run_news_job()
+    await run_fundamentals_job()
     await run_daily_kline_job()
     logger.info("=== initial fetch done ===")
 

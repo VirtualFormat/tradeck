@@ -229,23 +229,17 @@ export interface IncomeStatement {
 export async function getEquityProfile(
   symbol: string
 ): Promise<EquityProfile | null> {
-  const data = await fetchJSON<OpenBBResponse<EquityProfile>>(
-    `/equity/profile?provider=yfinance&symbol=${encodeURIComponent(symbol)}`,
-    undefined,
-    CACHE.profile
+  return backendFetch<EquityProfile | null>(
+    `/api/profile?symbol=${encodeURIComponent(symbol)}`
   );
-  return data.results[0] ?? null;
 }
 
 export async function getFundamentalMetrics(
   symbol: string
 ): Promise<FundamentalMetrics | null> {
-  const data = await fetchJSON<OpenBBResponse<FundamentalMetrics>>(
-    `/equity/fundamental/metrics?provider=yfinance&symbol=${encodeURIComponent(symbol)}`,
-    undefined,
-    CACHE.fundamental
+  return backendFetch<FundamentalMetrics | null>(
+    `/api/fundamentals/metrics?symbol=${encodeURIComponent(symbol)}`
   );
-  return data.results[0] ?? null;
 }
 
 export async function getIncomeStatements(
@@ -254,17 +248,12 @@ export async function getIncomeStatements(
   period: string = "annual",
   limit: number = 3
 ): Promise<IncomeStatement[]> {
-  const data = await fetchJSON<OpenBBResponse<IncomeStatement>>(
-    `/equity/fundamental/income?provider=${provider}&symbol=${encodeURIComponent(
-      symbol
-    )}&period=${period}&limit=${limit}`,
-    undefined,
-    CACHE.fundamental
+  return backendFetch<IncomeStatement[]>(
+    `/api/fundamentals/income?symbol=${encodeURIComponent(symbol)}&limit=${limit}`
   );
-  return data.results;
 }
 
-// ─── 新闻 ──────────────────────────────────────────────────
+// ─── 新闻（已迁移到 backend） ─────────────────────────────
 
 export interface NewsArticle {
   symbol: string;
@@ -282,14 +271,9 @@ export async function getCompanyNews(
   symbol: string,
   limit: number = 20
 ): Promise<NewsArticle[]> {
-  const data = await fetchJSON<OpenBBResponse<NewsArticle>>(
-    `/news/company?provider=yfinance&symbol=${encodeURIComponent(
-      symbol
-    )}&limit=${limit}`,
-    undefined,
-    CACHE.historical
+  return backendFetch<NewsArticle[]>(
+    `/api/news?symbol=${encodeURIComponent(symbol)}&limit=${limit}`
   );
-  return data.results;
 }
 
 export async function getAggregatedNews(
@@ -308,7 +292,7 @@ export async function getAggregatedNews(
   return merged;
 }
 
-// ─── 宏观数据 ──────────────────────────────────────────────
+// ─── 宏观数据（已迁移到 backend） ──────────────────────────
 
 export interface MacroSeries {
   date: string;
@@ -325,58 +309,46 @@ export async function getCPI(
   provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
-  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/cpi?provider=${provider}&limit=${limit}`,
-    undefined,
-    CACHE.macro
+  const data = await backendFetch<{date: string; value: number}[]>(
+    `/api/macro?name=CPI&limit=${limit}`
   );
-  return data.results;
+  return data;
 }
 
 export async function getUnemployment(
   provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
-  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/unemployment?provider=${provider}&limit=${limit}`,
-    undefined,
-    CACHE.macro
+  return backendFetch<{date: string; value: number}[]>(
+    `/api/macro?name=Unemployment&limit=${limit}`
   );
-  return data.results;
 }
 
 export async function getGDPNominal(
   provider: string = "oecd",
   limit: number = 20
 ): Promise<MacroSeries[]> {
-  const data = await fetchJSON<OpenBBResponse<MacroSeries>>(
-    `/economy/gdp/nominal?provider=${provider}&limit=${limit}`,
-    undefined,
-    CACHE.macro
+  return backendFetch<{date: string; value: number}[]>(
+    `/api/macro?name=GDP_Nominal&limit=${limit}`
   );
-  return data.results;
 }
 
 export async function getEFFR(
   provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
-  const data = await fetchJSON<OpenBBResponse<RateSeries>>(
-    `/fixedincome/rate/effr?provider=${provider}&limit=${limit}`,
-    undefined,
-    CACHE.macro
+  const data = await backendFetch<{date: string; value: number}[]>(
+    `/api/macro?name=EFFR&limit=${limit}`
   );
-  return data.results.map((r) => ({ date: r.date, rate: r.rate }));
+  return data.map((r) => ({ date: r.date, rate: r.value }));
 }
 
 export async function getSOFR(
   provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
-  const data = await fetchJSON<OpenBBResponse<RateSeries>>(
-    `/fixedincome/rate/sofr?provider=${provider}&limit=${limit}`,
-    undefined,
-    CACHE.macro
+  const data = await backendFetch<{date: string; value: number}[]>(
+    `/api/macro?name=SOFR&limit=${limit}`
   );
-  return data.results.map((r) => ({ date: r.date, rate: r.rate }));
+  return data.map((r) => ({ date: r.date, rate: r.value }));
 }
