@@ -3,6 +3,8 @@
  * - 阶段 1 已迁移到 backend（quotes/historical/indices）：< 50ms
  * - 阶段 2 待迁移（movers/news/macro/commodities/treasury/profile/metrics/income）：直连 OpenBB
  */
+import http from "node:http";
+import dns from "node:dns/promises";
 
 // Backend API（从 DB 读，< 50ms）
 const BACKEND_API_URL =
@@ -56,20 +58,61 @@ export interface OpenBBResponse<T> {
   warnings?: { message: string }[];
 }
 
+// ─── DNS 预解析 + http 直连（绕过 Next.js fetch 的 DNS 超时问题）───
+
+const dnsCache = new Map<string, { ip: string; ts: number }>();
+const DNS_TTL = 60_000; // 60 秒
+
+async function resolveHost(hostname: string): Promise<string> {
+  const cached = dnsCache.get(hostname);
+  if (cached && Date.now() - cached.ts < DNS_TTL) {
+    return cached.ip;
+  }
+  try {
+    const result = await dns.lookup(hostname, { family: 4 });
+    dnsCache.set(hostname, { ip: result.address, ts: Date.now() });
+    return result.address;
+  } catch {
+    return hostname; // 降级用原 hostname
+  }
+}
+
+async function httpGet(url: string, timeoutMs: number = 5000): Promise<string> {
+  const u = new URL(url);
+  const ip = await resolveHost(u.hostname);
+
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      {
+        hostname: ip, // 用 IP 直连，绕过 DNS
+        port: u.port,
+        path: u.pathname + u.search,
+        headers: {
+          Accept: "application/json",
+          Host: u.hostname, // 保留 Host 头用于虚拟主机
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => resolve(data));
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`timeout ${url}`));
+    });
+  });
+}
+
 // ─── Backend API（从 DB 读，< 50ms） ──────────────────────
 
 async function backendFetch<T>(path: string): Promise<T> {
   const url = `${BACKEND}${path}`;
   try {
-    const res = await fetch(url, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) {
-      console.warn(`backend ${path} failed: ${res.status}`);
-      return [] as unknown as T;
-    }
-    const text = await res.text();
+    const text = await httpGet(url, 5000);
     if (!text) return [] as unknown as T;
     return JSON.parse(text) as T;
   } catch (err) {
@@ -93,24 +136,7 @@ export async function fetchJSON<T>(
     return cached.data as T;
   }
   try {
-    const res = (await Promise.race([
-      fetch(url, {
-        ...init,
-        cache: "no-store",
-        headers: { Accept: "application/json", ...init?.headers },
-      }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-    ])) as Response | null;
-
-    if (!res) {
-      console.warn(`OpenBB ${path} timeout (5s), returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    if (!res.ok) {
-      throw new Error(`OpenBB API ${path} failed: ${res.status}`);
-    }
-    const text = await res.text();
+    const text = await httpGet(url, 5000);
     let data: T;
     if (!text) {
       data = { results: [] } as unknown as T;
@@ -124,12 +150,9 @@ export async function fetchJSON<T>(
     memCache.set(url, { data, ts: Date.now() });
     return data;
   } catch (err) {
-    if (err instanceof Error && (err.message.includes("ECONNRESET") || err.message.includes("fetch failed"))) {
-      console.warn(`OpenBB ${path} reset, returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    throw err;
+    console.warn(`OpenBB ${path} error, returning empty`);
+    if (cached) return cached.data as T;
+    return { results: [] } as unknown as T;
   }
 }
 

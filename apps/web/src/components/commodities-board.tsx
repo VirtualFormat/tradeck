@@ -24,7 +24,7 @@ async function fetchCommodity(symbol: string): Promise<{ price: number | null; c
     const end = new Date();
     const start = new Date(end.getTime() - 3 * 24 * 60 * 60 * 1000);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
-    const hist = await getIndexHistorical(symbol, fmt(start), fmt(end), "yfinance");
+    const hist = await getIndexHistorical(symbol, fmt(start), fmt(end));
     if (hist.length === 0) return { price: null, changePct: null };
     const last = hist[hist.length - 1];
     const prev = hist.length > 1 ? hist[hist.length - 2] : last;

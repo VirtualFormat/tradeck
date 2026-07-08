@@ -218,7 +218,6 @@ export default async function HeatmapPage() {
           </CardContent>
         </Card>
 
-        {/* @ts-expect-error Server Component */}
         <Heatmap />
     </>
   );

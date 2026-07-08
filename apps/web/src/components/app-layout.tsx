@@ -59,7 +59,6 @@ async function fetchSidebarIndices() {
 function SidebarIndexQuotes() {
   return (
     <div className="border-t border-border px-3 py-2">
-      {/* @ts-expect-error Server Component */}
       <SidebarIndices />
     </div>
   );

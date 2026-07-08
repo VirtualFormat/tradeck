@@ -49,8 +49,8 @@ async function fetchIndexQuote(
   try {
     const hist =
       type === "index"
-        ? await getIndexHistorical(symbol, fmt(start), fmt(end), "yfinance")
-        : await getEquityHistorical(symbol, fmt(start), fmt(end), "yfinance");
+        ? await getIndexHistorical(symbol, fmt(start), fmt(end))
+        : await getEquityHistorical(symbol, fmt(start), fmt(end));
 
     if (hist.length === 0) return { price: null, changePct: null };
 

@@ -53,7 +53,6 @@ export default async function Home({
           )}
         </h2>
         <Suspense key={`indices-${market}`} fallback={<Skeleton className="h-24 w-full rounded-lg" />}>
-          {/* @ts-expect-error Server Component */}
           <MarketOverview market={market} />
         </Suspense>
       </section>
@@ -63,11 +62,9 @@ export default async function Home({
         {/* 主区 */}
         <div className="space-y-6">
           <Suspense key={`movers-${market}`} fallback={<CardSkeleton title="涨跌榜" />}>
-            {/* @ts-expect-error Server Component */}
             <MoversBoard market={market} />
           </Suspense>
           <Suspense key={`news-${market}`} fallback={<CardSkeleton title="热门资讯" />}>
-            {/* @ts-expect-error Server Component */}
             <TopNews market={market} />
           </Suspense>
         </div>
@@ -76,19 +73,16 @@ export default async function Home({
         <div className="space-y-6">
           {(market === "global" || market === "us") && (
             <Suspense fallback={<CardSkeleton title="宏观速览" />}>
-              {/* @ts-expect-error Server Component */}
               <MacroSnapshot />
             </Suspense>
           )}
           {(market === "global" || market === "us" || market === "hk") && (
             <Suspense fallback={<CardSkeleton title="大宗商品" />}>
-              {/* @ts-expect-error Server Component */}
               <CommoditiesBoard />
             </Suspense>
           )}
           {(market === "global" || market === "us") && (
             <Suspense fallback={<CardSkeleton title="国债收益率" />}>
-              {/* @ts-expect-error Server Component */}
               <TreasuryBoard />
             </Suspense>
           )}
