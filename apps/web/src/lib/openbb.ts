@@ -1,35 +1,30 @@
 /**
- * OpenBB Platform API 客户端
- * 后端地址通过环境变量配置（docker-compose 里 OPENBB_API_URL）
+ * API 客户端
+ * - 阶段 1 已迁移到 backend（quotes/historical/indices）：< 50ms
+ * - 阶段 2 待迁移（movers/news/macro/commodities/treasury/profile/metrics/income）：直连 OpenBB
  */
+
+// Backend API（从 DB 读，< 50ms）
+const BACKEND_API_URL =
+  process.env.BACKEND_API_URL ?? "http://localhost:8080";
+
+// OpenBB API（阶段 1 暂保留给未迁移的组件）
 const OPENBB_API_URL =
   process.env.OPENBB_API_URL ?? "http://localhost:6900";
 
 export { OPENBB_API_URL };
 
-const BASE = `${OPENBB_API_URL}/api/v1`;
+const BACKEND = BACKEND_API_URL;
+const OPENBB_BASE = `${OPENBB_API_URL}/api/v1`;
 
-/**
- * 按市场自动选 provider（基于测速结果）
- * - A 股（.SS/.SZ/.BJ）：akshare（350ms，比 yfinance 快 7 倍）
- * - 美股/港股/其他：yfinance
- */
-function pickProvider(symbol: string): string {
-  const sym = symbol.toUpperCase();
-  if (sym.endsWith(".SS") || sym.endsWith(".SZ") || sym.endsWith(".BJ")) {
-    return "akshare";
-  }
-  return "yfinance";
-}
-
-/** 按数据类型的缓存时间（秒） */
+/** 按数据类型的缓存时间（秒）— 仅用于 OpenBB 调用 */
 const CACHE = {
-  quote: 30,        // 行情：30s
-  historical: 300,  // K 线：5 分钟
-  discovery: 300,   // 涨跌榜：5 分钟
-  profile: 3600,    // 公司信息：1 小时
-  fundamental: 3600, // 财报：1 小时
-  macro: 3600,      // 宏观：1 小时
+  quote: 30,
+  historical: 300,
+  discovery: 300,
+  profile: 3600,
+  fundamental: 3600,
+  macro: 3600,
 } as const;
 
 export interface EquityQuote {
@@ -56,7 +51,35 @@ export interface HistoricalPrice {
   volume: number;
 }
 
-// 手动内存缓存（避免 Next.js Server Component fetch 缓存机制限制超时）
+export interface OpenBBResponse<T> {
+  results: T[];
+  warnings?: { message: string }[];
+}
+
+// ─── Backend API（从 DB 读，< 50ms） ──────────────────────
+
+async function backendFetch<T>(path: string): Promise<T> {
+  const url = `${BACKEND}${path}`;
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      console.warn(`backend ${path} failed: ${res.status}`);
+      return [] as unknown as T;
+    }
+    const text = await res.text();
+    if (!text) return [] as unknown as T;
+    return JSON.parse(text) as T;
+  } catch (err) {
+    console.warn(`backend ${path} error:`, err);
+    return [] as unknown as T;
+  }
+}
+
+// ─── OpenBB API（阶段 1 暂保留，阶段 2 迁移） ──────────────
+
 const memCache = new Map<string, { data: unknown; ts: number }>();
 
 export async function fetchJSON<T>(
@@ -64,20 +87,16 @@ export async function fetchJSON<T>(
   init?: RequestInit,
   revalidate: number = CACHE.quote
 ): Promise<T> {
-  const url = `${BASE}${path}`;
-
-  // 检查内存缓存
+  const url = `${OPENBB_BASE}${path}`;
   const cached = memCache.get(url);
   if (cached && Date.now() - cached.ts < revalidate * 1000) {
     return cached.data as T;
   }
-
   try {
-    // Promise.race 超时（Next.js Server Component 的 fetch 不支持 AbortController）
     const res = (await Promise.race([
       fetch(url, {
         ...init,
-        cache: "no-store", // 不用 Next.js 缓存，自己控制
+        cache: "no-store",
         headers: { Accept: "application/json", ...init?.headers },
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
@@ -85,11 +104,9 @@ export async function fetchJSON<T>(
 
     if (!res) {
       console.warn(`OpenBB ${path} timeout (5s), returning empty`);
-      // 超时返回空，但如果有旧缓存就用旧的
       if (cached) return cached.data as T;
       return { results: [] } as unknown as T;
     }
-
     if (!res.ok) {
       throw new Error(`OpenBB API ${path} failed: ${res.status}`);
     }
@@ -104,10 +121,7 @@ export async function fetchJSON<T>(
         data = { results: [] } as unknown as T;
       }
     }
-
-    // 写缓存
     memCache.set(url, { data, ts: Date.now() });
-
     return data;
   } catch (err) {
     if (err instanceof Error && (err.message.includes("ECONNRESET") || err.message.includes("fetch failed"))) {
@@ -119,99 +133,58 @@ export async function fetchJSON<T>(
   }
 }
 
-export interface OpenBBResponse<T> {
-  results: T[];
-  warnings?: { message: string }[];
-}
+// ─── 已迁移到 backend 的 API ─────────────────────────────
 
 export async function getEquityQuote(
-  symbol: string,
-  provider?: string
+  symbol: string
 ): Promise<EquityQuote | null> {
-  const p = provider ?? pickProvider(symbol);
-  const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
-    `/equity/price/quote?provider=${p}&symbol=${encodeURIComponent(symbol)}`,
-    undefined,
-    CACHE.quote
+  const quotes = await backendFetch<EquityQuote[]>(
+    `/api/quotes?symbols=${encodeURIComponent(symbol)}`
   );
-  return data.results[0] ?? null;
+  return quotes[0] ?? null;
 }
 
 export async function getEquityQuotes(
-  symbols: string[],
-  provider?: string
+  symbols: string[]
 ): Promise<EquityQuote[]> {
-  // 多 symbol 时按市场分组（akshare 只支持 A 股）
-  const akshareSyms = symbols.filter((s) => pickProvider(s) === "akshare");
-  const yfinanceSyms = symbols.filter((s) => pickProvider(s) === "yfinance");
-  const results: EquityQuote[] = [];
-
-  if (akshareSyms.length > 0) {
-    const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
-      `/equity/price/quote?provider=akshare&symbol=${encodeURIComponent(akshareSyms.join(","))}`,
-      undefined,
-      CACHE.quote
-    );
-    results.push(...data.results);
-  }
-  if (yfinanceSyms.length > 0) {
-    const data = await fetchJSON<OpenBBResponse<EquityQuote>>(
-      `/equity/price/quote?provider=yfinance&symbol=${encodeURIComponent(yfinanceSyms.join(","))}`,
-      undefined,
-      CACHE.quote
-    );
-    results.push(...data.results);
-  }
-  return results;
+  return backendFetch<EquityQuote[]>(
+    `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`
+  );
 }
 
 export async function getEquityHistorical(
   symbol: string,
   startDate: string,
-  endDate: string,
-  provider?: string
+  endDate: string
 ): Promise<HistoricalPrice[]> {
-  const p = provider ?? pickProvider(symbol);
-  // 先试首选 provider，空结果时降级到另一个
-  const fallback = p === "akshare" ? "yfinance" : "akshare";
-
-  const data = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
-    `/equity/price/historical?provider=${p}&symbol=${encodeURIComponent(
+  return backendFetch<HistoricalPrice[]>(
+    `/api/historical?symbol=${encodeURIComponent(
       symbol
-    )}&start_date=${startDate}&end_date=${endDate}`,
-    undefined,
-    CACHE.historical
+    )}&start_date=${startDate}&end_date=${endDate}`
   );
-  if (data.results.length > 0) return data.results;
-
-  // 降级
-  const fallbackData = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
-    `/equity/price/historical?provider=${fallback}&symbol=${encodeURIComponent(
-      symbol
-    )}&start_date=${startDate}&end_date=${endDate}`,
-    undefined,
-    CACHE.historical
-  );
-  return fallbackData.results;
 }
 
 export async function getIndexHistorical(
   symbol: string,
   startDate: string,
-  endDate: string,
-  provider: string = "yfinance"
+  endDate: string
 ): Promise<HistoricalPrice[]> {
-  const data = await fetchJSON<OpenBBResponse<HistoricalPrice>>(
-    `/index/price/historical?provider=${provider}&symbol=${encodeURIComponent(
+  return backendFetch<HistoricalPrice[]>(
+    `/api/indices?symbol=${encodeURIComponent(
       symbol
-    )}&start_date=${startDate}&end_date=${endDate}`,
-    undefined,
-    CACHE.historical
+    )}&start_date=${startDate}&end_date=${endDate}`
   );
-  return data.results;
 }
 
-// ─── 个股详情相关 ────────────────────────────────────────
+// ─── 阶段 2 待迁移（暂保留直连 OpenBB） ────────────────────
+
+function pickProvider(symbol: string): string {
+  const sym = symbol.toUpperCase();
+  if (sym.endsWith(".SS") || sym.endsWith(".SZ") || sym.endsWith(".BJ")) {
+    return "akshare";
+  }
+  return "yfinance";
+}
 
 export interface EquityProfile {
   symbol: string;
@@ -255,11 +228,10 @@ export interface IncomeStatement {
 }
 
 export async function getEquityProfile(
-  symbol: string,
-  provider: string = "yfinance"
+  symbol: string
 ): Promise<EquityProfile | null> {
   const data = await fetchJSON<OpenBBResponse<EquityProfile>>(
-    `/equity/profile?provider=${provider}&symbol=${encodeURIComponent(symbol)}`,
+    `/equity/profile?provider=yfinance&symbol=${encodeURIComponent(symbol)}`,
     undefined,
     CACHE.profile
   );
@@ -267,11 +239,10 @@ export async function getEquityProfile(
 }
 
 export async function getFundamentalMetrics(
-  symbol: string,
-  provider: string = "yfinance"
+  symbol: string
 ): Promise<FundamentalMetrics | null> {
   const data = await fetchJSON<OpenBBResponse<FundamentalMetrics>>(
-    `/equity/fundamental/metrics?provider=${provider}&symbol=${encodeURIComponent(symbol)}`,
+    `/equity/fundamental/metrics?provider=yfinance&symbol=${encodeURIComponent(symbol)}`,
     undefined,
     CACHE.fundamental
   );
@@ -310,20 +281,18 @@ export interface NewsArticle {
 
 export async function getCompanyNews(
   symbol: string,
-  limit: number = 20,
-  provider: string = "yfinance"
+  limit: number = 20
 ): Promise<NewsArticle[]> {
   const data = await fetchJSON<OpenBBResponse<NewsArticle>>(
-    `/news/company?provider=${provider}&symbol=${encodeURIComponent(
+    `/news/company?provider=yfinance&symbol=${encodeURIComponent(
       symbol
     )}&limit=${limit}`,
     undefined,
-    CACHE.historical // 5 分钟
+    CACHE.historical
   );
   return data.results;
 }
 
-/** 多 symbol 并行拉新闻 + 合并按时间排序 */
 export async function getAggregatedNews(
   symbols: string[],
   perSymbol: number = 5
@@ -332,7 +301,6 @@ export async function getAggregatedNews(
     symbols.map((s) => getCompanyNews(s, perSymbol).catch(() => []))
   );
   const merged = results.flat();
-  // 按日期降序
   merged.sort((a, b) => {
     const da = a.date ? new Date(a.date).getTime() : 0;
     const db = b.date ? new Date(b.date).getTime() : 0;

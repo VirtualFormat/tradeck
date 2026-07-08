@@ -1,14 +1,35 @@
 # tradeck 项目 1 — 市场资讯看板
-# OpenBB 数据层 + Next.js 前端，均作为 docker service
+# 架构：PostgreSQL + FastAPI backend + OpenBB 数据源 + Next.js 前端
 #
 # 使用：
 #   cp .env.example .env  # 填 API key（可选，免费源不需要）
 #   docker compose up -d --build
 #   前端：http://localhost:3000
-#   OpenBB API：http://localhost:6900
-#   Swagger UI：http://localhost:6900/docs
+#   backend API：http://localhost:8080/docs
+#   OpenBB API：http://localhost:6900/docs
 
 services:
+  # ── 数据存储 ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: tradeck-postgres
+    environment:
+      POSTGRES_DB: tradeck
+      POSTGRES_USER: tradeck
+      POSTGRES_PASSWORD: tradeck_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./apps/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── 数据源代理 ────────────────────────────────────
   openbb:
     build:
       context: .
@@ -34,6 +55,23 @@ services:
       timeout: 10s
       retries: 3
 
+  # ── 数据管道 + API 服务 ──────────────────────────
+  backend:
+    build: ./apps/backend
+    container_name: tradeck-backend
+    environment:
+      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      OPENBB_API_URL: http://openbb:6900
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openbb:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # ── 前端 ──────────────────────────────────────────
   web:
     build:
       context: ./apps/web
@@ -42,9 +80,14 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # 改为从 backend 读（backend 从 DB 读，<50ms）
+      - BACKEND_API_URL=http://backend:8080
+      # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
       - OPENBB_API_URL=http://openbb:6900
       - NODE_ENV=production
     depends_on:
+      backend:
+        condition: service_started
       openbb:
         condition: service_healthy
     restart: unless-stopped
@@ -53,3 +96,4 @@ services:
 volumes:
   openbb-config:
   web-node-modules:
+  postgres-data:

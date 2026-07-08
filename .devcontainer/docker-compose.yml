@@ -1,27 +1,24 @@
 # devcontainer 的 docker-compose — 开发环境
 # 与项目根的 docker-compose.yml（prod）独立
-# postCreateCommand 和 workspaceFolder 在 devcontainer.json 里
+# 架构：dev（开发容器）+ postgres + backend + openbb
 services:
   dev:
     image: mcr.microsoft.com/devcontainers/python:3.12
     container_name: tradeck-dev
     ports:
-      # 前端 dev server（宿主机浏览器访问）
       - "3000:3000"
+      - "8080:8080"  # backend dev server
     volumes:
-      # 项目源码 bind mount（实时编辑）
       - ..:/workspace:cached
-      # Node 模块隔离（不回写宿主机）
       - dev-node-modules:/workspace/apps/web/node_modules
-      # Python venv 隔离
       - dev-venv:/workspace/.venv
-      # OpenBB user settings 隔离
       - dev-openbb-config:/root/.openbb_platform
-      # Docker socket（devcontainer 里跑 docker compose）
       - /var/run/docker.sock:/var/run/docker.sock
     command: sleep infinity
     environment:
       - OPENBB_API_URL=http://openbb:6900
+      - BACKEND_API_URL=http://backend:8080
+      - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
     networks:
@@ -29,8 +26,52 @@ services:
     depends_on:
       openbb:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
 
-  # OpenBB Platform 作为依赖服务（dev 环境用）
+  # PostgreSQL（dev 环境共用 prod 的 init.sql）
+  postgres:
+    image: postgres:16-alpine
+    container_name: tradeck-dev-postgres
+    environment:
+      POSTGRES_DB: tradeck
+      POSTGRES_USER: tradeck
+      POSTGRES_PASSWORD: tradeck_dev
+    volumes:
+      - dev-postgres-data:/var/lib/postgresql/data
+      - ../apps/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dev-net
+
+  # backend（dev 环境，从源码跑 uvicorn --reload）
+  backend:
+    build: ../apps/backend
+    container_name: tradeck-dev-backend
+    environment:
+      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      OPENBB_API_URL: http://openbb:6900
+    volumes:
+      - ../apps/backend:/app
+    ports:
+      - "8081:8080"  # 避免和 dev 容器 8080 冲突
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openbb:
+        condition: service_healthy
+    networks:
+      - dev-net
+    # dev 模式：热重载
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+
+  # OpenBB Platform
   openbb:
     build:
       context: ..
@@ -57,6 +98,7 @@ volumes:
   dev-node-modules:
   dev-venv:
   dev-openbb-config:
+  dev-postgres-data:
 
 networks:
   dev-net:
