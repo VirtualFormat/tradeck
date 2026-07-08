@@ -9,6 +9,16 @@ from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_date(s: str | None) -> date | None:
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except Exception:
+        return None
+
+
 # 跟踪的指数
 TRACKED_INDICES = [
     {"symbol": "^GSPC", "market": "US"},
@@ -52,7 +62,7 @@ async def fetch_and_store_index(symbol: str, market: str) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = [
-            (symbol, market, r.get("date"), r.get("close"), r.get("volume"))
+            (symbol, market, _parse_date(r.get("date")), r.get("close"), r.get("volume"))
             for r in results
         ]
         await conn.executemany(

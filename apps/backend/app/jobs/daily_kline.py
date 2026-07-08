@@ -10,6 +10,16 @@ from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_date(s: str | None) -> date | None:
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except Exception:
+        return None
+
+
 # 默认跟踪的股票（阶段 1：热门股，后续可扩展）
 TRACKED_SYMBOLS = [
     # 美股
@@ -46,9 +56,9 @@ async def fetch_and_store_daily_kline(symbol: str) -> int:
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 批量 UPSERT
+        # 批量 UPSERT（date 字段转 date 对象）
         rows = [
-            (symbol, market, r.get("date"), r.get("open"), r.get("high"),
+            (symbol, market, _parse_date(r.get("date")), r.get("open"), r.get("high"),
              r.get("low"), r.get("close"), r.get("volume"))
             for r in results
         ]

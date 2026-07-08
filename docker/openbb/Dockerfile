@@ -36,5 +36,6 @@ EXPOSE 6900
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -sf http://localhost:6900/openapi.json > /dev/null || exit 1
 
-# 启动 OpenBB Platform API（FastAPI via uvicorn，4 workers 提升并发）
-CMD ["openbb-api", "--host", "0.0.0.0", "--port", "6900", "--workers", "4"]
+# 启动 OpenBB Platform API（FastAPI via uvicorn）
+# openbb-api 不支持 --workers 参数，用 uvicorn 直接启动支持多 worker
+CMD ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "4"]
