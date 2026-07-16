@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Search } from "lucide-react";
 
 export function StockSearch() {
@@ -30,12 +31,14 @@ export function StockSearch() {
         placeholder="输入股票代码（如 AAPL, 600519.SS, 0700.HK）"
         className="pl-9 w-64"
       />
-      <button
+      <Button
         type="submit"
-        className="ml-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/80"
+        variant="default"
+        size="icon"
+        className="ml-2 bg-accent text-white hover:bg-accent/80"
       >
-        查询
-      </button>
+        <Search />
+      </Button>
     </form>
   );
 }

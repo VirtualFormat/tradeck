@@ -2,8 +2,19 @@
  * 国债收益率 + 利差（衰退预警指标）
  * 数据：backend /api/macro（从 DB 读）
  * 用 EFFR 替代国债收益率（阶段 3 简化，后续加 treasury_rates）
+ * 卡片风格：block SectionCards
  */
 import { getEFFR } from "@/lib/openbb";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { TreasuryStatusBadge } from "@/components/treasury-status-badge";
 
 async function fetchTreasuryRates() {
   // 用 EFFR 近似（阶段 3 简化）
@@ -39,6 +50,13 @@ export async function TreasuryBoard() {
       : null;
   const inverted = spread10Y2Y != null && spread10Y2Y < 0;
 
+  // 10Y 作为主标题，其余期限进 CardContent
+  const sideYields = [
+    { label: "3M", value: latest?.bc_3_month },
+    { label: "2Y", value: latest?.bc_2_year },
+    { label: "30Y", value: latest?.bc_30_year },
+  ];
+
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
@@ -47,54 +65,44 @@ export async function TreasuryBoard() {
           <span className="text-[10px] text-muted">{fmtDate(latest.date)}</span>
         )}
       </div>
-      <div className="rounded-md border border-border bg-panel-2 px-3 py-2">
-        <div className="grid grid-cols-4 gap-2">
-          <div>
-            <div className="text-[10px] text-muted">2Y</div>
-            <div className="tab-nums text-sm font-semibold">
-              {fmtYield(latest?.bc_2_year)}
-            </div>
+      <Card className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card">
+        <CardHeader>
+          <CardDescription>10 年期收益率</CardDescription>
+          <CardTitle className="text-2xl font-semibold tabular-nums">
+            {fmtYield(latest?.bc_10_year)}
+          </CardTitle>
+          <CardAction>
+            <TreasuryStatusBadge inverted={inverted} />
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-2">
+            {sideYields.map((y) => (
+              <div key={y.label}>
+                <div className="text-[10px] text-muted-foreground">{y.label}</div>
+                <div className="tab-nums text-sm font-semibold">
+                  {fmtYield(y.value)}
+                </div>
+              </div>
+            ))}
           </div>
-          <div>
-            <div className="text-[10px] text-muted">10Y</div>
-            <div className="tab-nums text-sm font-semibold">
-              {fmtYield(latest?.bc_10_year)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] text-muted">30Y</div>
-            <div className="tab-nums text-sm font-semibold">
-              {fmtYield(latest?.bc_30_year)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] text-muted">3M</div>
-            <div className="tab-nums text-sm font-semibold">
-              {fmtYield(latest?.bc_3_month)}
-            </div>
-          </div>
-        </div>
-        {/* 10Y-2Y 利差（衰退预警） */}
-        <div className="mt-3 flex items-center justify-between border-t border-border/40 pt-2">
-          <span className="text-[10px] text-muted">10Y-2Y 利差</span>
-          <div className="flex items-center gap-2">
-            {inverted && (
-              <span className="rounded-sm bg-up/20 px-1.5 py-0.5 text-[9px] text-up">
-                倒挂
-              </span>
-            )}
+        </CardContent>
+        <CardFooter className="flex-col items-start gap-1.5 text-sm">
+          <div className="line-clamp-1 flex gap-2 font-medium">
+            10Y-2Y 利差
             <span
-              className={`tab-nums text-sm font-semibold ${
-                inverted ? "text-up" : "text-down"
-              }`}
+              className={`tab-nums ${inverted ? "text-up" : "text-down"}`}
             >
               {spread10Y2Y != null
                 ? `${(spread10Y2Y * 100).toFixed(2)}%`
                 : "—"}
             </span>
           </div>
-        </div>
-      </div>
+          <div className="text-muted-foreground">
+            {inverted ? "收益率倒挂，衰退预警" : "收益率曲线正常"}
+          </div>
+        </CardFooter>
+      </Card>
     </div>
   );
 }

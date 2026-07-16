@@ -6,11 +6,11 @@
   "tailwind": {
     "config": "",
     "css": "src/app/globals.css",
-    "baseColor": "neutral",
+    "baseColor": "mist",
     "cssVariables": true,
     "prefix": ""
   },
-  "iconLibrary": "lucide",
+  "iconLibrary": "phosphor",
   "rtl": false,
   "aliases": {
     "components": "@/components",
@@ -20,6 +20,6 @@
     "hooks": "@/hooks"
   },
   "menuColor": "default",
-  "menuAccent": "subtle",
+  "menuAccent": "bold",
   "registries": {}
 }

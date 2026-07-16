@@ -80,29 +80,18 @@ export default async function NewsPage({
   const { symbol } = await searchParams;
 
   let articles: NewsArticle[] = [];
-  let title = "全球财经新闻";
-  let subtitle = "聚合热门美股实时资讯";
 
   if (symbol) {
     // 按 symbol 查询
     articles = await getAggregatedNews([symbol.toUpperCase()], 20);
-    title = `${symbol.toUpperCase()} 新闻`;
-    subtitle = "个股相关实时资讯";
   } else {
     // 默认聚合
     articles = await getAggregatedNews(DEFAULT_SYMBOLS, 3);
   }
 
   return (
-    <>
+    <div className="px-4 lg:px-6">
       <div className="mx-auto max-w-3xl">
-        <header className="mb-6 border-b border-border pb-3">
-          <h1 className="text-lg font-semibold">{title}</h1>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
-            {subtitle} · yfinance
-          </p>
-        </header>
-
         {/* 快捷 symbol 切换 */}
         <div className="mb-4 flex flex-wrap gap-1.5">
           <Link href="/news">
@@ -147,6 +136,6 @@ export default async function NewsPage({
           </CardContent>
         </Card>
       </div>
-    </>
+    </div>
   );
 }

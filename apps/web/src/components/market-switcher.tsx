@@ -7,6 +7,8 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useCallback } from "react";
 
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
 export type Market = "global" | "us" | "cn" | "hk";
 
 const MARKETS: { key: Market; label: string; short: string }[] = [
@@ -37,21 +39,23 @@ export function MarketSwitcher() {
   );
 
   return (
-    <div className="flex items-center gap-1 rounded-md border border-border bg-panel-2 p-0.5">
-      {MARKETS.map((m) => (
-        <button
-          key={m.key}
-          onClick={() => handleSwitch(m.key)}
-          className={`rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors ${
-            current === m.key
-              ? "bg-accent text-white"
-              : "text-muted hover:text-fg"
-          }`}
-        >
-          {m.label}
-        </button>
-      ))}
-    </div>
+    <Tabs
+      value={current}
+      onValueChange={(v) => handleSwitch(v as Market)}
+      className="flex-row gap-0"
+    >
+      <TabsList className="rounded-md border border-border bg-panel-2 p-0.5">
+        {MARKETS.map((m) => (
+          <TabsTrigger
+            key={m.key}
+            value={m.key}
+            className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted hover:text-fg data-active:bg-accent data-active:text-white"
+          >
+            {m.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   );
 }
 

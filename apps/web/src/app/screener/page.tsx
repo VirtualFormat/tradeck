@@ -139,14 +139,7 @@ export default function ScreenerPage() {
   }, [watchlist]);
 
   return (
-    <>
-        <header className="mb-6 border-b border-border pb-3">
-          <h1 className="text-lg font-semibold">自选股 + 筛选器</h1>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
-            Watchlist + Screener · yfinance
-          </p>
-        </header>
-
+    <div className="px-4 lg:px-6">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* 自选股（占 1 列） */}
           <Card className="lg:col-span-1">
@@ -210,12 +203,14 @@ export default function ScreenerPage() {
                             {fmtPct(item.change_percent)}
                           </TableCell>
                           <TableCell>
-                            <button
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
                               onClick={() => removeFromWatchlist(item.symbol)}
                               className="text-muted hover:text-up"
                             >
-                              <Trash2 className="h-3 w-3" />
-                            </button>
+                              <Trash2 />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -302,7 +297,9 @@ export default function ScreenerPage() {
                             {fmtVolume(item.volume)}
                           </TableCell>
                           <TableCell>
-                            <button
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
                               onClick={() =>
                                 inWatchlist
                                   ? removeFromWatchlist(item.symbol)
@@ -315,10 +312,9 @@ export default function ScreenerPage() {
                               }
                             >
                               <Star
-                                className="h-3 w-3"
                                 fill={inWatchlist ? "currentColor" : "none"}
                               />
-                            </button>
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -333,6 +329,6 @@ export default function ScreenerPage() {
             </CardContent>
           </Card>
         </div>
-    </>
+    </div>
   );
 }

@@ -8,117 +8,26 @@
  * - EFFR（联邦基金有效利率）
  * - SOFR（担保隔夜融资利率）
  */
-import Link from "next/link";
 import {
   getCPI,
   getUnemployment,
   getGDPNominal,
   getEFFR,
   getSOFR,
-  type MacroSeries,
-  type RateSeries,
 } from "@/lib/openbb";
+import { fmtMacroPct, fmtBigUSD } from "@/lib/format";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-
-function fmtPct(value: number | null | undefined): string {
-  if (value == null) return "—";
-  return `${(value * 100).toFixed(2)}%`;
-}
-
-function fmtBigValue(value: number | null | undefined): string {
-  if (value == null) return "—";
-  if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
-  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  return value.toLocaleString("en-US");
-}
+import { MacroTrendChart } from "@/components/macro-trend-chart";
 
 function fmtDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
   const d = new Date(dateStr);
   return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit" });
-}
-
-// 走势图（SVG）
-function TrendChart({
-  data,
-  color,
-  formatValue,
-}: {
-  data: { date: string; value: number }[];
-  color: string;
-  formatValue: (v: number) => string;
-}) {
-  if (data.length < 2) {
-    return (
-      <div className="flex h-32 items-center justify-center text-xs text-muted">
-        无历史数据
-      </div>
-    );
-  }
-
-  const width = 400;
-  const height = 120;
-  const padding = 30;
-  const chartW = width - padding * 2;
-  const chartH = height - padding * 2;
-
-  const values = data.map((d) => d.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-
-  const points = data
-    .map((d, i) => {
-      const x = padding + (i / (data.length - 1)) * chartW;
-      const y = padding + chartH - ((d.value - min) / span) * chartH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="w-full h-32"
-      preserveAspectRatio="none"
-    >
-      {[0, 0.5, 1].map((t) => (
-        <line
-          key={t}
-          x1={padding}
-          y1={padding + t * chartH}
-          x2={width - padding}
-          y2={padding + t * chartH}
-          stroke="var(--border)"
-          strokeWidth="0.5"
-          strokeDasharray="2,4"
-        />
-      ))}
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-      <text x={padding} y={height - 8} fill="var(--muted)" fontSize="9">
-        {fmtDate(data[0].date)}
-      </text>
-      <text
-        x={width - padding - 50}
-        y={height - 8}
-        fill="var(--muted)"
-        fontSize="9"
-      >
-        {fmtDate(data[data.length - 1].date)}
-      </text>
-    </svg>
-  );
 }
 
 function MacroCard({
@@ -128,7 +37,7 @@ function MacroCard({
   change,
   chartData,
   color,
-  formatValue,
+  formatType,
 }: {
   title: string;
   latestValue: string;
@@ -136,7 +45,7 @@ function MacroCard({
   change: string | null;
   chartData: { date: string; value: number }[];
   color: string;
-  formatValue: (v: number) => string;
+  formatType: "pct" | "bigValue";
 }) {
   return (
     <Card>
@@ -160,7 +69,7 @@ function MacroCard({
           )}
         </div>
         <div className="mt-2">
-          <TrendChart data={chartData} color={color} formatValue={formatValue} />
+          <MacroTrendChart data={chartData} color={color} formatType={formatType} />
         </div>
       </CardContent>
     </Card>
@@ -180,11 +89,11 @@ function calcChange(data: { value: number }[]): string | null {
 export default async function MacroPage() {
   // 并行拉取所有宏观数据
   const [cpi, unemployment, gdp, effr, sofr] = await Promise.all([
-    getCPI().catch(() => []),
-    getUnemployment().catch(() => []),
-    getGDPNominal().catch(() => []),
-    getEFFR().catch(() => []),
-    getSOFR().catch(() => []),
+    getCPI("oecd", 60).catch(() => []),
+    getUnemployment("oecd", 60).catch(() => []),
+    getGDPNominal("oecd", 40).catch(() => []),
+    getEFFR("federal_reserve", 250).catch(() => []),
+    getSOFR("federal_reserve", 250).catch(() => []),
   ]);
 
   // 取最新值
@@ -195,71 +104,63 @@ export default async function MacroPage() {
   const latestSOFR = sofr.length > 0 ? sofr[sofr.length - 1] : null;
 
   return (
-    <>
-
-        <header className="mb-6 border-b border-border pb-3">
-          <h1 className="text-lg font-semibold">宏观经济数据</h1>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
-            US Macro Indicators · oecd + federal_reserve
-          </p>
-        </header>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {/* CPI */}
+    <div className="px-4 lg:px-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {/* CPI */}
           <MacroCard
             title="CPI 消费者价格指数"
-            latestValue={latestCPI ? fmtPct(latestCPI.value) : "—"}
+            latestValue={latestCPI ? fmtMacroPct(latestCPI.value) : "—"}
             latestDate={fmtDate(latestCPI?.date)}
             change={calcChange(cpi)}
             chartData={cpi.map((d) => ({ date: d.date, value: d.value }))}
             color="var(--up)"
-            formatValue={fmtPct}
+            formatType="pct"
           />
 
           {/* 失业率 */}
           <MacroCard
             title="失业率"
-            latestValue={latestUnemp ? fmtPct(latestUnemp.value) : "—"}
+            latestValue={latestUnemp ? fmtMacroPct(latestUnemp.value) : "—"}
             latestDate={fmtDate(latestUnemp?.date)}
             change={calcChange(unemployment)}
             chartData={unemployment.map((d) => ({ date: d.date, value: d.value }))}
             color="var(--warn)"
-            formatValue={fmtPct}
+            formatType="pct"
           />
 
           {/* GDP */}
           <MacroCard
             title="GDP 名义（美国）"
-            latestValue={latestGDP ? fmtBigValue(latestGDP.value) : "—"}
+            latestValue={latestGDP ? fmtBigUSD(latestGDP.value) : "—"}
             latestDate={fmtDate(latestGDP?.date)}
             change={calcChange(gdp)}
             chartData={gdp.map((d) => ({ date: d.date, value: d.value }))}
             color="var(--accent)"
-            formatValue={fmtBigValue}
+            formatType="bigValue"
           />
 
           {/* EFFR */}
           <MacroCard
             title="EFFR 联邦基金有效利率"
-            latestValue={latestEFFR ? fmtPct(latestEFFR.rate) : "—"}
+            latestValue={latestEFFR ? fmtMacroPct(latestEFFR.rate) : "—"}
             latestDate={fmtDate(latestEFFR?.date)}
             change={calcChange(effr.map((d) => ({ value: d.rate })))}
             chartData={effr.map((d) => ({ date: d.date, value: d.rate }))}
             color="var(--down)"
-            formatValue={fmtPct}
+            formatType="pct"
           />
 
           {/* SOFR */}
           <MacroCard
             title="SOFR 担保隔夜融资利率"
-            latestValue={latestSOFR ? fmtPct(latestSOFR.rate) : "—"}
+            latestValue={latestSOFR ? fmtMacroPct(latestSOFR.rate) : "—"}
             latestDate={fmtDate(latestSOFR?.date)}
             change={calcChange(sofr.map((d) => ({ value: d.rate })))}
             chartData={sofr.map((d) => ({ date: d.date, value: d.rate }))}
             color="var(--down)"
-            formatValue={fmtPct}
+            formatType="pct"
           />
         </div>
-    </>
+    </div>
   );
 }

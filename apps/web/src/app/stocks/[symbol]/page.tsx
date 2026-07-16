@@ -32,93 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-
-// 简易 K 线图（SVG，不依赖 TradingView）
-function MiniChart({ data }: { data: HistoricalPrice[] }) {
-  if (data.length < 2) {
-    return (
-      <div className="flex h-64 items-center justify-center text-muted">
-        无历史数据
-      </div>
-    );
-  }
-
-  const width = 800;
-  const height = 300;
-  const padding = 40;
-  const chartW = width - padding * 2;
-  const chartH = height - padding * 2;
-
-  const prices = data.map((d) => d.close);
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
-  const span = max - min || 1;
-
-  const points = data
-    .map((d, i) => {
-      const x = padding + (i / (data.length - 1)) * chartW;
-      const y = padding + chartH - ((d.close - min) / span) * chartH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  const up = data[data.length - 1].close >= data[0].close;
-  const strokeColor = up ? "var(--up)" : "var(--down)";
-
-  // 日期标签（首尾）
-  const firstDate = data[0].date;
-  const lastDate = data[data.length - 1].date;
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="w-full h-64"
-      preserveAspectRatio="none"
-    >
-      {/* 网格线 */}
-      {[0, 0.25, 0.5, 0.75, 1].map((t) => (
-        <line
-          key={t}
-          x1={padding}
-          y1={padding + t * chartH}
-          x2={width - padding}
-          y2={padding + t * chartH}
-          stroke="var(--border)"
-          strokeWidth="0.5"
-          strokeDasharray="2,4"
-        />
-      ))}
-      {/* 价格线 */}
-      <polyline
-        points={points}
-        fill="none"
-        stroke={strokeColor}
-        strokeWidth="2"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-      {/* 日期标签 */}
-      <text
-        x={padding}
-        y={height - 10}
-        fill="var(--muted)"
-        fontSize="11"
-        fontFamily="monospace"
-      >
-        {firstDate}
-      </text>
-      <text
-        x={width - padding - 60}
-        y={height - 10}
-        fill="var(--muted)"
-        fontSize="11"
-        fontFamily="monospace"
-      >
-        {lastDate}
-      </text>
-    </svg>
-  );
-}
+import { PriceChart } from "@/components/price-chart";
 
 function MetricRow({
   label,
@@ -199,21 +113,24 @@ export default async function StockDetailPage({
     historical.length > 1 ? historical[historical.length - 2].close : null;
   const changePct =
     lastPrice && prevClose ? (lastPrice - prevClose) / prevClose : null;
+  const subtitle = [profile?.exchange, profile?.currency, profile?.sector]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <>
+    <div className="px-4 lg:px-6">
       {/* 标题区 */}
-      <header className="mb-6 flex items-start justify-between border-b border-border pb-4">
-        <div>
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
+        <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold">{displayName}</h1>
+            <h1 className="text-lg font-semibold tracking-wide">{displayName}</h1>
             <Badge variant="secondary">{symbol}</Badge>
           </div>
-          <div className="mt-1 flex items-center gap-3 text-xs text-muted">
-            {profile?.exchange && <span>{profile.exchange}</span>}
-            {profile?.currency && <span>{profile.currency}</span>}
-            {profile?.sector && <span>{profile.sector}</span>}
-          </div>
+          {subtitle && (
+            <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
+              {subtitle}
+            </p>
+          )}
         </div>
         {lastPrice && (
           <div className="text-right">
@@ -240,7 +157,7 @@ export default async function StockDetailPage({
               <CardTitle className="text-sm">价格走势（6 个月）</CardTitle>
             </CardHeader>
             <CardContent>
-              <MiniChart data={historical} />
+              <PriceChart data={historical} />
             </CardContent>
           </Card>
 
@@ -384,6 +301,6 @@ export default async function StockDetailPage({
             </CardContent>
           </Card>
         )}
-    </>
+    </div>
   );
 }

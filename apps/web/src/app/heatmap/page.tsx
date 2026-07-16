@@ -8,8 +8,6 @@ import Link from "next/link";
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 
 interface HeatmapItem {
@@ -110,7 +108,7 @@ function fmtPrice(v: number | null | undefined): string {
   return v.toFixed(2);
 }
 
-export async function Heatmap() {
+async function Heatmap() {
   const items = await fetchHeatmapData();
 
   if (items.length === 0) {
@@ -160,14 +158,7 @@ export async function Heatmap() {
 
 export default async function HeatmapPage() {
   return (
-    <>
-        <header className="mb-6 border-b border-border pb-3">
-          <h1 className="text-lg font-semibold">市场热力图</h1>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
-            Market Heatmap · gainers + losers · yfinance
-          </p>
-        </header>
-
+    <div className="px-4 lg:px-6">
         <Card className="mb-4">
           <CardContent className="pt-4">
             <div className="flex flex-wrap items-center gap-4 text-[10px] text-muted">
@@ -213,6 +204,6 @@ export default async function HeatmapPage() {
         </Card>
 
         <Heatmap />
-    </>
+    </div>
   );
 }

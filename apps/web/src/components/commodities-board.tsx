@@ -1,8 +1,10 @@
 /**
  * 大宗商品 + 外汇速览
- * 数据：yfinance（GC=F 金 / CL=F 油 / BTC-USD 加密）
+ * 数据：yfinance（GC=F 金 / CL=F 油 / SI=F 银 / BTC-USD 加密）
+ * 卡片风格：block SectionCards，mini AreaChart 展示近 7 日走势
  */
 import { getIndexHistorical } from "@/lib/openbb";
+import { CommodityCard } from "@/components/commodity-card";
 
 interface CommodityQuote {
   symbol: string;
@@ -10,6 +12,7 @@ interface CommodityQuote {
   price: number | null;
   changePct: number | null;
   unit: string;
+  hist: { date: string; value: number }[];
 }
 
 const COMMODITIES = [
@@ -19,28 +22,36 @@ const COMMODITIES = [
   { symbol: "BTC-USD", name: "比特币", unit: "USD" },
 ];
 
-async function fetchCommodity(symbol: string): Promise<{ price: number | null; changePct: number | null }> {
+async function fetchCommodity(
+  symbol: string
+): Promise<{
+  price: number | null;
+  changePct: number | null;
+  hist: { date: string; value: number }[];
+}> {
   try {
     const end = new Date();
-    const start = new Date(end.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const start = new Date(end.getTime() - 14 * 24 * 60 * 60 * 1000);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
     const hist = await getIndexHistorical(symbol, fmt(start), fmt(end));
-    if (hist.length === 0) return { price: null, changePct: null };
-    const last = hist[hist.length - 1];
-    const prev = hist.length > 1 ? hist[hist.length - 2] : last;
+    if (hist.length === 0) return { price: null, changePct: null, hist: [] };
+    const last7 = hist.slice(-7);
+    const last = last7[last7.length - 1];
+    const prev = last7.length > 1 ? last7[last7.length - 2] : last;
     return {
       price: last.close,
       changePct: prev.close > 0 ? (last.close - prev.close) / prev.close : 0,
+      hist: last7.map((p) => ({ date: p.date, value: p.close })),
     };
   } catch {
-    return { price: null, changePct: null };
+    return { price: null, changePct: null, hist: [] };
   }
 }
 
-function fmtPrice(v: number | null, unit: string): string {
+function fmtPrice(v: number | null): string {
   if (v == null) return "—";
-  if (v >= 1000) return `${v.toFixed(0)} ${unit}`;
-  return `${v.toFixed(2)} ${unit}`;
+  if (v >= 1000) return v.toFixed(0);
+  return v.toFixed(2);
 }
 
 function fmtPct(pct: number | null): string {
@@ -52,8 +63,8 @@ function fmtPct(pct: number | null): string {
 export async function CommoditiesBoard() {
   const commodities = await Promise.all(
     COMMODITIES.map(async (c) => {
-      const { price, changePct } = await fetchCommodity(c.symbol);
-      return { ...c, price, changePct };
+      const { price, changePct, hist } = await fetchCommodity(c.symbol);
+      return { ...c, price, changePct, hist };
     })
   );
 
@@ -62,28 +73,20 @@ export async function CommoditiesBoard() {
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-medium text-fg-dim">大宗商品</h3>
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs dark:*:data-[slot=card]:bg-card">
         {commodities.map((c) => {
           const up = (c.changePct ?? 0) >= 0;
           return (
-            <div
+            <CommodityCard
               key={c.symbol}
-              className="rounded-md border border-border bg-panel-2 px-3 py-2"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-muted">{c.name}</span>
-                <span
-                  className={`tab-nums text-[10px] ${
-                    up ? "text-up" : "text-down"
-                  }`}
-                >
-                  {up ? "▲" : "▼"} {fmtPct(c.changePct)}
-                </span>
-              </div>
-              <div className="mt-1 tab-nums text-sm font-semibold">
-                {fmtPrice(c.price, c.unit)}
-              </div>
-            </div>
+              symbol={c.symbol}
+              name={c.name}
+              unit={c.unit}
+              priceText={fmtPrice(c.price)}
+              changePctText={fmtPct(c.changePct)}
+              up={up}
+              hist={c.hist}
+            />
           );
         })}
       </div>

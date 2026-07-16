@@ -32,3 +32,17 @@ export function fmtVolume(volume: number | null | undefined): string {
   if (volume >= 1e3) return `${(volume / 1e3).toFixed(2)}K`;
   return volume.toLocaleString("en-US");
 }
+
+/** 宏观指标百分比（无符号，用于绝对值如 CPI=3.30%） */
+export function fmtMacroPct(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+/** 大额美元值（GDP 等） */
+export function fmtBigUSD(value: number | null | undefined): string {
+  if (value == null) return "—";
+  if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  return value.toLocaleString("en-US");
+}

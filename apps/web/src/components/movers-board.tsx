@@ -6,6 +6,14 @@
  */
 import Link from "next/link";
 import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
+import { MoversBarChart } from "@/components/movers-bar-chart";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 interface ScreenerItem {
   symbol: string;
@@ -147,14 +155,21 @@ function ScreenerColumn({
   showVolume?: boolean;
 }) {
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className={`text-xs font-medium ${colorClass}`}>{title}</h3>
-        <Link href={href} className="text-[10px] text-muted hover:text-fg">
-          更多 →
-        </Link>
-      </div>
-      <div className="rounded-lg border border-border bg-panel-2 px-3 py-1">
+    <Card
+      size="sm"
+      className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
+    >
+      <CardHeader>
+        <CardTitle className={`text-base font-medium ${colorClass}`}>
+          {title}
+        </CardTitle>
+        <CardAction>
+          <Link href={href} className="text-xs text-muted hover:text-fg">
+            更多 →
+          </Link>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
         {items.length > 0 ? (
           items.map((item) => (
             <StockRow key={item.symbol} item={item} showVolume={showVolume} />
@@ -164,8 +179,8 @@ function ScreenerColumn({
             无数据
           </div>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -178,6 +193,7 @@ export async function MoversBoard({ market = "global" }: { market?: string }) {
 
   return (
     <div className="space-y-4">
+      <MoversBarChart gainers={gainers} losers={losers} />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <ScreenerColumn
           title="涨幅榜 Top 10"
@@ -217,14 +233,21 @@ export async function TopNews({ market = "global" }: { market?: string }) {
   const top4 = articles.slice(0, 4);
 
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-xs font-medium text-fg-dim">热门资讯</h3>
-        <Link href="/news" className="text-[10px] text-muted hover:text-fg">
-          更多 →
-        </Link>
-      </div>
-      <div className="rounded-lg border border-border bg-panel-2 px-3 py-1">
+    <Card
+      size="sm"
+      className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
+    >
+      <CardHeader>
+        <CardTitle className="text-base font-medium text-fg-dim">
+          热门资讯
+        </CardTitle>
+        <CardAction>
+          <Link href="/news" className="text-xs text-muted hover:text-fg">
+            更多 →
+          </Link>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
         {top4.length > 0 ? (
           top4.map((article, i) => (
             <a
@@ -249,7 +272,7 @@ export async function TopNews({ market = "global" }: { market?: string }) {
             无新闻
           </div>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
