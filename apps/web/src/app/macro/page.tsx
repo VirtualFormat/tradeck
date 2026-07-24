@@ -8,12 +8,15 @@
  * - EFFR（联邦基金有效利率）
  * - SOFR（担保隔夜融资利率）
  */
+import Link from "next/link";
 import {
   getCPI,
   getUnemployment,
   getGDPNominal,
   getEFFR,
   getSOFR,
+  fetchEarningsCalendar,
+  fetchEconomicCalendar,
 } from "@/lib/openbb";
 import { fmtMacroPct, fmtBigUSD } from "@/lib/format";
 import {
@@ -22,12 +25,49 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { MacroTrendChart } from "@/components/macro-trend-chart";
+import { EmptyState } from "@/components/empty-state";
+
+// 强制动态渲染：生产构建下不做静态预渲染，每次请求实时从 backend 取数（宏观/日历数据有时效性）
+export const dynamic = "force-dynamic";
 
 function fmtDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
   const d = new Date(dateStr);
   return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit" });
+}
+
+/** 日历用短日期：07-30 周四 */
+function fmtCalDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return "—";
+  const d = new Date(`${dateStr}T00:00:00`);
+  return d.toLocaleDateString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+  });
+}
+
+/** 财报披露时段：BMO 盘前 / AMC 盘后 / 其他未知 */
+function fmtSession(session: string | null): string {
+  if (session === "BMO") return "盘前";
+  if (session === "AMC") return "盘后";
+  return "—";
+}
+
+/** 重要性着色：高=红（重点关注）、中=警告色、其他=灰 */
+function importanceClass(importance: string | null): string {
+  if (importance === "高" || importance === "high") return "text-up";
+  if (importance === "中" || importance === "medium") return "text-warn";
+  return "text-muted";
 }
 
 function MacroCard({
@@ -88,13 +128,16 @@ function calcChange(data: { value: number }[]): string | null {
 
 export default async function MacroPage() {
   // 并行拉取所有宏观数据
-  const [cpi, unemployment, gdp, effr, sofr] = await Promise.all([
-    getCPI("oecd", 60).catch(() => []),
-    getUnemployment("oecd", 60).catch(() => []),
-    getGDPNominal("oecd", 40).catch(() => []),
-    getEFFR("federal_reserve", 250).catch(() => []),
-    getSOFR("federal_reserve", 250).catch(() => []),
-  ]);
+  const [cpi, unemployment, gdp, effr, sofr, earnings, econEvents] =
+    await Promise.all([
+      getCPI("oecd", 60).catch(() => []),
+      getUnemployment("oecd", 60).catch(() => []),
+      getGDPNominal("oecd", 40).catch(() => []),
+      getEFFR("federal_reserve", 250).catch(() => []),
+      getSOFR("federal_reserve", 250).catch(() => []),
+      fetchEarningsCalendar(14).catch(() => []),
+      fetchEconomicCalendar(7).catch(() => []),
+    ]);
 
   // 取最新值
   const latestCPI = cpi.length > 0 ? cpi[cpi.length - 1] : null;
@@ -161,6 +204,108 @@ export default async function MacroPage() {
             formatType="pct"
           />
         </div>
+
+      {/* 日历区块：财报日历 + 宏观数据日历（源不可用时显示暂无数据，属预期降级） */}
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* 财报日历 */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">财报日历（未来 14 天）</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {earnings.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>日期</TableHead>
+                    <TableHead>代码</TableHead>
+                    <TableHead>时段</TableHead>
+                    <TableHead className="text-right">EPS 预期</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {earnings.map((item) => (
+                    <TableRow key={`${item.symbol}-${item.report_date}`}>
+                      <TableCell className="tab-nums whitespace-nowrap">
+                        {fmtCalDate(item.report_date)}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/stocks/${item.symbol}`}
+                          className="font-medium hover:text-accent"
+                        >
+                          {item.symbol}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-muted">
+                        {fmtSession(item.session)}
+                      </TableCell>
+                      <TableCell className="text-right tab-nums">
+                        {item.eps_estimate != null
+                          ? item.eps_estimate.toFixed(2)
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState />
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 宏观数据日历 */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">宏观数据日历（未来 7 天）</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {econEvents.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>日期</TableHead>
+                    <TableHead>时间</TableHead>
+                    <TableHead>国家</TableHead>
+                    <TableHead>事件</TableHead>
+                    <TableHead>重要性</TableHead>
+                    <TableHead className="text-right">预期</TableHead>
+                    <TableHead className="text-right">前值</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {econEvents.map((item, idx) => (
+                    <TableRow key={`${item.event_date}-${item.event_name}-${idx}`}>
+                      <TableCell className="tab-nums whitespace-nowrap">
+                        {fmtCalDate(item.event_date)}
+                      </TableCell>
+                      <TableCell className="tab-nums text-muted">
+                        {item.event_time ?? "—"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {item.country ?? "—"}
+                      </TableCell>
+                      <TableCell>{item.event_name}</TableCell>
+                      <TableCell className={importanceClass(item.importance)}>
+                        {item.importance ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right tab-nums">
+                        {item.forecast ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right tab-nums text-muted">
+                        {item.previous ?? "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState />
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

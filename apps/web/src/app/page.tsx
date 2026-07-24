@@ -11,8 +11,13 @@ import { CommoditiesBoard } from "@/components/commodities-board";
 import { TreasuryBoard } from "@/components/treasury-board";
 import { MarketDistribution } from "@/components/market-distribution";
 import { AdvanceDeclineBoard } from "@/components/advance-decline-board";
-import { MarketSwitcher } from "@/components/market-switcher";
+import { SentimentRadar } from "@/components/sentiment-radar";
+import { DatePicker } from "@/components/date-picker";
+import { RefreshButton } from "@/components/refresh-button";
+import { BoardSentimentBoard } from "@/components/board-sentiment-board";
+import { FundFlowBoard } from "@/components/fund-flow-board";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 
 function CardSkeleton({ title }: { title: string }) {
   return (
@@ -26,81 +31,85 @@ function CardSkeleton({ title }: { title: string }) {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ market?: string }>;
+  searchParams: Promise<{ board?: string; date?: string }>;
 }) {
-  const { market: marketParam } = await searchParams;
-  const market = marketParam ?? "global";
+  const { board, date } = await searchParams;
+  const boardType = board === "concept" ? "concept" : "industry";
 
   return (
     <>
-      {/* 顶部操作栏：市场切换 + 搜索 */}
+      {/* 顶部操作栏：搜索 + 日期回看 + 刷新 */}
       <div className="flex items-center gap-3 px-4 lg:px-6">
-        <MarketSwitcher />
         <StockSearch />
+        <DatePicker />
+        <RefreshButton />
+        {date && (
+          <Badge variant="secondary" className="bg-accent/20 text-accent">
+            快照模式：{date}
+          </Badge>
+        )}
       </div>
 
-      {/* 大盘指数（按市场过滤） */}
+      {/* 大盘指数（全球） */}
       <section className="px-4 lg:px-6">
-        <h2 className="mb-3 text-sm font-medium text-fg-dim">
-          大盘指数
-          {market !== "global" && (
-            <span className="ml-2 text-[10px] text-muted">
-              {market === "us" ? "美股" : market === "cn" ? "A股" : "港股"}
-            </span>
-          )}
-        </h2>
-        <Suspense
-          key={`indices-${market}`}
-          fallback={<Skeleton className="h-24 w-full rounded-lg" />}
-        >
-          <MarketOverview market={market} />
+        <h2 className="mb-3 text-sm font-medium text-fg-dim">大盘指数</h2>
+        <Suspense fallback={<Skeleton className="h-24 w-full rounded-lg" />}>
+          <MarketOverview market="global" />
         </Suspense>
       </section>
 
       {/* 主+侧布局 */}
-      <div className="grid grid-cols-1 gap-6 px-4 lg:grid-cols-[1fr_18rem] lg:px-6">
+      <div className="grid grid-cols-1 gap-6 px-4 lg:grid-cols-[1fr_20rem] lg:px-6">
         {/* 主区 */}
         <div className="space-y-6">
           <Suspense
-            key={`movers-${market}`}
+            key={`movers-${date ?? ""}`}
             fallback={<CardSkeleton title="涨跌榜" />}
           >
-            <MoversBoard market={market} />
+            <MoversBoard market="global" date={date} />
           </Suspense>
-          {/* 涨跌平 Donut（US/HK/CN 三市场） */}
-          <Suspense fallback={<CardSkeleton title="涨跌平" />}>
-            <AdvanceDeclineBoard />
-          </Suspense>
-          <Suspense
-            key={`news-${market}`}
-            fallback={<CardSkeleton title="热门资讯" />}
-          >
-            <TopNews market={market} />
+
+          {/* A 股板块舆情 + 资金流向榜（一行三列） */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <Suspense
+              key={`bs-${boardType}-${date ?? ""}`}
+              fallback={<CardSkeleton title="舆情榜" />}
+            >
+              <BoardSentimentBoard type={boardType} date={date} />
+            </Suspense>
+            <Suspense fallback={<CardSkeleton title="资金榜" />}>
+              <FundFlowBoard date={date} />
+            </Suspense>
+          </div>
+
+          {/* 涨跌平 Donut（US/HK/CN 三市场）+ 情绪雷达 */}
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <Suspense fallback={<CardSkeleton title="涨跌平" />}>
+              <AdvanceDeclineBoard />
+            </Suspense>
+            <Suspense fallback={<CardSkeleton title="情绪雷达" />}>
+              <SentimentRadar />
+            </Suspense>
+          </div>
+          <Suspense fallback={<CardSkeleton title="热门资讯" />}>
+            <TopNews market="global" />
           </Suspense>
         </div>
 
-        {/* 侧栏（全球/美股显示，A 股/港股只显示大宗+国债） */}
+        {/* 侧栏（全球概览固定四卡） */}
         <div className="space-y-6">
-          {market === "global" && (
-            <Suspense fallback={<CardSkeleton title="市场分布" />}>
-              <MarketDistribution />
-            </Suspense>
-          )}
-          {(market === "global" || market === "us") && (
-            <Suspense fallback={<CardSkeleton title="宏观速览" />}>
-              <MacroSnapshot />
-            </Suspense>
-          )}
-          {(market === "global" || market === "us" || market === "hk") && (
-            <Suspense fallback={<CardSkeleton title="大宗商品" />}>
-              <CommoditiesBoard />
-            </Suspense>
-          )}
-          {(market === "global" || market === "us") && (
-            <Suspense fallback={<CardSkeleton title="国债收益率" />}>
-              <TreasuryBoard />
-            </Suspense>
-          )}
+          <Suspense fallback={<CardSkeleton title="市场分布" />}>
+            <MarketDistribution />
+          </Suspense>
+          <Suspense fallback={<CardSkeleton title="宏观速览" />}>
+            <MacroSnapshot />
+          </Suspense>
+          <Suspense fallback={<CardSkeleton title="大宗商品" />}>
+            <CommoditiesBoard />
+          </Suspense>
+          <Suspense fallback={<CardSkeleton title="国债收益率" />}>
+            <TreasuryBoard />
+          </Suspense>
         </div>
       </div>
     </>

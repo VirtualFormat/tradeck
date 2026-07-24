@@ -60,8 +60,9 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
             ON CONFLICT (symbol) DO UPDATE SET
                 name = EXCLUDED.name,
                 last_price = EXCLUDED.last_price,
-                change = EXCLUDED.change,
-                change_percent = EXCLUDED.change_percent,
+                -- yfinance 常返回 null 涨跌，保留已有值避免清掉有效数据
+                change = COALESCE(EXCLUDED.change, quote_snapshots.change),
+                change_percent = COALESCE(EXCLUDED.change_percent, quote_snapshots.change_percent),
                 volume = EXCLUDED.volume,
                 market = EXCLUDED.market,
                 updated_at = NOW()

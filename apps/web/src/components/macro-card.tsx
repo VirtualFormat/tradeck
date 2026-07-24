@@ -78,7 +78,10 @@ export function MacroCard({ label, value, change, date, href, hist }: MacroCardP
           </CardTitle>
           <CardAction>
             {change && (
-              <Badge variant="outline" className={trendColor}>
+              <Badge
+                variant="outline"
+                className={`shrink-0 whitespace-nowrap ${trendColor}`}
+              >
                 {TrendIcon && <TrendIcon className="size-3" />}
                 {change}
               </Badge>

@@ -8,6 +8,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { fmtMacroPct, fmtBigUSD } from "@/lib/format";
+import { EmptyState } from "@/components/empty-state";
 
 type FormatType = "pct" | "bigValue";
 
@@ -39,9 +40,7 @@ export function MacroTrendChart({
 }) {
   if (data.length < 2) {
     return (
-      <div className="flex h-32 items-center justify-center text-xs text-muted">
-        无历史数据
-      </div>
+      <EmptyState compact title="无历史数据" className="h-32" />
     );
   }
 

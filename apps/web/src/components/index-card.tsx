@@ -75,12 +75,15 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
   }, [quote.hist]);
 
   return (
-    <Card className="@container/card gap-0">
+    <Card size="sm" className="@container/card gap-0">
       <CardHeader className="pb-1">
         <CardDescription className="flex items-center gap-1.5">
-          <span className="rounded-sm bg-border/60 px-1 text-[9px] uppercase tracking-wider text-muted">
+          <Badge
+            variant="secondary"
+            className="rounded-sm px-1 py-0 text-[9px] uppercase tracking-wider"
+          >
             {marketLabel}
-          </span>
+          </Badge>
           {quote.cnName}
         </CardDescription>
         <CardTitle
@@ -89,7 +92,10 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
           {fmtPrice(quote.last_price)}
         </CardTitle>
         <CardAction>
-          <Badge variant="outline" className={changeColor}>
+          <Badge
+            variant="outline"
+            className={`shrink-0 whitespace-nowrap ${changeColor}`}
+          >
             <TrendIcon className="size-3" />
             {fmtPct(quote.change_percent)}
           </Badge>
@@ -99,19 +105,21 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
         {data.length >= 2 && (
           <ChartContainer
             config={chartConfig}
-            className="h-[60px] w-full aspect-auto"
+            className="h-[48px] w-full aspect-auto"
           >
             <AreaChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={lineColor} stopOpacity={0.8} />
-                  <stop offset="95%" stopColor={lineColor} stopOpacity={0.1} />
+                  <stop offset="5%" stopColor={lineColor} stopOpacity={0.5} />
+                  <stop offset="95%" stopColor={lineColor} stopOpacity={0.05} />
                 </linearGradient>
               </defs>
               <XAxis dataKey="date" hide />
+              {/* baseValue=dataMin：阴影只向下填充，不随负值向上翻 */}
               <Area
                 type="monotone"
                 dataKey="change"
+                baseValue="dataMin"
                 stroke="var(--color-change)"
                 fill={`url(#${gradientId})`}
                 strokeWidth={1.5}

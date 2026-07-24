@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search } from "lucide-react";
+import { MagnifyingGlassIcon } from "@phosphor-icons/react";
 
 export function StockSearch() {
   const [symbol, setSymbol] = useState("");
@@ -23,7 +23,7 @@ export function StockSearch() {
 
   return (
     <form onSubmit={handleSubmit} className="relative flex items-center">
-      <Search className="absolute left-3 h-4 w-4 text-muted" />
+      <MagnifyingGlassIcon className="absolute left-3 h-4 w-4 text-muted" />
       <Input
         type="text"
         value={symbol}
@@ -37,7 +37,7 @@ export function StockSearch() {
         size="icon"
         className="ml-2 bg-accent text-white hover:bg-accent/80"
       >
-        <Search />
+        <MagnifyingGlassIcon />
       </Button>
     </form>
   );

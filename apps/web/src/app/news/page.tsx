@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/empty-state";
 
 // 默认聚合的热门股票（覆盖美股科技 + 中国 ADR + 汽车）
 const DEFAULT_SYMBOLS = [
@@ -129,9 +130,7 @@ export default async function NewsPage({
                 <NewsItem key={`${article.url}-${i}`} article={article} />
               ))
             ) : (
-              <div className="py-8 text-center text-muted">
-                无新闻数据
-              </div>
+              <EmptyState title="无新闻数据" />
             )}
           </CardContent>
         </Card>

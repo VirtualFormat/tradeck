@@ -24,9 +24,9 @@ async def fetch_and_store_movers() -> int:
 
         pool = await get_pool()
         async with pool.acquire() as conn:
-            # 先删旧数据
+            # 只删当天快照（保留历史日期，供回看）
             await conn.execute(
-                "DELETE FROM movers_cache WHERE type = $1",
+                "DELETE FROM movers_cache WHERE type = $1 AND snapshot_date = CURRENT_DATE",
                 mover_type,
             )
             # 批量插入

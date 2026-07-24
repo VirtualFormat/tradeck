@@ -11,6 +11,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { EmptyState } from "@/components/empty-state";
 
 export interface MarketPieDatum {
   name: string;
@@ -37,9 +38,7 @@ export function MarketPieChart({ data }: { data: MarketPieDatum[] }) {
 
   if (!data.length || total <= 0) {
     return (
-      <div className="flex h-[220px] items-center justify-center text-xs text-muted">
-        暂无分布数据
-      </div>
+      <EmptyState compact title="暂无分布数据" className="h-[220px]" />
     );
   }
 

@@ -21,13 +21,26 @@ class AKShareConceptBoardsQueryParams(QueryParams):
 class AKShareConceptBoardsData(Data):
     """AKShare Concept Boards Data."""
 
+    __alias_dict__ = {
+        "name": "板块名称",
+        "code": "板块代码",
+        "change_percent": "涨跌幅",
+        "market_cap": "总市值",
+        "turnover_rate": "换手率",
+        "leader_stock": "领涨股票",
+        "leader_change": "领涨股票-涨跌幅",
+    }
+
     name: str | None = Field(default=None, description="Board name.")
     code: str | None = Field(default=None, description="Board code.")
     change_percent: float | None = Field(
         default=None, description="Daily change percent."
     )
-    turnover: float | None = Field(
-        default=None, description="Turnover amount (100M CNY)."
+    market_cap: float | None = Field(
+        default=None, description="Total market capitalization (CNY)."
+    )
+    turnover_rate: float | None = Field(
+        default=None, description="Turnover rate as a percentage."
     )
     leader_stock: str | None = Field(default=None, description="Leader stock name.")
     leader_change: float | None = Field(

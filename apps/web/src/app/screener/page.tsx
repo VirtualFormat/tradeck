@@ -16,7 +16,8 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -25,7 +26,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Trash2, Star } from "lucide-react";
+import { PlusIcon, TrashIcon, StarIcon } from "@phosphor-icons/react";
+import { EmptyState } from "@/components/empty-state";
 
 const WATCHLIST_KEY = "tradeck-watchlist";
 
@@ -145,7 +147,7 @@ export default function ScreenerPage() {
           <Card className="lg:col-span-1">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">
-                <Star className="h-4 w-4" />
+                <StarIcon className="h-4 w-4" />
                 自选股 ({watchlist.length})
               </CardTitle>
             </CardHeader>
@@ -165,7 +167,7 @@ export default function ScreenerPage() {
                   className="flex-1"
                 />
                 <Button type="submit" size="sm">
-                  <Plus className="h-3 w-3" />
+                  <PlusIcon className="h-3 w-3" />
                 </Button>
               </form>
 
@@ -209,7 +211,7 @@ export default function ScreenerPage() {
                               onClick={() => removeFromWatchlist(item.symbol)}
                               className="text-muted hover:text-up"
                             >
-                              <Trash2 />
+                              <TrashIcon />
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -218,9 +220,10 @@ export default function ScreenerPage() {
                   </TableBody>
                 </Table>
               ) : (
-                <div className="py-8 text-center text-xs text-muted">
-                  暂无自选股，输入代码添加
-                </div>
+                <EmptyState
+                  title="暂无自选股"
+                  description="输入代码添加"
+                />
               )}
             </CardContent>
           </Card>
@@ -232,18 +235,23 @@ export default function ScreenerPage() {
             </CardHeader>
             <CardContent>
               {/* 类型切换 */}
-              <div className="mb-4 flex flex-wrap gap-1.5">
-                {SCREENER_TYPES.map((t) => (
-                  <Badge
-                    key={t.key}
-                    variant={screenerType === t.key ? "default" : "secondary"}
-                    className="cursor-pointer"
-                    onClick={() => setScreenerType(t.key)}
-                  >
-                    {t.label}
-                  </Badge>
-                ))}
-              </div>
+              <Tabs
+                value={screenerType}
+                onValueChange={(v) => setScreenerType(v as ScreenerType)}
+                className="mb-4 flex-row gap-0"
+              >
+                <TabsList className="rounded-md border border-border bg-panel-2 p-0.5">
+                  {SCREENER_TYPES.map((t) => (
+                    <TabsTrigger
+                      key={t.key}
+                      value={t.key}
+                      className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted hover:text-fg data-active:bg-accent data-active:text-white"
+                    >
+                      {t.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
 
               <p className="mb-3 text-xs text-muted">
                 {SCREENER_TYPES.find((t) => t.key === screenerType)?.desc}
@@ -251,8 +259,10 @@ export default function ScreenerPage() {
 
               {/* 筛选结果 */}
               {loading ? (
-                <div className="py-8 text-center text-xs text-muted">
-                  加载中...
+                <div className="space-y-2 py-1">
+                  {Array.from({ length: 8 }).map((_, i) => (
+                    <Skeleton key={i} className="h-6 w-full" />
+                  ))}
                 </div>
               ) : screenerData.length > 0 ? (
                 <Table>
@@ -311,8 +321,8 @@ export default function ScreenerPage() {
                                   : "text-muted hover:text-accent"
                               }
                             >
-                              <Star
-                                fill={inWatchlist ? "currentColor" : "none"}
+                              <StarIcon
+                                weight={inWatchlist ? "fill" : "regular"}
                               />
                             </Button>
                           </TableCell>
@@ -322,9 +332,7 @@ export default function ScreenerPage() {
                   </TableBody>
                 </Table>
               ) : (
-                <div className="py-8 text-center text-xs text-muted">
-                  无数据
-                </div>
+                <EmptyState title="无数据" />
               )}
             </CardContent>
           </Card>

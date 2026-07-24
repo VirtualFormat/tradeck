@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/card";
 import { IndexAreaChart, type IndexSeries } from "@/components/index-area-chart";
 import { IndexCard, type IndexQuote } from "@/components/index-card";
+import { EmptyState } from "@/components/empty-state";
 
 // 全球大盘指数 watchlist（yfinance 代码）
 const ALL_INDICES = [
@@ -28,13 +29,23 @@ const ALL_INDICES = [
   { symbol: "^DJI", name: "道琼斯", market: "us", type: "index" as const },
   { symbol: "^HSI", name: "恒生指数", market: "hk", type: "index" as const },
   { symbol: "^HSCEI", name: "恒生国企", market: "hk", type: "index" as const },
-  { symbol: "000001.SS", name: "上证指数", market: "cn", type: "equity" as const },
-  { symbol: "399001.SZ", name: "深证成指", market: "cn", type: "equity" as const },
-  { symbol: "399006.SZ", name: "创业板指", market: "cn", type: "equity" as const },
+  { symbol: "000001.SS", name: "上证指数", market: "cn", type: "index" as const },
+  { symbol: "399001.SZ", name: "深证成指", market: "cn", type: "index" as const },
+  { symbol: "399006.SZ", name: "创业板指", market: "cn", type: "index" as const },
 ];
 
-// AreaChart 配色（循环 chart-1..chart-5，shadcn preset）
-const CHART_COLORS = [
+// AreaChart 配色（按 symbol 固定配色，深色背景上区分度高）
+const SYMBOL_COLORS: Record<string, string> = {
+  "^GSPC": "#4d8dff", // 蓝
+  "^IXIC": "#22d3ee", // 青
+  "^DJI": "#f0a050", // 琥珀
+  "^HSI": "#a78bfa", // 紫
+  "^HSCEI": "#f472b6", // 粉
+  "000001.SS": "#f0556b", // 红
+  "399001.SZ": "#fb923c", // 橙
+  "399006.SZ": "#e879f9", // 品红
+};
+const FALLBACK_COLORS = [
   "var(--chart-1)",
   "var(--chart-2)",
   "var(--chart-3)",
@@ -151,7 +162,7 @@ async function fetchIndexRelatives(
   const series: IndexSeries[] = valid.map((h, i) => ({
     key: slugify(h.idx.symbol),
     cnName: h.idx.name,
-    color: CHART_COLORS[i % CHART_COLORS.length],
+    color: SYMBOL_COLORS[h.idx.symbol] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
   }));
 
   // 收集所有日期并排序
@@ -194,8 +205,8 @@ export async function MarketOverview({ market = "global" }: { market?: string })
 
   if (indices.length === 0) {
     return (
-      <Card className="flex h-48 items-center justify-center border border-border bg-panel text-muted ring-0">
-        等待指数数据...
+      <Card className="flex h-48 items-center justify-center">
+        <EmptyState compact title="等待指数数据" />
       </Card>
     );
   }
@@ -228,7 +239,7 @@ export async function MarketOverview({ market = "global" }: { market?: string })
         </Card>
       )}
 
-      <div className="grid grid-cols-1 gap-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-2 @5xl/main:grid-cols-4 dark:*:data-[slot=card]:bg-card">
+      <div className="grid grid-cols-2 gap-3 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-4 @5xl/main:grid-cols-8 dark:*:data-[slot=card]:bg-card">
         {indices.map((quote) => (
           <IndexCard key={quote.symbol} quote={quote} />
         ))}

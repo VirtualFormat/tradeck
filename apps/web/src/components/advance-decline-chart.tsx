@@ -14,6 +14,7 @@ import {
   ChartLegend,
   type ChartConfig,
 } from "@/components/ui/chart"
+import { EmptyState } from "@/components/empty-state"
 
 export interface AdvanceDeclineData {
   up: number
@@ -107,14 +108,11 @@ export function AdvanceDeclineChart({
   // 无数据空状态
   if (total === 0) {
     return (
-      <div
-        className={cn(
-          "flex h-[220px] w-full items-center justify-center text-xs text-muted",
-          className
-        )}
-      >
-        无数据
-      </div>
+      <EmptyState
+        compact
+        title="无数据"
+        className={cn("h-[220px] w-full", className)}
+      />
     )
   }
 

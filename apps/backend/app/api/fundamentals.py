@@ -77,3 +77,120 @@ async def get_income(
         }
         for r in rows
     ]
+
+
+@router.get("/api/fundamentals/balance")
+async def get_balance(
+    symbol: str = Query(...),
+    period: str | None = Query(None),
+):
+    """获取资产负债表（年报+季报）。返回扁平数组，按 fiscal_date 倒序。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if period:
+            rows = await conn.fetch(
+                """
+                SELECT symbol, period, fiscal_date, total_assets, total_liabilities,
+                    total_equity, total_current_assets, total_current_liabilities,
+                    cash_and_equivalents, inventories, accounts_receivable,
+                    total_debt, retained_earnings
+                FROM balance_sheets
+                WHERE symbol = $1 AND period = $2
+                ORDER BY fiscal_date DESC
+                """,
+                symbol.upper(),
+                period,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT symbol, period, fiscal_date, total_assets, total_liabilities,
+                    total_equity, total_current_assets, total_current_liabilities,
+                    cash_and_equivalents, inventories, accounts_receivable,
+                    total_debt, retained_earnings
+                FROM balance_sheets
+                WHERE symbol = $1
+                ORDER BY fiscal_date DESC
+                """,
+                symbol.upper(),
+            )
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    return [
+        {
+            "symbol": r["symbol"],
+            "period": r["period"],
+            "fiscal_date": r["fiscal_date"].isoformat() if r["fiscal_date"] else None,
+            "total_assets": _f(r["total_assets"]),
+            "total_liabilities": _f(r["total_liabilities"]),
+            "total_equity": _f(r["total_equity"]),
+            "total_current_assets": _f(r["total_current_assets"]),
+            "total_current_liabilities": _f(r["total_current_liabilities"]),
+            "cash_and_equivalents": _f(r["cash_and_equivalents"]),
+            "inventories": _f(r["inventories"]),
+            "accounts_receivable": _f(r["accounts_receivable"]),
+            "total_debt": _f(r["total_debt"]),
+            "retained_earnings": _f(r["retained_earnings"]),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/fundamentals/cash")
+async def get_cash_flow(
+    symbol: str = Query(...),
+    period: str | None = Query(None),
+):
+    """获取现金流量表（年报+季报）。返回扁平数组，按 fiscal_date 倒序。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if period:
+            rows = await conn.fetch(
+                """
+                SELECT symbol, period, fiscal_date, operating_cash_flow,
+                    investing_cash_flow, financing_cash_flow, capital_expenditure,
+                    free_cash_flow, net_income, depreciation_amortization,
+                    share_repurchase, dividends_paid
+                FROM cash_flow_statements
+                WHERE symbol = $1 AND period = $2
+                ORDER BY fiscal_date DESC
+                """,
+                symbol.upper(),
+                period,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT symbol, period, fiscal_date, operating_cash_flow,
+                    investing_cash_flow, financing_cash_flow, capital_expenditure,
+                    free_cash_flow, net_income, depreciation_amortization,
+                    share_repurchase, dividends_paid
+                FROM cash_flow_statements
+                WHERE symbol = $1
+                ORDER BY fiscal_date DESC
+                """,
+                symbol.upper(),
+            )
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    return [
+        {
+            "symbol": r["symbol"],
+            "period": r["period"],
+            "fiscal_date": r["fiscal_date"].isoformat() if r["fiscal_date"] else None,
+            "operating_cash_flow": _f(r["operating_cash_flow"]),
+            "investing_cash_flow": _f(r["investing_cash_flow"]),
+            "financing_cash_flow": _f(r["financing_cash_flow"]),
+            "capital_expenditure": _f(r["capital_expenditure"]),
+            "free_cash_flow": _f(r["free_cash_flow"]),
+            "net_income": _f(r["net_income"]),
+            "depreciation_amortization": _f(r["depreciation_amortization"]),
+            "share_repurchase": _f(r["share_repurchase"]),
+            "dividends_paid": _f(r["dividends_paid"]),
+        }
+        for r in rows
+    ]

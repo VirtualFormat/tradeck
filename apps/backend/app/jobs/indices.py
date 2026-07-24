@@ -29,6 +29,9 @@ TRACKED_INDICES = [
     {"symbol": "000001.SS", "market": "CN"},
     {"symbol": "399001.SZ", "market": "CN"},
     {"symbol": "399006.SZ", "market": "CN"},
+    {"symbol": "^N225", "market": "JP"},  # 日经 225
+    {"symbol": "^STOXX50E", "market": "EU"},  # 欧洲斯托克 50
+    {"symbol": "^VIX", "market": "VOL"},  # 恐慌指数
 ]
 
 # 大宗商品（用 index/historical 拉）
@@ -37,6 +40,7 @@ TRACKED_COMMODITIES = [
     {"symbol": "CL=F", "market": "US"},  # 原油
     {"symbol": "SI=F", "market": "US"},  # 白银
     {"symbol": "BTC-USD", "market": "US"},  # 比特币
+    {"symbol": "HG=F", "market": "US"},  # 铜
 ]
 
 
@@ -64,6 +68,7 @@ async def fetch_and_store_index(symbol: str, market: str) -> int:
         rows = [
             (symbol, market, _parse_date(r.get("date")), r.get("close"), r.get("volume"))
             for r in results
+            if r.get("close") is not None  # 跳过当日未收盘的 null close 行，防止覆盖有效值
         ]
         await conn.executemany(
             """

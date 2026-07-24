@@ -1,5 +1,9 @@
 # tradeck 开发规范
 
+## UI 规范：shadcn 优先（强制）
+
+前端一切 UI 元素优先使用 `apps/web/src/components/ui/` 的 shadcn 组件，官方目录有但未装的先 `pnpm dlx shadcn add X` 安装再使用，禁止手写 div 模拟；图表必须经 `ui/chart`；空态统一走 `empty-state.tsx`；图标只用 phosphor。**完整规则与提交前检查清单见 `AGENTS.md`「UI 强制规则」一节，任何前端任务开工前必读。**
+
 ## 开发环境：devcontainer（强制）
 
 **所有开发在 devcontainer 内完成，不污染宿主机**。宿主机只需要 Docker + VS Code（Remote-Containers 扩展）。

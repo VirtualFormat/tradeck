@@ -171,7 +171,7 @@ fundamental_metrics (symbol PK, market_cap, pe_ratio, forward_pe, peg_ratio,
 
 **15 只跟踪股票**：
 - 美股：AAPL, MSFT, NVDA, TSLA, AMZN, GOOGL, META, NFLX
-- A 股：600519.SH, 000001.SZ, 300750.SZ, 601318.SH
+- A 股：600519.SS, 000001.SZ, 300750.SZ, 601318.SS
 - 港股：0700.HK, 9988.HK, 1810.HK
 
 **12 个指数 + 大宗商品**：

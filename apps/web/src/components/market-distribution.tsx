@@ -23,9 +23,9 @@ const ALL_INDICES = [
   { symbol: "^DJI", name: "道琼斯", market: "us", type: "index" as const },
   { symbol: "^HSI", name: "恒生指数", market: "hk", type: "index" as const },
   { symbol: "^HSCEI", name: "恒生国企", market: "hk", type: "index" as const },
-  { symbol: "000001.SS", name: "上证指数", market: "cn", type: "equity" as const },
-  { symbol: "399001.SZ", name: "深证成指", market: "cn", type: "equity" as const },
-  { symbol: "399006.SZ", name: "创业板指", market: "cn", type: "equity" as const },
+  { symbol: "000001.SS", name: "上证指数", market: "cn", type: "index" as const },
+  { symbol: "399001.SZ", name: "深证成指", market: "cn", type: "index" as const },
+  { symbol: "399006.SZ", name: "创业板指", market: "cn", type: "index" as const },
 ] as const;
 
 const MARKET_LABEL: Record<string, string> = {

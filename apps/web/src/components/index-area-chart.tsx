@@ -3,11 +3,12 @@
  * - 接收近 N 日多指数的归一化涨跌幅（%）数据
  * - 用 ChartContainer + Recharts AreaChart，渐变填充
  * - 颜色用 var(--color-KEY) 约定（KEY = series.key，由 ChartConfig 注入）
+ * - Y 轴紧凑域（dataMin/dataMax ± padding），波动更明显；图例右上角
  */
 "use client";
 
 import { Fragment } from "react";
-import { Area, AreaChart, CartesianGrid, XAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 import {
   ChartContainer,
@@ -32,7 +33,7 @@ export interface IndexAreaChartProps {
   series: IndexSeries[];
 }
 
-/** 把 symbol 里��特殊字符（^ .）替换成合法的 CSS id 片段 */
+/** 把 symbol 里的特殊字符（^ .）替换成合法的 CSS id 片段 */
 function safeId(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
@@ -45,12 +46,23 @@ export function IndexAreaChart({ data, series }: IndexAreaChartProps) {
     ])
   ) satisfies ChartConfig;
 
+  // 紧凑 Y 域：只包住数据波动范围 ±10%，避免 0 基线把曲线压平
+  const values = data.flatMap((row) =>
+    series
+      .map((s) => row[s.key])
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+  );
+  const dataMin = values.length ? Math.min(...values) : -1;
+  const dataMax = values.length ? Math.max(...values) : 1;
+  const pad = Math.max((dataMax - dataMin) * 0.1, 0.05);
+  const domain: [number, number] = [dataMin - pad, dataMax + pad];
+
   return (
     <ChartContainer
       config={chartConfig}
-      className="aspect-auto h-[250px] w-full"
+      className="aspect-auto h-[260px] w-full"
     >
-      <AreaChart data={data}>
+      <AreaChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
         <defs>
           {series.map((s) => {
             const gradId = `fill-${safeId(s.key)}`;
@@ -66,12 +78,12 @@ export function IndexAreaChart({ data, series }: IndexAreaChartProps) {
                 <stop
                   offset="5%"
                   stopColor={`var(--color-${s.key})`}
-                  stopOpacity={0.7}
+                  stopOpacity={0.35}
                 />
                 <stop
                   offset="95%"
                   stopColor={`var(--color-${s.key})`}
-                  stopOpacity={0.05}
+                  stopOpacity={0.02}
                 />
               </linearGradient>
             );
@@ -92,6 +104,17 @@ export function IndexAreaChart({ data, series }: IndexAreaChartProps) {
               day: "numeric",
             });
           }}
+        />
+        <YAxis
+          domain={domain}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={4}
+          width={52}
+          tickCount={5}
+          tickFormatter={(value: number) =>
+            `${value > 0 ? "+" : ""}${value.toFixed(1)}%`
+          }
         />
         <ChartTooltip
           cursor={false}
@@ -115,7 +138,11 @@ export function IndexAreaChart({ data, series }: IndexAreaChartProps) {
             />
           }
         />
-        <ChartLegend content={<ChartLegendContent />} />
+        <ChartLegend
+          verticalAlign="top"
+          align="right"
+          content={<ChartLegendContent verticalAlign="top" />}
+        />
         {series.map((s) => (
           <Fragment key={s.key}>
             <Area

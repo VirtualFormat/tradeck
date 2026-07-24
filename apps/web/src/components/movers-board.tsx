@@ -6,7 +6,9 @@
  */
 import Link from "next/link";
 import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
-import { MoversBarChart } from "@/components/movers-bar-chart";
+import { StockPreviewTrigger } from "@/components/stock-preview-dialog";
+import { EmptyState } from "@/components/empty-state";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardAction,
@@ -22,13 +24,15 @@ interface ScreenerItem {
   change: number | null;
   percent_change: number | null;
   volume: number | null;
+  /** 换手率（成交额/市值，仅换手榜有） */
+  turnover?: number | null;
 }
 
 // A 股热门列表（按市值选）
 const CN_STOCKS = [
-  "600519.SH", "601318.SH", "600036.SH", "000858.SZ",
-  "002594.SZ", "300750.SZ", "601012.SH", "600900.SH",
-  "000001.SZ", "601166.SH", "600276.SH", "601398.SH",
+  "600519.SS", "601318.SS", "600036.SS", "000858.SZ",
+  "002594.SZ", "300750.SZ", "601012.SS", "600900.SS",
+  "000001.SZ", "601166.SS", "600276.SS", "601398.SS",
 ];
 
 // 港股热门列表
@@ -40,7 +44,8 @@ const HK_STOCKS = [
 
 async function fetchScreener(
   type: "gainers" | "losers" | "active",
-  market: string = "global"
+  market: string = "global",
+  date?: string
 ): Promise<ScreenerItem[]> {
   try {
     if (market === "cn" || market === "hk") {
@@ -65,11 +70,30 @@ async function fetchScreener(
       return sorted.slice(0, 10);
     }
 
-    // 美股/全球用 backend /api/movers（从 DB 读，<10ms）
+    // 美股/全球用 backend /api/movers（从 DB 读，支持 date 快照回看）
     const BACKEND_API_URL =
       process.env.BACKEND_API_URL ?? "http://localhost:8080";
+    const dateQuery = date ? `&date=${date}` : "";
     const res = await fetch(
-      `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=10`,
+      `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=10${dateQuery}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 换手榜（backend 计算：成交额/市值，缺市值的标的不计） */
+async function fetchTurnover(market: string): Promise<ScreenerItem[]> {
+  try {
+    const BACKEND_API_URL =
+      process.env.BACKEND_API_URL ?? "http://localhost:8080";
+    const m = market === "cn" ? "CN" : market === "hk" ? "HK" : "US";
+    const res = await fetch(
+      `${BACKEND_API_URL}/api/movers/turnover?market=${m}&limit=10`,
       { headers: { Accept: "application/json" } }
     );
     if (!res.ok) return [];
@@ -103,41 +127,47 @@ function fmtVolume(v: number | null | undefined): string {
 
 function StockRow({
   item,
-  showVolume,
+  metric,
 }: {
   item: ScreenerItem;
-  showVolume?: boolean;
+  metric?: "amount" | "turnover";
 }) {
   const up = (item.percent_change ?? 0) >= 0;
   return (
-    <Link
-      href={`/stocks/${item.symbol}`}
-      className="flex items-center justify-between border-b border-border/40 py-1.5 transition-colors hover:bg-panel/50 -mx-1 px-1 rounded-sm last:border-0"
-    >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="shrink-0 text-xs font-medium">{item.symbol}</span>
-        <span className="truncate text-[10px] text-muted">
-          {item.name ?? "—"}
-        </span>
-      </div>
-      <div className="flex shrink-0 items-center gap-3">
-        {showVolume ? (
-          <span className="tab-nums text-[10px] text-muted">
-            {fmtVolume(item.volume)}
+    <StockPreviewTrigger symbol={item.symbol} name={item.name}>
+      <div className="flex items-center justify-between border-b border-border/40 py-1.5 transition-colors hover:bg-panel/50 -mx-1 px-1 rounded-sm last:border-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="shrink-0 text-xs font-medium">{item.symbol}</span>
+          <span className="truncate text-[10px] text-muted">
+            {item.name ?? "—"}
           </span>
-        ) : null}
-        <span className="tab-nums text-xs text-fg-dim">
-          {fmtPrice(item.price)}
-        </span>
-        <span
-          className={`tab-nums w-16 text-right text-xs ${
-            up ? "text-up" : "text-down"
-          }`}
-        >
-          {fmtPct(item.percent_change)}
-        </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {metric === "amount" ? (
+            <span className="tab-nums text-[10px] text-muted">
+              {fmtVolume((item.volume ?? 0) * (item.price ?? 0))}
+            </span>
+          ) : null}
+          {metric === "turnover" ? (
+            <span className="tab-nums text-[10px] text-accent">
+              {item.turnover != null
+                ? `${(item.turnover * 100).toFixed(2)}%`
+                : "—"}
+            </span>
+          ) : null}
+          <span className="tab-nums text-xs text-fg-dim">
+            {fmtPrice(item.price)}
+          </span>
+          <span
+            className={`tab-nums w-16 text-right text-xs ${
+              up ? "text-up" : "text-down"
+            }`}
+          >
+            {fmtPct(item.percent_change)}
+          </span>
+        </div>
       </div>
-    </Link>
+    </StockPreviewTrigger>
   );
 }
 
@@ -146,13 +176,13 @@ function ScreenerColumn({
   items,
   href,
   colorClass,
-  showVolume,
+  metric,
 }: {
   title: string;
   items: ScreenerItem[];
   href: string;
   colorClass: string;
-  showVolume?: boolean;
+  metric?: "amount" | "turnover";
 }) {
   return (
     <Card
@@ -172,48 +202,57 @@ function ScreenerColumn({
       <CardContent>
         {items.length > 0 ? (
           items.map((item) => (
-            <StockRow key={item.symbol} item={item} showVolume={showVolume} />
+            <StockRow key={item.symbol} item={item} metric={metric} />
           ))
         ) : (
-          <div className="py-4 text-center text-[10px] text-muted">
-            无数据
-          </div>
+          <EmptyState compact title="无数据" />
         )}
       </CardContent>
     </Card>
   );
 }
 
-export async function MoversBoard({ market = "global" }: { market?: string }) {
-  const [gainers, losers, active] = await Promise.all([
-    fetchScreener("gainers", market),
-    fetchScreener("losers", market),
-    fetchScreener("active", market),
+export async function MoversBoard({
+  market = "global",
+  date,
+}: {
+  market?: string;
+  date?: string;
+}) {
+  const [gainers, losers, active, turnover] = await Promise.all([
+    fetchScreener("gainers", market, date),
+    fetchScreener("losers", market, date),
+    fetchScreener("active", market, date),
+    fetchTurnover(market),
   ]);
 
   return (
-    <div className="space-y-4">
-      <MoversBarChart gainers={gainers} losers={losers} />
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <ScreenerColumn
-          title="涨幅榜 Top 10"
-          items={gainers}
-          href="/screener"
-          colorClass="text-up"
-        />
-        <ScreenerColumn
-          title="跌幅榜 Top 10"
-          items={losers}
-          href="/screener"
-          colorClass="text-down"
-        />
-      </div>
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <ScreenerColumn
-        title="活跃榜 Top 10（成交量）"
-        items={active}
+        title="涨幅榜 Top 8"
+        items={gainers.slice(0, 8)}
+        href="/screener"
+        colorClass="text-up"
+      />
+      <ScreenerColumn
+        title="跌幅榜 Top 8"
+        items={losers.slice(0, 8)}
+        href="/screener"
+        colorClass="text-down"
+      />
+      <ScreenerColumn
+        title="活跃榜 Top 8（成交额）"
+        items={active.slice(0, 8)}
         href="/screener"
         colorClass="text-accent"
-        showVolume
+        metric="amount"
+      />
+      <ScreenerColumn
+        title="换手榜 Top 8"
+        items={turnover.slice(0, 8)}
+        href="/screener"
+        colorClass="text-warn"
+        metric="turnover"
       />
     </div>
   );
@@ -258,9 +297,12 @@ export async function TopNews({ market = "global" }: { market?: string }) {
               className="block border-b border-border/40 py-1.5 transition-colors hover:bg-panel/50 -mx-1 px-1 rounded-sm last:border-0"
             >
               <div className="flex items-start gap-2">
-                <span className="mt-0.5 shrink-0 rounded-sm bg-border/60 px-1 text-[9px] text-muted">
+                <Badge
+                  variant="secondary"
+                  className="mt-0.5 shrink-0 rounded-sm px-1 py-0 text-[9px]"
+                >
                   {article.symbol}
-                </span>
+                </Badge>
                 <span className="text-xs text-fg-dim line-clamp-2 leading-snug">
                   {article.title}
                 </span>
@@ -268,9 +310,7 @@ export async function TopNews({ market = "global" }: { market?: string }) {
             </a>
           ))
         ) : (
-          <div className="py-4 text-center text-[10px] text-muted">
-            无新闻
-          </div>
+          <EmptyState compact title="无新闻" />
         )}
       </CardContent>
     </Card>

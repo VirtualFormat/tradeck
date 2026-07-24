@@ -1,10 +1,9 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 
-import { NavDocuments } from "@/components/nav-documents"
 import { NavMain } from "@/components/nav-main"
-import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
 import {
   Sidebar,
@@ -18,37 +17,28 @@ import {
 import {
   SquaresFourIcon,
   StarIcon,
-  FlameIcon,
   NewspaperIcon,
   ChartBarIcon,
-  GearIcon,
-  QuestionIcon,
   ChartLineIcon,
-  FileTextIcon,
+  FlagIcon,
+  BankIcon,
+  CityIcon,
+  GlobeIcon,
 } from "@phosphor-icons/react"
 
-const data = {
-  user: {
-    name: "tradeck",
-    email: "v0.1",
-    avatar: "/avatars/shadcn.jpg",
-  },
-  navMain: [
-    { title: "看板", url: "/", icon: <SquaresFourIcon /> },
-    { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
-    { title: "热力图", url: "/heatmap", icon: <FlameIcon /> },
-    { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
-    { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
-  ],
-  navSecondary: [
-    { title: "设置", url: "#", icon: <GearIcon /> },
-    { title: "帮助", url: "#", icon: <QuestionIcon /> },
-  ],
-  documents: [
-    { name: "行情数据", url: "#", icon: <ChartLineIcon /> },
-    { name: "研究报告", url: "#", icon: <FileTextIcon /> },
-  ],
-}
+const navMain = [
+  { title: "看板", url: "/", icon: <SquaresFourIcon /> },
+  { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
+  { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
+  { title: "全球宏观", url: "/global", icon: <GlobeIcon /> },
+  { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
+]
+
+const markets = [
+  { title: "A股", url: "/markets/cn", icon: <FlagIcon /> },
+  { title: "美股", url: "/markets/us", icon: <BankIcon /> },
+  { title: "港股", url: "/markets/hk", icon: <CityIcon /> },
+]
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
@@ -58,7 +48,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               className="data-[slot=sidebar-menu-button]:p-1.5!"
-              render={<a href="/" />}
+              render={<Link href="/" />}
             >
               <ChartLineIcon className="size-5!" />
               <span className="text-base font-semibold">tradeck</span>
@@ -67,12 +57,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
-        <NavDocuments items={data.documents} />
-        <NavSecondary items={data.navSecondary} className="mt-auto" />
+        <NavMain items={navMain} />
+        <NavMain items={markets} label="市场" />
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={data.user} />
+        <NavUser
+          user={{ name: "tradeck", email: "v0.1", avatar: "/avatars/shadcn.jpg" }}
+        />
       </SidebarFooter>
     </Sidebar>
   )

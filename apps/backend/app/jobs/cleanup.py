@@ -13,9 +13,11 @@ async def run_cleanup_job() -> None:
 
     - news_articles：保留 30 天
     - quote_snapshots：保留 7 天（不活跃的 symbol）
-    - movers_cache：保留当天（job 会全量覆盖，不需要清理）
+    - 快照表（movers_cache / fund_flow / board_heat / board_sentiment / analyst_consensus）：保留 30 天
+    - announcements / research_reports：保留 180 天
+    - market_breadth：保留 730 天
     - daily_prices / index_prices / macro_indicators：永久保留（历史数据）
-    - income_statements / equity_profiles / fundamental_metrics：永久保留
+    - income_statements / equity_profiles / fundamental_metrics / balance_sheets / cash_flow_statements：永久保留
     """
     logger.info("=== cleanup job start ===")
     pool = await get_pool()
@@ -31,5 +33,25 @@ async def run_cleanup_job() -> None:
             "DELETE FROM quote_snapshots WHERE updated_at < NOW() - INTERVAL '7 days'"
         )
         logger.info(f"deleted {deleted_quotes} stale quote snapshots")
+
+        # 五类快照表：保留 30 天（fund_flow 每日数千行，必须 TTL）
+        for table in ("movers_cache", "fund_flow", "board_heat", "board_sentiment", "analyst_consensus"):
+            deleted = await conn.execute(
+                f"DELETE FROM {table} WHERE snapshot_date < CURRENT_DATE - INTERVAL '30 days'"
+            )
+            logger.info(f"deleted {deleted} old snapshots from {table}")
+
+        # 公告 / 研报：保留 180 天
+        for table in ("announcements", "research_reports"):
+            deleted = await conn.execute(
+                f"DELETE FROM {table} WHERE publish_date < CURRENT_DATE - INTERVAL '180 days'"
+            )
+            logger.info(f"deleted {deleted} old rows from {table}")
+
+        # 市场宽度：保留 730 天
+        deleted_breadth = await conn.execute(
+            "DELETE FROM market_breadth WHERE date < CURRENT_DATE - INTERVAL '730 days'"
+        )
+        logger.info(f"deleted {deleted_breadth} old rows from market_breadth")
 
     logger.info("=== cleanup job done ===")

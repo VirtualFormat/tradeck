@@ -86,7 +86,10 @@ export function CommodityCard({
           {priceText}
         </CardTitle>
         <CardAction>
-          <Badge variant="outline" className={changeColor}>
+          <Badge
+            variant="outline"
+            className={`shrink-0 whitespace-nowrap ${changeColor}`}
+          >
             <TrendIcon className="size-3" />
             {changePctText}
           </Badge>

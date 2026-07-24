@@ -2,10 +2,10 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Input } from "@/components/ui/input"
 import {
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -13,26 +13,20 @@ import {
 
 export function NavMain({
   items,
+  label,
 }: {
   items: {
     title: string
     url: string
     icon?: React.ReactNode
   }[]
+  label?: string
 }) {
   const pathname = usePathname()
   return (
     <SidebarGroup>
+      {label && <SidebarGroupLabel>{label}</SidebarGroupLabel>}
       <SidebarGroupContent className="flex flex-col gap-2">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <Input
-              type="search"
-              placeholder="搜索股票 / 指数..."
-              className="h-8 bg-sidebar-accent text-sidebar-foreground placeholder:text-sidebar-foreground/50"
-            />
-          </SidebarMenuItem>
-        </SidebarMenu>
         <SidebarMenu>
           {items.map((item) => {
             const isActive =

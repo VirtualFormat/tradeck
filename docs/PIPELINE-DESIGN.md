@@ -68,7 +68,7 @@ Next.js Server Component（从 backend 读，<50ms）
 -- 日 K 线（所有市场）
 CREATE TABLE daily_prices (
     id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,        -- AAPL / 600519.SH / 0700.HK
+    symbol VARCHAR(20) NOT NULL,        -- AAPL / 600519.SS / 0700.HK
     market CHAR(2) NOT NULL,            -- US / CN / HK
     date DATE NOT NULL,
     open DECIMAL(12,4),
@@ -83,7 +83,7 @@ CREATE INDEX idx_daily_prices_symbol_date ON daily_prices(symbol, date DESC);
 -- 指数历史
 CREATE TABLE index_prices (
     id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,        -- ^GSPC / 000001.SH
+    symbol VARCHAR(20) NOT NULL,        -- ^GSPC / 000001.SS
     market CHAR(2) NOT NULL,
     date DATE NOT NULL,
     close DECIMAL(12,4),
