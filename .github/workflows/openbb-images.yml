@@ -56,6 +56,11 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: ${{ matrix.arch.platform }}
+          # push-by-digest 多架构分片构建要求纯 image manifest：
+          # 关掉 provenance/sbom attestation，否则推的是带 attestation 的 index，
+          # imagetools create 引用单架构 digest 时会 not found。
+          provenance: false
+          sbom: false
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
