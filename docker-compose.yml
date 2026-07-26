@@ -31,15 +31,16 @@ services:
 
   # ── 数据源代理 ────────────────────────────────────
   openbb:
-    build:
-      context: .
-      dockerfile: ./docker/openbb/Dockerfile
+    image: ghcr.io/virtualformat/tradeck-openbb:latest
+    # 断网/无 registry 兜底：注释上面的 image、启用下面的 build 本地构建
+    # build:
+    #   context: .
+    #   dockerfile: ./docker/openbb/Dockerfile
     container_name: tradeck-openbb
     ports:
       - "6900:6900"
     volumes:
       - openbb-config:/root/.openbb_platform
-      - ./packages/openbb-akshare-provider:/opt/openbb-akshare-provider
     environment:
       - FMP_API_KEY=${FMP_API_KEY:-}
       - FRED_API_KEY=${FRED_API_KEY:-}

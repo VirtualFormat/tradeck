@@ -1,0 +1,123 @@
+name: Build OpenBB Images
+
+# 构建并发布两个 OpenBB 镜像到 GHCR（org: virtualformat）：
+#   - tradeck-openbb           主/国内节点（含 akshare，A股）
+#   - tradeck-openbb-overseas  从/海外节点（瘦 OpenBB，无 akshare，韩国 ARM 机）
+#
+# 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
+#   amd64 -> ubuntu-24.04，arm64 -> ubuntu-24.04-arm（public repo 免费）。
+# 每架构 push-by-digest，再由 merge job 用 imagetools 合成 manifest list。
+#
+# tag 策略：v* tag -> 语义版本 + latest；push master -> edge（不动 latest）。
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["master"]
+    paths:
+      - "docker/openbb/**"
+      - "packages/openbb-akshare-provider/**"
+      - ".github/workflows/openbb-images.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: virtualformat
+
+jobs:
+  build:
+    runs-on: ${{ matrix.arch.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: tradeck-openbb, dockerfile: docker/openbb/Dockerfile }
+          - { name: tradeck-openbb-overseas, dockerfile: docker/openbb/Dockerfile.overseas }
+        arch:
+          - { platform: linux/amd64, runner: ubuntu-24.04, suffix: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, suffix: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.arch.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image.name }}
+        run: |
+          mkdir -p "/tmp/digests/${IMAGE}"
+          touch "/tmp/digests/${IMAGE}/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.arch.suffix }}
+          path: /tmp/digests/${{ matrix.image.name }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tradeck-openbb, tradeck-openbb-overseas]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_REF}@sha256:%s " *)
+
+      - name: Inspect
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"

@@ -19,6 +19,9 @@
 
 前置：机器已装 Docker，域名已挂 Cloudflare 橙云（代理模式），已装 nginx。
 
+瘦 OpenBB 镜像由 CI 多架构构建（amd64+arm64）发布到 `ghcr.io/virtualformat/tradeck-openbb-overseas`，
+韩国机直接 pull 预构建镜像，不本地 build。
+
 ```bash
 # 1. 拉代码
 git clone <repo> && cd tradeck/docker/openbb
@@ -27,7 +30,10 @@ git clone <repo> && cd tradeck/docker/openbb
 cp .env.example .env && vim .env
 
 # 3. 起瘦 OpenBB（6900 只绑 127.0.0.1）
-docker compose -f docker-compose.overseas.yml up -d --build
+#    若 GHCR package 为 private，先登录（PAT 需 read:packages）：
+#    echo $GHCR_PAT | docker login ghcr.io -u <user> --password-stdin
+docker compose -f docker-compose.overseas.yml pull
+docker compose -f docker-compose.overseas.yml up -d
 curl http://127.0.0.1:6900/openapi.json   # 验证
 
 # 4. 配 nginx（token 鉴权 + 反代）
@@ -109,5 +115,6 @@ docker compose -f docker-compose.overseas.yml down
 | `apps/backend/app/openbb_client.py` | 按 provider 分流（海外带 `X-OpenBB-Token`，超时 20s） |
 | `apps/backend/app/config.py` | 读 `OPENBB_OVERSEAS_API_URL` / `OPENBB_OVERSEAS_TOKEN` |
 | `docker/openbb/Dockerfile.overseas` | 瘦 OpenBB 镜像（无 akshare） |
-| `docker/openbb/docker-compose.overseas.yml` | 韩国节点 compose |
+| `docker/openbb/docker-compose.overseas.yml` | 韩国节点 compose（拉 GHCR 镜像） |
 | `docker/openbb/nginx.overseas.conf.example` | nginx token 鉴权示例 |
+| `.github/workflows/openbb-images.yml` | CI 多架构构建并发布主/从镜像到 GHCR（amd64+arm64） |

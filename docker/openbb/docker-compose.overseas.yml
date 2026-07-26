@@ -2,20 +2,26 @@
 # 部署在海外机器（韩国）。国内 backend 通过 CF 橙云 + nginx(校验 X-OpenBB-Token)
 # 访问本服务的海外 provider（yfinance/sec/fred/federal_reserve/oecd 等）。
 #
-# 使用：
+# 使用（拉预构建镜像，不本地 build）：
 #   cd docker/openbb
 #   cp .env.example .env   # 填海外源 API key（免费源可留空）
-#   docker compose -f docker-compose.overseas.yml up -d --build
+#   # 若 GHCR package 为 private，先登录（PAT 需 read:packages）：
+#   #   echo $GHCR_PAT | docker login ghcr.io -u <user> --password-stdin
+#   docker compose -f docker-compose.overseas.yml pull
+#   docker compose -f docker-compose.overseas.yml up -d
 #   本机验证：curl http://127.0.0.1:6900/openapi.json
 #
+# 镜像由 CI 多架构构建并发布到 ghcr.io/virtualformat/tradeck-openbb-overseas（amd64+arm64）。
 # 6900 只绑 127.0.0.1，不暴露公网；对外由 nginx(见 nginx.overseas.conf.example) 反代 + token 鉴权，
 # TLS 由 Cloudflare 橙云托管。
 
 services:
   openbb:
-    build:
-      context: ../..
-      dockerfile: docker/openbb/Dockerfile.overseas
+    image: ghcr.io/virtualformat/tradeck-openbb-overseas:latest
+    # 断网/无 registry 兜底：注释上面的 image、启用下面的 build 本地构建
+    # build:
+    #   context: ../..
+    #   dockerfile: docker/openbb/Dockerfile.overseas
     container_name: tradeck-openbb-overseas
     ports:
       - "127.0.0.1:6900:6900"   # 只绑本机，供 nginx upstream
