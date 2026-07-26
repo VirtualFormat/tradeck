@@ -73,7 +73,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.image.name }}-${{ matrix.arch.suffix }}
+          # 镜像名放末尾锚定：tradeck-openbb 是 tradeck-openbb-overseas 的前缀，
+          # 若把镜像名放前缀，merge 的 glob(digests-tradeck-openbb-*) 会误纳 overseas。
+          # 放末尾后 glob(digests-*-tradeck-openbb) 整名匹配，不会命中 *-overseas。
+          name: digests-${{ matrix.arch.suffix }}-${{ matrix.image.name }}
           path: /tmp/digests/${{ matrix.image.name }}/*
           if-no-files-found: error
           retention-days: 1
@@ -91,7 +94,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: digests-${{ matrix.image }}-*
+          pattern: digests-*-${{ matrix.image }}
           path: /tmp/digests
           merge-multiple: true
 
