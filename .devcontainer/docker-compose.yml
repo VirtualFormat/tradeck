@@ -19,6 +19,9 @@ services:
       - OPENBB_API_URL=http://openbb:6900
       - BACKEND_API_URL=http://backend:8080
       - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      # 海外节点（可选）：为空则海外源回落国内 openbb
+      - OPENBB_OVERSEAS_API_URL=${OPENBB_OVERSEAS_API_URL:-}
+      - OPENBB_OVERSEAS_TOKEN=${OPENBB_OVERSEAS_TOKEN:-}
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
     networks:
@@ -57,6 +60,9 @@ services:
     environment:
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
+      # 海外节点（可选）：为空则海外源回落国内 openbb
+      OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
+      OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
     volumes:
       - ../apps/backend:/app
     ports:

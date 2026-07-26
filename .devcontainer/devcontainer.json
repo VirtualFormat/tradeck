@@ -6,6 +6,8 @@
   "dockerComposeFile": "docker-compose.yml",
   "service": "dev",
   "workspaceFolder": "/workspace",
+  // post-create.sh 需要 root（apt/pip 全局安装）；devcontainer CLI 默认以镜像内 vscode 用户跑 postCreateCommand 会导致权限不足
+  "remoteUser": "root",
   "shutdownAction": "stopCompose",
   "extensions": [
     "dbaeumer.vscode-eslint",

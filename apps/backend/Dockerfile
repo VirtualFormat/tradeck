@@ -1,8 +1,6 @@
-FROM python:3.12-slim
+FROM python:3.12-alpine
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+# 无额外系统依赖：asyncpg/pandas 等均用官方 musllinux wheel，免装编译工具链
 
 WORKDIR /app
 
