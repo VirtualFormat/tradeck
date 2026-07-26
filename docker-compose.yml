@@ -66,6 +66,8 @@ services:
       # 海外节点（韩国瘦 OpenBB）：为空则海外源回落国内 openbb
       OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
+      # TickFlow 日K 源：为空则用免费档 TickFlow.free()
+      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

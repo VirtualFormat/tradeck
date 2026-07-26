@@ -28,7 +28,7 @@ export function StockSearch() {
         type="text"
         value={symbol}
         onChange={(e) => setSymbol(e.target.value)}
-        placeholder="输入股票代码（如 AAPL, 600519.SS, 0700.HK）"
+        placeholder="输入股票代码（如 AAPL, 600519.SH, 00700.HK）"
         className="pl-9 w-64"
       />
       <Button

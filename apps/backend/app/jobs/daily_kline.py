@@ -1,23 +1,13 @@
-"""盘后拉日 K 线（调 OpenBB historical，写入 daily_prices）"""
+"""盘后拉日 K 线（调 TickFlow，写入 daily_prices）"""
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
 
+from app.datasource import tickflow_source
 from app.db import get_pool
-from app.markets import pick_market, pick_provider
-from app.openbb_client import fetch_openbb
+from app.markets import pick_market
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_date(s: str | None) -> date | None:
-    if not s:
-        return None
-    try:
-        return date.fromisoformat(s[:10])
-    except Exception:
-        return None
 
 
 # 跟踪的股票（100 只）
@@ -32,48 +22,35 @@ TRACKED_SYMBOLS = [
     "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "DIS", "KO", "PEP", "PG",
     # ── 美股能源/工业（10）──
     "XOM", "CVX", "COP", "SLB", "EOG", "BA", "CAT", "GE", "HON", "UPS",
-    # ── A 股（30）──
-    "600519.SS", "601318.SS", "600036.SS", "000858.SZ", "002594.SZ",
-    "300750.SZ", "601012.SS", "600900.SS", "000001.SZ", "601166.SS",
-    "600276.SS", "601398.SS", "000333.SZ", "600030.SS", "601888.SS",
-    "600031.SS", "000651.SZ", "002415.SZ", "300059.SZ", "600009.SS",
-    "601628.SS", "600585.SS", "000568.SZ", "002714.SZ", "600436.SS",
-    "603259.SS", "601857.SS", "600028.SS", "601088.SS", "600019.SS",
-    # ── 港股（10）──
-    "0700.HK", "9988.HK", "1810.HK", "3690.HK", "9618.HK",
-    "0005.HK", "1299.HK", "0883.HK", "0939.HK", "2318.HK",
+    # ── A 股（30）──（沪市用 .SH，与 TickFlow/业界一致）
+    "600519.SH", "601318.SH", "600036.SH", "000858.SZ", "002594.SZ",
+    "300750.SZ", "601012.SH", "600900.SH", "000001.SZ", "601166.SH",
+    "600276.SH", "601398.SH", "000333.SZ", "600030.SH", "601888.SH",
+    "600031.SH", "000651.SZ", "002415.SZ", "300059.SZ", "600009.SH",
+    "601628.SH", "600585.SH", "000568.SZ", "002714.SZ", "600436.SH",
+    "603259.SH", "601857.SH", "600028.SH", "601088.SH", "600019.SH",
+    # ── 港股（10）──（5 位补零，与 TickFlow/业界一致）
+    "00700.HK", "09988.HK", "01810.HK", "03690.HK", "09618.HK",
+    "00005.HK", "01299.HK", "00883.HK", "00939.HK", "02318.HK",
 ]
 
 
 async def fetch_and_store_daily_kline(symbol: str) -> int:
-    """拉单只股票日 K 线，写入 DB。返回写入条数。"""
-    provider = pick_provider(symbol)
+    """拉单只股票日 K 线（TickFlow），写入 DB。返回写入条数。"""
     market = pick_market(symbol)
 
-    # 拉 1 年历史
-    end = date.today().isoformat()
-    start = (date.today() - timedelta(days=365)).isoformat()
-
-    data = await fetch_openbb(
-        "/equity/price/historical",
-        {
-            "provider": provider,
-            "symbol": symbol,
-            "start_date": start,
-            "end_date": end,
-        },
-    )
-    results = data.get("results", [])
+    # 拉近 1 年（~250 交易日，取 365 覆盖）
+    results = await tickflow_source.get_daily_kline(symbol, count=365)
     if not results:
-        logger.warning(f"No daily kline for {symbol} ({provider})")
+        logger.warning(f"No daily kline for {symbol}")
         return 0
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 批量 UPSERT（date 字段转 date 对象）
+        # 批量 UPSERT（tickflow_source 已返回 date 对象）
         rows = [
-            (symbol, market, _parse_date(r.get("date")), r.get("open"), r.get("high"),
-             r.get("low"), r.get("close"), r.get("volume"))
+            (symbol, market, r["date"], r["open"], r["high"],
+             r["low"], r["close"], r["volume"])
             for r in results
             if r.get("close") is not None  # 跳过 null close 行，防止覆盖有效值
         ]
@@ -88,8 +65,8 @@ async def fetch_and_store_daily_kline(symbol: str) -> int:
             """,
             rows,
         )
-    logger.info(f"fetched {len(results)} daily prices for {symbol}")
-    return len(results)
+    logger.info(f"fetched {len(rows)} daily prices for {symbol}")
+    return len(rows)
 
 
 async def run_daily_kline_job() -> None:

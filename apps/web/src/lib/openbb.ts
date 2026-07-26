@@ -212,7 +212,13 @@ export async function fetchTechnicals(
 
 function pickProvider(symbol: string): string {
   const sym = symbol.toUpperCase();
-  if (sym.endsWith(".SS") || sym.endsWith(".SZ") || sym.endsWith(".BJ")) {
+  // .SH（沪，新标准）/.SS（沪，指数仍用）/.SZ/.BJ
+  if (
+    sym.endsWith(".SH") ||
+    sym.endsWith(".SS") ||
+    sym.endsWith(".SZ") ||
+    sym.endsWith(".BJ")
+  ) {
     return "akshare";
   }
   return "yfinance";

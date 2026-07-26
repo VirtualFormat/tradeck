@@ -28,18 +28,18 @@ interface ScreenerItem {
   turnover?: number | null;
 }
 
-// A 股热门列表（按市值选）
+// A 股热门列表（按市值选；沪市用 .SH）
 const CN_STOCKS = [
-  "600519.SS", "601318.SS", "600036.SS", "000858.SZ",
-  "002594.SZ", "300750.SZ", "601012.SS", "600900.SS",
-  "000001.SZ", "601166.SS", "600276.SS", "601398.SS",
+  "600519.SH", "601318.SH", "600036.SH", "000858.SZ",
+  "002594.SZ", "300750.SZ", "601012.SH", "600900.SH",
+  "000001.SZ", "601166.SH", "600276.SH", "601398.SH",
 ];
 
-// 港股热门列表
+// 港股热门列表（5 位补零）
 const HK_STOCKS = [
-  "0700.HK", "9988.HK", "0005.HK", "1299.HK",
-  "0883.HK", "0939.HK", "0388.HK", "2318.HK",
-  "0941.HK", "1810.HK", "3690.HK", "9618.HK",
+  "00700.HK", "09988.HK", "00005.HK", "01299.HK",
+  "00883.HK", "00939.HK", "00388.HK", "02318.HK",
+  "00941.HK", "01810.HK", "03690.HK", "09618.HK",
 ];
 
 async function fetchScreener(
@@ -265,7 +265,7 @@ const NEWS_SYMBOLS: Record<string, string[]> = {
   global: ["AAPL", "MSFT", "NVDA", "TSLA"],
   us: ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META"],
   cn: ["BABA", "PDD", "JD", "BIDU"],  // A 股新闻 yfinance 不支持，用 ADR
-  hk: ["0700.HK", "9988.HK", "1810.HK", "3690.HK"],
+  hk: ["00700.HK", "09988.HK", "01810.HK", "03690.HK"],
 };
 
 export async function TopNews({ market = "global" }: { market?: string }) {
