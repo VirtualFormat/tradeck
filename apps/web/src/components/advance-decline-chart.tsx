@@ -25,8 +25,8 @@ export interface AdvanceDeclineData {
 }
 
 interface AdvanceDeclineChartProps {
-  /** 市场名（美股/港股/A股） */
-  label: string
+  /** 市场名（美股/港股/A股）；不传则不渲染标题行（调用方自带标题时） */
+  label?: string
   data: AdvanceDeclineData
   className?: string
 }
@@ -61,9 +61,11 @@ export function AdvanceDeclineChart({
 
   return (
     <div className={cn("flex flex-col", className)}>
-      <div className="text-center text-sm font-medium text-fg-dim">
-        {label}
-      </div>
+      {label ? (
+        <div className="text-center text-sm font-medium text-fg-dim">
+          {label}
+        </div>
+      ) : null}
       {total === 0 ? (
         <EmptyState compact title="无数据" className="h-[180px] w-full" />
       ) : (
