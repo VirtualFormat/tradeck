@@ -63,7 +63,7 @@ export async function YieldCurvePanel() {
             <YieldCurveChart data={curve} />
             <Separator />
             <div>
-              <div className="mb-2 text-xs text-muted">10Y-2Y 利差走势（近一年，bp）</div>
+              <div className="mb-2 text-xs text-muted-foreground">10Y-2Y 利差走势（近一年，bp）</div>
               <YieldSpreadChart data={spread} />
             </div>
           </>

@@ -63,7 +63,7 @@ tradeck/
 
 | 层 | 技术 |
 |---|---|
-| 前端 | Next.js 16.2.10（App Router + RSC）、React 19、TypeScript 5、Tailwind CSS v4、shadcn/ui（style: base-nova，图标: phosphor）、recharts 3.9、lightweight-charts 5（TradingView 开源 K 线库）、@tanstack/react-table、dnd-kit、framer-motion、zod 4 |
+| 前端 | Next.js 16.2.10（App Router + RSC）、React 19、TypeScript 5、Tailwind CSS v4、shadcn/ui（preset `b2fms620zo`：nova 风格 + mist 主题 + phosphor 图标）、recharts 3.8（preset 锁定；注意其 RadialBar stackId 只渲染首段的缺陷，堆叠环用 Pie 半环实现）、lightweight-charts 5（TradingView 开源 K 线库）、@tanstack/react-table、dnd-kit、framer-motion、zod 4 |
 | 后端 | Python 3.12、FastAPI、uvicorn、asyncpg、APScheduler 3、httpx、pydantic 2 |
 | 数据层 | OpenBB Platform（pip 安装，FastAPI via uvicorn，4 workers）+ 自写 akshare provider（akshare>=1.12, openbb-core>=1.6.10） |
 | 数据库 | PostgreSQL 16-alpine |
@@ -151,6 +151,8 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 
 > 任何涉及前端的任务，**开工前必须先读本节**；完成后按第 6 条检查清单验收。
 
+**全站 UI 统一基于 shadcn preset `b2fms620zo`**（nova 风格 + mist 主题/底色 + phosphor 图标 + Roboto Slab / Public Sans 字体 + violet 图表色，`components.json` 与 `globals.css` 已按此配置）。`globals.css` 为 preset 标准结构：`:root`（mist 浅色）+ `.dark`（mist 深色），强制深色由 `layout.tsx` 的 `<html class="dark">` 开启；preset 之外的扩展仅有业务语义色（`--up`/`--down`/`--warn`）与存量别名（`--bg`/`--panel`/`--fg-dim` 等，均映射到 preset 令牌，新增颜色须走同一模式）。新环境初始化/重建用 `pnpm dlx shadcn@latest init --preset b2fms620zo --template next`；已有项目对齐 preset 用 `pnpm dlx shadcn@latest apply b2fms620zo`（会重写主题 CSS 并重装 ui 组件，执行前先提交本地改动；apply 后需检查业务扩展段是否仍完整）。禁止偏离 preset 更换风格、主题色、图标库或字体。
+
 1. **一切 UI 元素优先使用 `src/components/ui/` 的 shadcn 组件**；官方目录（https://ui.shadcn.com/docs/components）里有但项目未装的组件（progress/empty/alert/scroll-area/accordion/spinner 等），**先 `pnpm dlx shadcn add X` 安装再使用，禁止手写 div 模拟**（进度条、Badge、空态、tooltip、tabs、卡片概莫能外）。
 2. **图表必须经 `ui/chart`**（ChartContainer + ChartConfig + ChartTooltip/Legend），recharts 仅作渲染原语。豁免仅两处：`board-terrain.tsx`（Treemap 与 ChartConfig 不契合）、`tradingview-chart.tsx`（lightweight-charts K 线专用库）。新增豁免必须在本文件登记。
 3. **空态统一**：`empty-state.tsx`（基于 `ui/empty` 的薄封装，phosphor 图标）是全站唯一空态入口，禁止再写「暂无数据」div。
@@ -213,8 +215,8 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 - 路径别名 `@/*` → `./src/*`。
 - **数据访问只走 `src/lib/openbb.ts` 的 `backendFetch`**（管道迁移已完成，不要新增直连 OpenBB 的 `fetchJSON` 调用）；失败时返回空数组降级。
 - 页面为 Server Component，板块用独立 `<Suspense>` + Skeleton 分块加载（参考 `src/app/page.tsx`）；首页按 `?market=global|us|cn|hk` 过滤。
-- 样式：强制深色「终端风」主题，CSS 变量定义在 `src/app/globals.css`；**红涨绿跌**（A 股习惯，`--up: #f0556b` 红 / `--down: #20cd8d` 绿），不要反过来。
-- 组件用 shadcn/ui（`components.json`：style base-nova、baseColor mist、phosphor 图标、CSS 变量模式）；类名合并用 `cn()`（`@/lib/utils`）。
+- 样式：基于 preset mist 主题的深色模式（`<html class="dark">` 强制开启），令牌定义在 `src/app/globals.css`；**红涨绿跌**（A 股习惯，`--up: #f0556b` 红 / `--down: #20cd8d` 绿，preset 之外的业务扩展色），不要反过来。
+- 组件用 shadcn/ui（preset `b2fms620zo`：nova 风格、mist 主题、phosphor 图标、CSS 变量模式，详见「UI 强制规则」）；类名合并用 `cn()`（`@/lib/utils`）。
 - K 线蜡烛图用 lightweight-charts（`tradingview-chart.tsx`，TradingView 开源库，本地渲染无 CDN 依赖；曾因 s3.tradingview.com 不可达放弃官方 iframe widget）；个股预览弹窗为 shadcn Dialog（`stock-preview-dialog.tsx`，榜单行点击触发）。
 - 环境变量：`BACKEND_API_URL`（默认 `http://localhost:8080`）；`OPENBB_API_URL` 保留给个别未迁移场景。
 - `next.config.ts` 有 `outputFileTracingRoot: "/workspace/apps/web"`（devcontainer 路径）和 `serverExternalPackages: ["undici"]`（绕开 Server Component 的 DNS 解析问题）——改动需谨慎。

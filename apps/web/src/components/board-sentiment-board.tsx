@@ -7,6 +7,7 @@ import {
   Card,
   CardAction,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -41,7 +42,7 @@ async function fetchSentiment(
 }
 
 function SentimentBadge({ value }: { value: number | null }) {
-  if (value == null) return <span className="text-[10px] text-muted">—</span>;
+  if (value == null) return <span className="text-[10px] text-muted-foreground">—</span>;
   const cls = value >= 0 ? "text-up" : "text-down";
   return (
     <span className={`tab-nums text-[10px] ${cls}`}>
@@ -68,13 +69,13 @@ export async function BoardSentimentBoard({
       <CardHeader>
         <CardTitle className="text-base font-medium text-fg-dim">
           板块舆情热度榜 Top 10
-          <span className="ml-2 text-[10px] font-normal text-muted">
-            按舆情热度倒序（百分制）· 24h 新闻量 · 情绪均值
-          </span>
         </CardTitle>
         <CardAction>
           <BoardTypeTabs />
         </CardAction>
+        <CardDescription className="truncate text-[10px]">
+          热度倒序 · 新闻量 · 情绪均值
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {items.length > 0 ? (
@@ -84,11 +85,11 @@ export async function BoardSentimentBoard({
               className="flex items-center justify-between border-b border-border/40 py-1.5 last:border-0"
             >
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="w-4 shrink-0 text-[10px] text-muted">
+                <span className="w-4 shrink-0 text-[10px] text-muted-foreground">
                   {i + 1}
                 </span>
                 <span className="truncate text-xs font-medium">{item.name}</span>
-                <span className="shrink-0 text-[10px] text-muted">
+                <span className="shrink-0 text-[10px] text-muted-foreground">
                   {item.news_count} 条
                 </span>
               </div>

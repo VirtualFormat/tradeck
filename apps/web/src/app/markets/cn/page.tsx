@@ -43,7 +43,7 @@ function Legend() {
   return (
     <Card>
       <CardContent className="pt-4">
-        <div className="flex flex-wrap items-center gap-4 text-[10px] text-muted">
+        <div className="flex flex-wrap items-center gap-4 text-[10px] text-muted-foreground">
           <span>图例：</span>
           <span className="flex items-center gap-1">
             <span

@@ -7,9 +7,9 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-const publicSansHeading = Public_Sans({ subsets: ["latin"], variable: "--font-heading" });
+const publicSansHeading = Public_Sans({subsets:['latin'],variable:'--font-heading'});
 
-const robotoSlab = Roboto_Slab({ subsets: ["latin"], variable: "--font-serif" });
+const robotoSlab = Roboto_Slab({subsets:['latin'],variable:'--font-serif'});
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -35,7 +35,7 @@ export default function RootLayout({
     <html
       lang="zh-CN"
       className={cn(
-        "h-full antialiased",
+        "dark h-full antialiased",
         geistSans.variable,
         geistMono.variable,
         "font-serif",

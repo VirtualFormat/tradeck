@@ -40,7 +40,7 @@ export default function HkMarketPage() {
 
       {/* 数据覆盖说明 */}
       <Card>
-        <CardContent className="py-3 text-[10px] text-muted">
+        <CardContent className="py-3 text-[10px] text-muted-foreground">
           说明：港股目前仅覆盖 12 只代表性标的的报价快照，无免费涨跌榜/资金流/舆情数据源；后续接入券商行情（如富途 OpenAPI）后扩展。
         </CardContent>
       </Card>

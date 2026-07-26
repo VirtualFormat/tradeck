@@ -1,7 +1,7 @@
 /**
- * 涨跌平看板（US/HK/CN 三市场 Donut PieChart）
+ * 涨跌平看板（US/HK/CN 三市场，单张宽面板）
  * 服务端 async 组件：用 getEquityQuotes 拉各市场代表股列表，统计涨/跌/平数量
- * 渲染 3 张 shadcn Card，每张内嵌 AdvanceDeclineChart
+ * 一张 Card 内 grid 三列，每列一个 AdvanceDeclineChart（radial-stacked 半环）
  */
 import {
   Card,
@@ -84,39 +84,27 @@ export async function AdvanceDeclineBoard() {
   const results = await Promise.all(MARKETS.map(fetchMarketData));
 
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-      {results.map(({ market, data }) => {
-        const total = data.up + data.down + data.flat;
-        // 涨跌比：涨 / (涨+跌)，用于描述行
-        const advDec =
-          data.up + data.down > 0
-            ? (data.up / (data.up + data.down)).toFixed(2)
-            : "—";
-        return (
-          <Card
-            key={market.key}
-            size="sm"
-            className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
-          >
-            <CardHeader>
-              <CardTitle className="text-base font-medium text-fg-dim">
-                {market.label} 涨跌平
-              </CardTitle>
-              <CardDescription>
-                <span className="hidden @[540px]/card:block">
-                  样本 {total} 只 · 涨跌比 {advDec}
-                </span>
-                <span className="@[540px]/card:hidden">
-                  {total} 只 · A/D {advDec}
-                </span>
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="px-2 pt-2 sm:px-4 sm:pt-4">
-              <AdvanceDeclineChart data={data} />
-            </CardContent>
-          </Card>
-        );
-      })}
-    </div>
+    <Card
+      size="sm"
+      className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
+    >
+      <CardHeader>
+        <CardTitle className="text-base font-medium text-fg-dim">
+          涨跌平
+        </CardTitle>
+        <CardDescription>各市场代表样本股的当日涨跌家数</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          {results.map(({ market, data }) => (
+            <AdvanceDeclineChart
+              key={market.key}
+              label={market.label}
+              data={data}
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

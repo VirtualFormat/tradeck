@@ -23,7 +23,7 @@ export function StockSearch() {
 
   return (
     <form onSubmit={handleSubmit} className="relative flex items-center">
-      <MagnifyingGlassIcon className="absolute left-3 h-4 w-4 text-muted" />
+      <MagnifyingGlassIcon className="absolute left-3 h-4 w-4 text-muted-foreground" />
       <Input
         type="text"
         value={symbol}
@@ -35,7 +35,7 @@ export function StockSearch() {
         type="submit"
         variant="default"
         size="icon"
-        className="ml-2 bg-accent text-white hover:bg-accent/80"
+        className="ml-2"
       >
         <MagnifyingGlassIcon />
       </Button>

@@ -138,13 +138,15 @@ function StockRow({
       <div className="flex items-center justify-between border-b border-border/40 py-1.5 transition-colors hover:bg-panel/50 -mx-1 px-1 rounded-sm last:border-0">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="shrink-0 text-xs font-medium">{item.symbol}</span>
-          <span className="truncate text-[10px] text-muted">
-            {item.name ?? "—"}
-          </span>
+          {item.name && item.name !== item.symbol ? (
+            <span className="truncate text-[10px] text-muted-foreground">
+              {item.name}
+            </span>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {metric === "amount" ? (
-            <span className="tab-nums text-[10px] text-muted">
+            <span className="tab-nums text-[10px] text-muted-foreground">
               {fmtVolume((item.volume ?? 0) * (item.price ?? 0))}
             </span>
           ) : null}
@@ -194,7 +196,7 @@ function ScreenerColumn({
           {title}
         </CardTitle>
         <CardAction>
-          <Link href={href} className="text-xs text-muted hover:text-fg">
+          <Link href={href} className="text-xs text-muted-foreground hover:text-fg">
             更多 →
           </Link>
         </CardAction>
@@ -281,7 +283,7 @@ export async function TopNews({ market = "global" }: { market?: string }) {
           热门资讯
         </CardTitle>
         <CardAction>
-          <Link href="/news" className="text-xs text-muted hover:text-fg">
+          <Link href="/news" className="text-xs text-muted-foreground hover:text-fg">
             更多 →
           </Link>
         </CardAction>

@@ -67,7 +67,7 @@ function fmtSession(session: string | null): string {
 function importanceClass(importance: string | null): string {
   if (importance === "高" || importance === "high") return "text-up";
   if (importance === "中" || importance === "medium") return "text-warn";
-  return "text-muted";
+  return "text-muted-foreground";
 }
 
 function MacroCard({
@@ -96,7 +96,7 @@ function MacroCard({
         <div className="flex items-baseline justify-between">
           <div>
             <div className="tab-nums text-2xl font-bold">{latestValue}</div>
-            <div className="text-[10px] text-muted">{latestDate}</div>
+            <div className="text-[10px] text-muted-foreground">{latestDate}</div>
           </div>
           {change && (
             <div
@@ -237,7 +237,7 @@ export default async function MacroPage() {
                           {item.symbol}
                         </Link>
                       </TableCell>
-                      <TableCell className="text-muted">
+                      <TableCell className="text-muted-foreground">
                         {fmtSession(item.session)}
                       </TableCell>
                       <TableCell className="text-right tab-nums">
@@ -280,7 +280,7 @@ export default async function MacroPage() {
                       <TableCell className="tab-nums whitespace-nowrap">
                         {fmtCalDate(item.event_date)}
                       </TableCell>
-                      <TableCell className="tab-nums text-muted">
+                      <TableCell className="tab-nums text-muted-foreground">
                         {item.event_time ?? "—"}
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
@@ -293,7 +293,7 @@ export default async function MacroPage() {
                       <TableCell className="text-right tab-nums">
                         {item.forecast ?? "—"}
                       </TableCell>
-                      <TableCell className="text-right tab-nums text-muted">
+                      <TableCell className="text-right tab-nums text-muted-foreground">
                         {item.previous ?? "—"}
                       </TableCell>
                     </TableRow>

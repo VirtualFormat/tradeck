@@ -59,8 +59,8 @@ function MetricRow({
   if (value == null || value === "—") {
     return (
       <div className="flex items-center justify-between border-b border-border/50 py-2">
-        <span className="text-xs text-muted">{label}</span>
-        <span className="tab-nums text-sm text-muted">—</span>
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="tab-nums text-sm text-muted-foreground">—</span>
       </div>
     );
   }
@@ -73,7 +73,7 @@ function MetricRow({
     : "text-fg-dim";
   return (
     <div className="flex items-center justify-between border-b border-border/50 py-2">
-      <span className="text-xs text-muted">{label}</span>
+      <span className="text-xs text-muted-foreground">{label}</span>
       <span className={`tab-nums text-sm ${colorClass}`}>{value}</span>
     </div>
   );
@@ -131,7 +131,7 @@ function ratingBadgeClass(rating: string | null): string {
       return "border-down/50 text-down";
     case "中性":
     default:
-      return "border-border text-muted";
+      return "border-border text-muted-foreground";
   }
 }
 
@@ -241,7 +241,7 @@ export default async function StockDetailPage({
             <Badge variant="secondary">{symbol}</Badge>
           </div>
           {subtitle && (
-            <p className="text-[10px] uppercase tracking-[0.18em] text-muted">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
               {subtitle}
             </p>
           )}
@@ -426,7 +426,7 @@ export default async function StockDetailPage({
                   {bollPos != null && (
                     <div className="pt-2">
                       <Progress value={bollPos} className="h-1.5 bg-panel-2" />
-                      <div className="mt-2 flex justify-between text-[10px] text-muted">
+                      <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
                         <span>下轨</span>
                         <Tooltip>
                           <TooltipTrigger className="tab-nums cursor-help">
@@ -459,17 +459,17 @@ export default async function StockDetailPage({
                 <div className="flex flex-wrap items-center gap-3">
                   {recoLabel && <Badge variant="secondary">{recoLabel}</Badge>}
                   {consensus?.recommendation_mean != null && (
-                    <span className="tab-nums text-xs text-muted">
+                    <span className="tab-nums text-xs text-muted-foreground">
                       综合评分 {consensus.recommendation_mean.toFixed(1)} / 5
                     </span>
                   )}
                   {consensus?.number_of_analysts != null && (
-                    <span className="tab-nums text-xs text-muted">
+                    <span className="tab-nums text-xs text-muted-foreground">
                       {consensus.number_of_analysts} 位分析师
                     </span>
                   )}
                   {consensus?.currency && (
-                    <span className="text-[10px] uppercase tracking-[0.18em] text-muted">
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
                       {consensus.currency}
                     </span>
                   )}
@@ -481,7 +481,7 @@ export default async function StockDetailPage({
                       value={refPrice != null ? rangePos(refPrice) : 0}
                       className="h-1.5 bg-panel-2"
                     />
-                    <div className="mt-2 flex justify-between text-[10px] text-muted">
+                    <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
                       <span className="tab-nums">低 {fmtPrice(targetLow)}</span>
                       {targetMid != null && (
                         <Tooltip>
@@ -496,7 +496,7 @@ export default async function StockDetailPage({
                   </div>
                 )}
                 {upside != null && refPrice != null && (
-                  <div className="text-xs text-muted">
+                  <div className="text-xs text-muted-foreground">
                     <Tooltip>
                       <TooltipTrigger className="cursor-help">
                         现价{" "}
@@ -544,7 +544,7 @@ export default async function StockDetailPage({
                   <TableBody>
                     {announcements.slice(0, 20).map((item, i) => (
                       <TableRow key={i}>
-                        <TableCell className="tab-nums text-muted">
+                        <TableCell className="tab-nums text-muted-foreground">
                           {item.publish_date ?? "—"}
                         </TableCell>
                         <TableCell>
@@ -556,7 +556,7 @@ export default async function StockDetailPage({
                                   item.category
                                 )
                                   ? "border-accent/50 text-accent"
-                                  : "border-border text-muted"
+                                  : "border-border text-muted-foreground"
                               }
                             >
                               {item.category}
@@ -611,7 +611,7 @@ export default async function StockDetailPage({
                   <TableBody>
                     {researchReports.slice(0, 20).map((item, i) => (
                       <TableRow key={i}>
-                        <TableCell className="tab-nums text-muted">
+                        <TableCell className="tab-nums text-muted-foreground">
                           {item.publish_date ?? "—"}
                         </TableCell>
                         <TableCell className="text-fg-dim">

@@ -63,7 +63,7 @@ function ChangeCell({
   digits?: number;
 }) {
   if (value == null) {
-    return <TableCell className="text-right text-muted">—</TableCell>;
+    return <TableCell className="text-right text-muted-foreground">—</TableCell>;
   }
   return (
     <TableCell

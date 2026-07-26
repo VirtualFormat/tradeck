@@ -78,7 +78,7 @@ export function CommodityCard({
       <CardHeader className="pb-1">
         <CardDescription>
           {name}
-          <span className="text-[10px] text-muted"> · {unit}</span>
+          <span className="text-[10px] text-muted-foreground"> · {unit}</span>
         </CardDescription>
         <CardTitle
           className={`text-base font-semibold tabular-nums ${changeColor}`}

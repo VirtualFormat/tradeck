@@ -39,7 +39,7 @@ export function EmptyState({
           <TrayIcon />
         </EmptyMedia>
         <EmptyTitle
-          className={cn(compact && "text-xs font-normal text-muted")}
+          className={cn(compact && "text-xs font-normal text-muted-foreground")}
         >
           {title}
         </EmptyTitle>

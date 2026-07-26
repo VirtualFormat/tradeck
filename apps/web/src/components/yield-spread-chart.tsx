@@ -58,7 +58,7 @@ export function YieldSpreadChart({ data }: { data: YieldSpreadPoint[] }) {
           width={48}
           tickFormatter={(v: number) => v.toFixed(0)}
         />
-        <ReferenceLine y={0} stroke="var(--muted)" strokeDasharray="4 4" />
+        <ReferenceLine y={0} stroke="var(--muted-foreground)" strokeDasharray="4 4" />
         <ChartTooltip
           cursor={false}
           content={<ChartTooltipContent indicator="dot" />}

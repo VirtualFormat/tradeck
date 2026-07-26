@@ -57,7 +57,7 @@ function NewsItem({ article }: { article: NewsArticle }) {
               {article.summary}
             </p>
           )}
-          <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted">
+          <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
             <span>{article.publisher ?? article.source ?? "—"}</span>
             <span>·</span>
             <span>{fmtDate(article.date)}</span>

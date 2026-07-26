@@ -31,7 +31,7 @@ function SentimentMetric({
     tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-fg-dim";
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[10px] tracking-wider text-muted">{label}</span>
+      <span className="text-[10px] tracking-wider text-muted-foreground">{label}</span>
       <span className={`tab-nums text-xl font-semibold ${colorClass}`}>
         {value}
       </span>

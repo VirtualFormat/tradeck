@@ -62,7 +62,7 @@ export async function TreasuryBoard() {
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-medium text-fg-dim">国债收益率</h3>
         {latest && (
-          <span className="text-[10px] text-muted">{fmtDate(latest.date)}</span>
+          <span className="text-[10px] text-muted-foreground">{fmtDate(latest.date)}</span>
         )}
       </div>
       <Card className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card">

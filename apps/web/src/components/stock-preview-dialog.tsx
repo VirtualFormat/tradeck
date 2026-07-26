@@ -120,7 +120,7 @@ export function StockPreviewDialog({
                     ? `${up ? "+" : ""}${pct.toFixed(2)}%`
                     : "—"}
                 </span>
-                <span className="text-muted">
+                <span className="text-muted-foreground">
                   量 {fmtVol(quote.volume)}
                 </span>
               </span>

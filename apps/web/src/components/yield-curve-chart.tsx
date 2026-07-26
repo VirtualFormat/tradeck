@@ -24,11 +24,11 @@ const chartConfig = {
   },
   ago_1m: {
     label: "1月前",
-    color: "var(--muted)",
+    color: "var(--muted-foreground)",
   },
   ago_1y: {
     label: "1年前",
-    color: "var(--muted)",
+    color: "var(--muted-foreground)",
   },
 } satisfies ChartConfig
 

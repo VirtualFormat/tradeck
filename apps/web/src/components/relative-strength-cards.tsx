@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 function ChangeText({ value, label }: { value: number | null; label: string }) {
   return (
-    <span className="text-xs text-muted">
+    <span className="text-xs text-muted-foreground">
       {label}{" "}
       {value == null ? (
         "—"
@@ -63,7 +63,7 @@ export async function RelativeStrengthCards() {
           <CardHeader>
             <CardTitle className="text-base font-medium">
               {item.pair}
-              <span className="ml-1.5 text-xs font-normal text-muted">
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">
                 {item.label}
               </span>
             </CardTitle>

@@ -52,7 +52,7 @@ export async function MacroSnapshot() {
     <div>
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-medium text-fg-dim">宏观速览</h3>
-        <Link href="/macro" className="text-[10px] text-muted hover:text-fg">
+        <Link href="/macro" className="text-[10px] text-muted-foreground hover:text-fg">
           更多 →
         </Link>
       </div>

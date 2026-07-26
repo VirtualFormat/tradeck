@@ -14,7 +14,6 @@ import { TrendUpIcon, TrendDownIcon } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -70,6 +69,7 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
     const base = hist[0].value;
     return hist.map((p) => ({
       date: p.date,
+      value: p.value,
       change: base > 0 ? ((p.value - base) / base) * 100 : 0,
     }));
   }, [quote.hist]);
@@ -80,26 +80,23 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
         <CardDescription className="flex items-center gap-1.5">
           <Badge
             variant="secondary"
-            className="rounded-sm px-1 py-0 text-[9px] uppercase tracking-wider"
+            className="shrink-0 rounded-sm px-1 py-0 text-[9px] uppercase tracking-wider"
           >
             {marketLabel}
           </Badge>
-          {quote.cnName}
+          <span className="min-w-0 flex-1 truncate">{quote.cnName}</span>
+          <span
+            className={`ml-auto flex shrink-0 items-center gap-0.5 text-[11px] font-medium ${changeColor}`}
+          >
+            <TrendIcon className="size-3" />
+            {fmtPct(quote.change_percent)}
+          </span>
         </CardDescription>
         <CardTitle
           className={`text-base font-semibold tabular-nums ${changeColor}`}
         >
           {fmtPrice(quote.last_price)}
         </CardTitle>
-        <CardAction>
-          <Badge
-            variant="outline"
-            className={`shrink-0 whitespace-nowrap ${changeColor}`}
-          >
-            <TrendIcon className="size-3" />
-            {fmtPct(quote.change_percent)}
-          </Badge>
-        </CardAction>
       </CardHeader>
       <CardContent className="px-0 pb-1 pt-0">
         {data.length >= 2 && (
@@ -134,10 +131,29 @@ export function IndexCard({ quote }: { quote: IndexQuote }) {
                       const d = new Date(label);
                       return `${d.getMonth() + 1}月${d.getDate()}日`;
                     }}
-                    formatter={(value) => [
-                      `${Number(value).toFixed(2)}%`,
-                      quote.cnName,
-                    ]}
+                    formatter={(value, _name, item) => {
+                      const row = item?.payload as
+                        | { value?: number }
+                        | undefined;
+                      const pct =
+                        typeof value === "number" ? value : Number(value);
+                      return (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="font-mono text-sm font-medium text-foreground tabular-nums">
+                            {row?.value != null ? fmtPrice(row.value) : "—"}
+                          </span>
+                          <span
+                            className={`font-mono text-xs tabular-nums ${
+                              pct >= 0 ? "text-up" : "text-down"
+                            }`}
+                          >
+                            {Number.isFinite(pct)
+                              ? `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`
+                              : "—"}
+                          </span>
+                        </div>
+                      );
+                    }}
                   />
                 }
               />

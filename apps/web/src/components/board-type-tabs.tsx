@@ -47,7 +47,7 @@ export function BoardTypeTabs() {
           <TabsTrigger
             key={t.key}
             value={t.key}
-            className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted hover:text-fg data-active:bg-accent data-active:text-white"
+            className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground data-active:bg-accent data-active:text-accent-foreground"
           >
             {t.label}
           </TabsTrigger>

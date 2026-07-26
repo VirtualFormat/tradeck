@@ -121,7 +121,7 @@ export function TradingViewChart({
   if (data.length === 0) {
     return (
       <div
-        className="flex items-center justify-center text-xs text-muted"
+        className="flex items-center justify-center text-xs text-muted-foreground"
         style={{ height }}
       >
         无 K 线数据

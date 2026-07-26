@@ -209,7 +209,7 @@ export default function ScreenerPage() {
                               variant="ghost"
                               size="icon-xs"
                               onClick={() => removeFromWatchlist(item.symbol)}
-                              className="text-muted hover:text-up"
+                              className="text-muted-foreground hover:text-up"
                             >
                               <TrashIcon />
                             </Button>
@@ -245,7 +245,7 @@ export default function ScreenerPage() {
                     <TabsTrigger
                       key={t.key}
                       value={t.key}
-                      className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted hover:text-fg data-active:bg-accent data-active:text-white"
+                      className="rounded-sm px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground data-active:bg-accent data-active:text-accent-foreground"
                     >
                       {t.label}
                     </TabsTrigger>
@@ -253,7 +253,7 @@ export default function ScreenerPage() {
                 </TabsList>
               </Tabs>
 
-              <p className="mb-3 text-xs text-muted">
+              <p className="mb-3 text-xs text-muted-foreground">
                 {SCREENER_TYPES.find((t) => t.key === screenerType)?.desc}
               </p>
 
@@ -303,7 +303,7 @@ export default function ScreenerPage() {
                           >
                             {fmtPct(item.change_percent)}
                           </TableCell>
-                          <TableCell className="text-right tab-nums text-muted">
+                          <TableCell className="text-right tab-nums text-muted-foreground">
                             {fmtVolume(item.volume)}
                           </TableCell>
                           <TableCell>
@@ -318,7 +318,7 @@ export default function ScreenerPage() {
                               className={
                                 inWatchlist
                                   ? "text-accent"
-                                  : "text-muted hover:text-accent"
+                                  : "text-muted-foreground hover:text-accent"
                               }
                             >
                               <StarIcon

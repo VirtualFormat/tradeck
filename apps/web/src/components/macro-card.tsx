@@ -3,7 +3,7 @@
  * - mini AreaChart 显示历史序列相对首值的累计涨跌幅
  * - hover 显示日期 + 涨跌幅%
  * - 右上角 Badge 显示环比变化
- * - tradeck 主题：红涨绿跌 text-up / text-down；无方向用 var(--muted)
+ * - tradeck 主题：红涨绿跌 text-up / text-down；无方向用 var(--muted-foreground)
  */
 "use client"
 
@@ -42,7 +42,7 @@ export function MacroCard({ label, value, change, date, href, hist }: MacroCardP
   const isDown = change ? change.startsWith("-") : false
   const TrendIcon = isUp ? TrendUpIcon : isDown ? TrendDownIcon : null
   const trendColor = isUp ? "text-up" : isDown ? "text-down" : ""
-  const lineColor = isUp ? "var(--up)" : isDown ? "var(--down)" : "var(--muted)"
+  const lineColor = isUp ? "var(--up)" : isDown ? "var(--down)" : "var(--muted-foreground)"
   const gradientId = `fill-macro-${label.replace(/[^a-zA-Z0-9]/g, "_")}`
 
   const chartConfig = useMemo(
