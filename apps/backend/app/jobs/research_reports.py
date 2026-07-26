@@ -1,16 +1,16 @@
 """A 股券商研报采集（东财研报，直调 akshare，写入 research_reports）
 
-逐只拉 tracked 30 只 A 股（限速 0.5s/只，防东财封 IP），只留近 90 天。
+逐只拉 tracked 30 只 A 股（限流/退避交给数据层门面），只留近 90 天。
 盈利预测列名随年份动态变化（如「2026-盈利预测-收益」），用正则匹配取最大年份组。
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from datetime import date, timedelta
 from typing import Any
 
+from app.datasource import call_akshare
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market
@@ -18,7 +18,6 @@ from app.markets import pick_market
 logger = logging.getLogger(__name__)
 
 KEEP_DAYS = 90  # 只保留近 90 天研报
-RATE_LIMIT_DELAY = 0.5  # 每只股票间隔（秒），防东财封 IP
 
 # 盈利预测列名：「2026-盈利预测-收益」/「2026-盈利预测-市盈率」，年份动态变化
 _FORECAST_COL_RE = re.compile(r"^(\d{4})-盈利预测-(收益|市盈率)$")
@@ -53,7 +52,7 @@ async def fetch_and_store_research_reports(symbol: str, min_date: date) -> int:
         return ak.stock_research_report_em(symbol=code)
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare research reports failed for {symbol}: {e}")
         return 0
@@ -118,7 +117,7 @@ async def fetch_and_store_research_reports(symbol: str, min_date: date) -> int:
 
 
 async def run_research_reports_job() -> int:
-    """定时任务：拉 30 只 A 股跟踪标的的券商研报（限速 0.5s/只）"""
+    """定时任务：拉 30 只 A 股跟踪标的的券商研报（限流交给数据层门面）"""
     logger.info("=== research reports job start ===")
     min_date = date.today() - timedelta(days=KEEP_DAYS)
     total = 0
@@ -126,6 +125,5 @@ async def run_research_reports_job() -> int:
         if pick_market(symbol) != "CN":
             continue
         total += await fetch_and_store_research_reports(symbol, min_date)
-        await asyncio.sleep(RATE_LIMIT_DELAY)
     logger.info(f"=== research reports job done: {total} rows ===")
     return total

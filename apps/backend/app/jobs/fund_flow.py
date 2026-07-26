@@ -5,10 +5,10 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.datasource import call_akshare
 from app.db import get_pool
 from app.jobs.board_map import _to_symbol
 
@@ -38,7 +38,7 @@ async def run_fund_flow_job() -> None:
         return ak.stock_fund_flow_individual(symbol="即时")
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare fund flow failed: {e}")
         return

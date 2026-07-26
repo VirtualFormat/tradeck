@@ -1,5 +1,6 @@
 """AKShare Stock Quote Model — A 股实时报价."""
 
+import asyncio
 from typing import Any
 from warnings import warn
 
@@ -9,6 +10,15 @@ from openbb_core.provider.standard_models.equity_quote import (
     EquityQuoteQueryParams,
 )
 from pydantic import Field
+
+# 模块级并发闸：realtime_quotes 一次 ~100 只齐发，无上限 gather 是最高危封 IP 点。
+# provider 与 backend 是独立包，无法复用 backend 的 call_akshare，此处本地实现等价语义。
+_QUOTE_SEM = asyncio.Semaphore(4)
+
+# 退避重试配置（与 backend datasource.call_akshare 语义一致）
+_RETRIES = 2
+_BASE_DELAY = 0.5
+_BACKOFF = 1.5
 
 
 class AKShareStockQuoteQueryParams(EquityQuoteQueryParams):
@@ -77,8 +87,6 @@ class AKShareStockQuoteFetcher(
         **kwargs: Any,
     ) -> list[dict]:
         """Extract the raw data from AKShare."""
-        import asyncio
-
         import akshare as ak
 
         symbols = [s.strip().upper() for s in query.symbol.split(",") if s.strip()]
@@ -88,13 +96,12 @@ class AKShareStockQuoteFetcher(
             # 标准化：600519.SH → 600519，000001.SZ → 000001
             code = sym.split(".")[0] if "." in sym else sym
 
-            def fetch_individual() -> dict:
+            def fetch_individual() -> dict | None:
                 # 优先用 stock_individual_info_em（单股，轻量）
                 try:
                     info = ak.stock_individual_info_em(symbol=code)
                     # 返回 DataFrame，转 dict
-                    info_dict = dict(zip(info["item"], info["value"]))
-                    return info_dict
+                    return dict(zip(info["item"], info["value"]))
                 except Exception:
                     pass
 
@@ -107,24 +114,34 @@ class AKShareStockQuoteFetcher(
 
                 return None
 
-            try:
-                data = await asyncio.to_thread(fetch_individual)
-                if data:
-                    # 补充标准字段
-                    data["symbol"] = sym
-                    data["currency"] = "CNY"
-                    data["exchange"] = _detect_exchange(code)
-                    # 字段名映射（中文 → 标准模型字段）
-                    if "最新价" in data:
-                        data["last_price"] = float(data["最新价"])
-                    if "股票简称" in data:
-                        data["name"] = data["股票简称"]
-                    return data
-            except Exception as e:
-                warn(f"AKShare quote failed for {sym}: {e}")
+            # 并发闸 + 退避重试（实际并发 ≤ 4）
+            async with _QUOTE_SEM:
+                data = None
+                for attempt in range(_RETRIES + 1):
+                    try:
+                        data = await asyncio.to_thread(fetch_individual)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        if attempt < _RETRIES:
+                            await asyncio.sleep(_BASE_DELAY * _BACKOFF ** attempt)
+                        else:
+                            warn(f"AKShare quote failed for {sym}: {e}")
+                            return None
+
+            if data:
+                # 补充标准字段
+                data["symbol"] = sym
+                data["currency"] = "CNY"
+                data["exchange"] = _detect_exchange(code)
+                # 字段名映射（中文 → 标准模型字段）
+                if "最新价" in data:
+                    data["last_price"] = float(data["最新价"])
+                if "股票简称" in data:
+                    data["name"] = data["股票简称"]
+                return data
             return None
 
-        # 并发拉多个 symbol
+        # 并发拉多个 symbol（实际并发受 _QUOTE_SEM 限制）
         tasks = [get_one(s) for s in symbols]
         for result in await asyncio.gather(*tasks):
             if result:

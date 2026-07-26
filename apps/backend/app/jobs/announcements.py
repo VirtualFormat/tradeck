@@ -5,10 +5,10 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import date, timedelta
 
+from app.datasource import call_akshare
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market
@@ -41,7 +41,7 @@ async def _fetch_day(day: date) -> list[tuple]:
         return ak.stock_notice_report(symbol="全部", date=date_str)
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare announcements failed for {date_str}: {e}")
         return []

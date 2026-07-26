@@ -5,10 +5,10 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.datasource import call_akshare
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ async def fetch_and_store_boards(board_type: str) -> int:
         return ak.stock_board_concept_name_em()
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare boards {board_type} failed: {e}")
         return 0

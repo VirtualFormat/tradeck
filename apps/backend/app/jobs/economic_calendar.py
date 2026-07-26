@@ -7,13 +7,12 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
-from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +88,8 @@ async def _fetch_fred(today: date) -> list[tuple]:
     return rows
 
 
-def _fetch_baidu_sync(day: date) -> list[tuple]:
-    """同步拉百度财经单日经济数据日历（线程内跑）。"""
-    import akshare as ak
-
-    try:
-        df = ak.news_economic_baidu(date=day.strftime("%Y%m%d"))
-    except Exception as e:
-        logger.warning(f"baidu economic calendar {day} failed: {e}")
-        return []
+def _parse_baidu_df(df: Any) -> list[tuple]:
+    """百度财经单日经济数据 DataFrame → 待写行。"""
     if df is None or df.empty:
         return []
 
@@ -128,11 +120,20 @@ def _fetch_baidu_sync(day: date) -> list[tuple]:
 
 
 async def _fetch_baidu(today: date) -> list[tuple]:
-    """百度源：按天循环未来 7 天（直调 akshare，不经 OpenBB）。"""
+    """百度源：按天循环未来 7 天（经数据层门面调 akshare，不经 OpenBB）。"""
+    import akshare as ak
+
     rows: list[tuple] = []
     for i in range(BAIDU_DAYS):
-        rows.extend(await asyncio.to_thread(_fetch_baidu_sync, today + timedelta(days=i)))
-        await asyncio.sleep(0.3)  # 防限流
+        day = today + timedelta(days=i)
+        try:
+            df = await call_akshare(
+                lambda d=day: ak.news_economic_baidu(date=d.strftime("%Y%m%d"))
+            )
+        except Exception as e:
+            logger.warning(f"baidu economic calendar {day} failed: {e}")
+            continue
+        rows.extend(_parse_baidu_df(df))
     logger.info(f"baidu economic calendar: {len(rows)} events")
     return rows
 

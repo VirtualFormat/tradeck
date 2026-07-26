@@ -1,10 +1,10 @@
 """A 股新闻采集（东财个股新闻，直调 akshare，写入 news_articles）"""
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app.datasource import call_akshare
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market
@@ -34,7 +34,7 @@ async def fetch_and_store_akshare_news(symbol: str) -> int:
         return ak.stock_news_em(symbol=code)
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare news failed for {symbol}: {e}")
         return 0
@@ -72,12 +72,11 @@ async def fetch_and_store_akshare_news(symbol: str) -> int:
 
 
 async def run_akshare_news_job() -> None:
-    """定时任务：拉 30 只 A 股跟踪标的的东财新闻（限速 0.5s/只）"""
+    """定时任务：拉 30 只 A 股跟踪标的的东财新闻（限流交给数据层门面）"""
     logger.info("=== akshare news job start ===")
     total = 0
     for symbol in TRACKED_SYMBOLS:
         if pick_market(symbol) != "CN":
             continue
         total += await fetch_and_store_akshare_news(symbol)
-        await asyncio.sleep(0.5)  # 限速，防东财封 IP
     logger.info(f"=== akshare news job done: {total} rows ===")

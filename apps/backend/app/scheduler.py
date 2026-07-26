@@ -57,10 +57,10 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 实时报价：每 30 分钟
+    # 实时报价：每 30 分钟（错峰 0,30，避开其他 akshare job）
     _scheduler.add_job(
         run_realtime_quotes_job,
-        CronTrigger(minute="*/30", timezone="UTC"),
+        CronTrigger(minute="0,30", timezone="UTC"),
         id="realtime_quotes",
         replace_existing=True,
     )
@@ -129,18 +129,18 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 板块行情热度：每 30 分钟
+    # 板块行情热度：每 30 分钟（错峰 5,35）
     _scheduler.add_job(
         run_board_heat_job,
-        CronTrigger(minute="*/30", timezone="UTC"),
+        CronTrigger(minute="5,35", timezone="UTC"),
         id="board_heat",
         replace_existing=True,
     )
 
-    # A 股东财新闻：每 30 分钟
+    # A 股东财新闻：每 30 分钟（错峰 10,40）
     _scheduler.add_job(
         run_akshare_news_job,
-        CronTrigger(minute="*/30", timezone="UTC"),
+        CronTrigger(minute="10,40", timezone="UTC"),
         id="akshare_news",
         replace_existing=True,
     )
@@ -161,10 +161,10 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 板块舆情聚合：每 30 分钟
+    # 板块舆情聚合：每 30 分钟（错峰 20,50，须在 board_heat 后读 DB）
     _scheduler.add_job(
         run_board_sentiment_job,
-        CronTrigger(minute="*/30", timezone="UTC"),
+        CronTrigger(minute="20,50", timezone="UTC"),
         id="board_sentiment",
         replace_existing=True,
     )
@@ -207,10 +207,10 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 市场宽度：每 30 分钟（legu 实时快照，UPSERT 当天行）
+    # 市场宽度：每 30 分钟（错峰 15,45；legu 实时快照，UPSERT 当天行）
     _scheduler.add_job(
         run_market_breadth_job,
-        CronTrigger(minute="*/30", timezone="UTC"),
+        CronTrigger(minute="15,45", timezone="UTC"),
         id="market_breadth",
         replace_existing=True,
     )

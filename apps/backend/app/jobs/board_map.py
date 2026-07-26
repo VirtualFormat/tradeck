@@ -5,15 +5,14 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 
+from app.datasource import call_akshare
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
 
 CONCEPT_LIMIT = 150  # 概念板块只拉市值 Top N
-RATE_LIMIT_DELAY = 0.6  # 每个板块间隔（秒），防东财封 IP
 
 
 def _to_symbol(code: str) -> str | None:
@@ -40,7 +39,7 @@ async def _fetch_cons(board_type: str, board_name: str) -> list[str]:
         return ak.stock_board_concept_cons_em(symbol=board_name)
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare board cons failed for {board_name}: {e}")
         return []
@@ -82,7 +81,6 @@ async def run_board_map_job() -> None:
         map_rows.extend(
             (sym, b["board_type"], b["name"], b["code"]) for sym in symbols
         )
-        await asyncio.sleep(RATE_LIMIT_DELAY)
 
     if not map_rows:
         logger.warning("=== board map job done: 0 rows（akshare 全部失败） ===")

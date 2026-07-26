@@ -7,12 +7,12 @@ st st*涨停/跌停 不单独建列（真实涨停已剔 ST）；legu 无成交�
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.datasource import call_akshare
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def run_market_breadth_job() -> int:
         return ak.stock_market_activity_legu()
 
     try:
-        df = await asyncio.to_thread(fetch)
+        df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare market breadth failed: {e}")
         return 0
