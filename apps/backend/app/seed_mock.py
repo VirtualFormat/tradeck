@@ -1,11 +1,14 @@
-"""dev 用假数据种子脚本（本地数据源被限流/封锁时填充 DB，方便看页面效果）
+"""dev 用假数据种子（填充 DB，方便本地看页面效果）
 
-用法（dev 环境）：
-    docker exec tradeck-dev-backend python -m app.seed_mock
+生效方式：
+- **dev 自动**：backend 启动时若 DEV_SEED=1（仅 .devcontainer 置），
+  main.py lifespan 在起调度器前调用 run_seed() 灌入假数据。
+- **手动兜底**：docker exec tradeck-dev-backend python -m app.seed_mock
 
+说明：
 - 覆盖 20 张表，全部 UPSERT，可重复执行
 - 真数据到达后会被正常 job 覆盖（jobs 拉取失败返回 0 行，不会清掉假数据）
-- 不要在 prod 跑
+- 不要在 prod 跑（prod docker-compose.yml 不置 DEV_SEED）
 """
 from __future__ import annotations
 
@@ -868,31 +871,41 @@ async def seed_market_breadth(conn) -> int:
     return len(rows)
 
 
+async def run_seed(conn) -> dict[str, int]:
+    """在给定连接上灌入全部假数据（单事务），返回各表写入行数。
+
+    供 dev 启动自动 seed（main.py lifespan）与手动入口复用。
+    """
+    async with conn.transaction():
+        quotes = await seed_quotes(conn)
+        counts = {
+            "quote_snapshots": len(quotes),
+            "daily_prices": await seed_daily_prices(conn, quotes),
+            "index_prices": await seed_index_prices(conn),
+            "movers_cache": await seed_movers(conn, quotes),
+            "news_articles": await seed_news(conn),
+            "macro_indicators": await seed_macro(conn),
+            "fundamentals(3表)": await seed_fundamentals(conn, quotes),
+            "analyst_consensus": await seed_analyst_consensus(conn, quotes),
+            "balance+cash(2表)": await seed_balance_cash(conn, quotes),
+            "board_heat": await seed_boards(conn),
+            "earnings_calendar": await seed_earnings_calendar(conn),
+            "economic_calendar": await seed_economic_calendar(conn),
+            "announcements": await seed_announcements(conn),
+            "research_reports": await seed_research_reports(conn),
+            "market_breadth": await seed_market_breadth(conn),
+            "macro_asset_prices": await seed_macro_asset_prices(conn),
+            "yield_curve_rates": await seed_yield_curve_rates(conn),
+        }
+    return counts
+
+
 async def main() -> None:
+    """手动入口：自建连接跑一遍 seed。"""
     logger.info("=== seed mock data start ===")
     pool = await get_pool()
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            quotes = await seed_quotes(conn)
-            counts = {
-                "quote_snapshots": len(quotes),
-                "daily_prices": await seed_daily_prices(conn, quotes),
-                "index_prices": await seed_index_prices(conn),
-                "movers_cache": await seed_movers(conn, quotes),
-                "news_articles": await seed_news(conn),
-                "macro_indicators": await seed_macro(conn),
-                "fundamentals(3表)": await seed_fundamentals(conn, quotes),
-                "analyst_consensus": await seed_analyst_consensus(conn, quotes),
-                "balance+cash(2表)": await seed_balance_cash(conn, quotes),
-                "board_heat": await seed_boards(conn),
-                "earnings_calendar": await seed_earnings_calendar(conn),
-                "economic_calendar": await seed_economic_calendar(conn),
-                "announcements": await seed_announcements(conn),
-                "research_reports": await seed_research_reports(conn),
-                "market_breadth": await seed_market_breadth(conn),
-                "macro_asset_prices": await seed_macro_asset_prices(conn),
-                "yield_curve_rates": await seed_yield_curve_rates(conn),
-            }
+        counts = await run_seed(conn)
     for table, n in counts.items():
         logger.info(f"  {table}: {n} rows")
     await close_pool()

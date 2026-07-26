@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS, _parse_date
+from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_date(s: str | None) -> date | None:
+    """ISO 日期字符串 → date，失败返回 None。"""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except (ValueError, TypeError):
+        return None
 
 
 async def fetch_and_store_profile(symbol: str) -> int:

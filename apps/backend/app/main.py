@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import analyst, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, movers, news, profile, quotes, sentiment, technicals
+from app.config import settings
 from app.db import close_pool, get_pool
 from app.scheduler import start_scheduler, stop_scheduler
 
@@ -28,6 +29,17 @@ async def lifespan(app: FastAPI):
     async with pool.acquire() as conn:
         version = await conn.fetchval("SELECT version()")
         logger.info(f"connected to PostgreSQL: {version[:50]}...")
+
+    # 1.5 dev 环境：起调度器前先灌假数据垫底（真 job 到货后逐步覆盖）
+    if settings.DEV_SEED:
+        try:
+            from app.seed_mock import run_seed
+
+            async with pool.acquire() as conn:
+                counts = await run_seed(conn)
+            logger.info(f"DEV_SEED: seeded mock data ({sum(counts.values())} rows)")
+        except Exception as e:  # noqa: BLE001 — seed 失败不阻断启动
+            logger.warning(f"DEV_SEED failed (ignored): {e}")
 
     # 2. 启动调度器（会立即触发一次数据拉取）
     await start_scheduler()
