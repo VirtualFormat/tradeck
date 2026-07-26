@@ -1,6 +1,8 @@
-# OpenBB Platform — 数据层后端
-# 作为 docker service 供 tradeck 项目（及其他项目）复用
-# PyPI 安装，稳定且快速；源码 clone 仅用于写 akshare-provider 时参考
+# OpenBB Platform — 海外节点（韩国瘦 OpenBB）
+# 用途：部署在海外机器（如韩国），专门服务需要出海的 provider
+#       （yfinance/sec/fred/federal_reserve/oecd 等），不含 akshare-provider。
+# 与 docker/openbb/Dockerfile（国内，含 akshare）区别：去掉 A 股本地扩展。
+# 部署：见 docker/openbb/docker-compose.overseas.yml
 
 FROM python:3.12-alpine
 
@@ -8,16 +10,14 @@ FROM python:3.12-alpine
 RUN apk add --no-cache curl ca-certificates
 
 # 安装 OpenBB（含 Platform API + 30+ 官方 Provider）
-# 预装免费 Provider：yfinance/sec/fred/federal_reserve/bls/cftc/congress_gov/ecb/eia 等
+# 免费 Provider：yfinance/sec/fred/federal_reserve/bls/ecb/eia/oecd 等
 # 付费 Provider（fmp/intrinio/tiingo 等）装了但不配 key 不启用
 RUN pip install --no-cache-dir openbb && \
     pip uninstall -y openbb-cftc 2>/dev/null || true
 
-# 安装 openbb-akshare-provider（本地包，A 股深度数据）
-COPY packages/openbb-akshare-provider /opt/openbb-akshare-provider
-RUN pip install --no-cache-dir /opt/openbb-akshare-provider
+# 注意：不安装 openbb-akshare-provider（A 股数据留国内节点）
 
-# 重建 OpenBB 静态资产（注册新 Provider）
+# 重建 OpenBB 静态资产
 RUN openbb-build
 
 # 配置目录
@@ -33,5 +33,4 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -sf http://localhost:6900/openapi.json > /dev/null || exit 1
 
 # 启动 OpenBB Platform API（FastAPI via uvicorn）
-# openbb-api 不支持 --workers 参数，用 uvicorn 直接启动支持多 worker
 CMD ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "4"]

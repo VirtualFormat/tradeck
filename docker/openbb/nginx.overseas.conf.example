@@ -1,0 +1,48 @@
+# 韩国节点 nginx 示例 — 反代瘦 OpenBB + X-OpenBB-Token 鉴权
+#
+# 部署到韩国机器后：
+#   1. 把 <REPLACE_WITH_TOKEN> 换成与国内 backend 的 OPENBB_OVERSEAS_TOKEN 相同的值
+#   2. 把 server_name 换成你的 CF 橙云域名
+#   3. 放到 /etc/nginx/conf.d/openbb-overseas.conf，nginx -t && systemctl reload nginx
+#
+# TLS：由 Cloudflare 橙云（代理模式）托管，浏览器/backend → CF 走 HTTPS。
+#      CF → 本 origin 的加密由 CF SSL 模式决定：
+#        - Flexible：CF→origin 用 HTTP（本文件 listen 80 即可）
+#        - Full：CF→origin 用 HTTPS，需在本机再配证书（listen 443 ssl + 自签/Origin 证书）
+#      推荐 Full + CF Origin 证书。下面给 HTTP(80) 最简版，按需改。
+
+# token 校验：请求头 X-OpenBB-Token 必须等于约定值，否则 401
+map $http_x_openbb_token $openbb_authorized {
+    default                 0;
+    "<REPLACE_WITH_TOKEN>"  1;
+}
+
+upstream openbb_overseas {
+    server 127.0.0.1:6900;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name openbb-kr.example.com;   # ← 换成你的 CF 域名
+
+    # 只允许携带正确 token 的请求
+    if ($openbb_authorized = 0) {
+        return 401;
+    }
+
+    location / {
+        proxy_pass http://openbb_overseas;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+
+        # OpenBB 部分接口（跨境取数）耗时较长，放宽超时
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+    }
+}

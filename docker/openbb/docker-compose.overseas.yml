@@ -1,0 +1,40 @@
+# 韩国节点 — 瘦 OpenBB（只服务海外数据源）
+# 部署在海外机器（韩国）。国内 backend 通过 CF 橙云 + nginx(校验 X-OpenBB-Token)
+# 访问本服务的海外 provider（yfinance/sec/fred/federal_reserve/oecd 等）。
+#
+# 使用：
+#   cd docker/openbb
+#   cp .env.example .env   # 填海外源 API key（免费源可留空）
+#   docker compose -f docker-compose.overseas.yml up -d --build
+#   本机验证：curl http://127.0.0.1:6900/openapi.json
+#
+# 6900 只绑 127.0.0.1，不暴露公网；对外由 nginx(见 nginx.overseas.conf.example) 反代 + token 鉴权，
+# TLS 由 Cloudflare 橙云托管。
+
+services:
+  openbb:
+    build:
+      context: ../..
+      dockerfile: docker/openbb/Dockerfile.overseas
+    container_name: tradeck-openbb-overseas
+    ports:
+      - "127.0.0.1:6900:6900"   # 只绑本机，供 nginx upstream
+    volumes:
+      - openbb-overseas-config:/root/.openbb_platform
+    environment:
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - FRED_API_KEY=${FRED_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  openbb-overseas-config:
