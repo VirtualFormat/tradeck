@@ -1,6 +1,7 @@
 # OpenBB Platform — 数据层后端
 # 作为 docker service 供 tradeck 项目（及其他项目）复用
-# PyPI 安装，稳定且快速；源码 clone 仅用于写 akshare-provider 时参考
+# PyPI 安装，稳定且快速。
+# 注：A 股报价与深度数据已由 backend 经 call_akshare 直调 akshare，不再依赖自写 provider。
 
 FROM python:3.12-alpine
 
@@ -12,13 +13,6 @@ RUN apk add --no-cache curl ca-certificates
 # 付费 Provider（fmp/intrinio/tiingo 等）装了但不配 key 不启用
 RUN pip install --no-cache-dir openbb && \
     pip uninstall -y openbb-cftc 2>/dev/null || true
-
-# 安装 openbb-akshare-provider（本地包，A 股深度数据）
-COPY packages/openbb-akshare-provider /opt/openbb-akshare-provider
-RUN pip install --no-cache-dir /opt/openbb-akshare-provider
-
-# 重建 OpenBB 静态资产（注册新 Provider）
-RUN openbb-build
 
 # 配置目录
 WORKDIR /data

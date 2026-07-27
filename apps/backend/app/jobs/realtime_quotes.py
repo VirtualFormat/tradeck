@@ -1,14 +1,70 @@
-"""盘中轮询报价（调 OpenBB quote，写入 quote_snapshots）"""
+"""盘中轮询报价（A 股经 call_akshare 批量直调，港美股走 yfinance，写入 quote_snapshots）"""
 from __future__ import annotations
 
 import logging
+from typing import Any
 
+from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market, pick_provider
-from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
+
+
+def _f(v: Any) -> float | None:
+    try:
+        f = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+    # pandas NaN 不等于自身
+    return None if f is not None and f != f else f
+
+
+def _i(v: Any) -> int | None:
+    try:
+        return int(float(v)) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _fetch_akshare_quotes(symbols: list[str]) -> list[dict]:
+    """一次拉 A 股全市场 spot，本地过滤 tracked，映射到标准报价 dict。
+
+    change_percent 存小数（0.0715 = 7.15%），与 seed/movers 口径一致。
+    失败/空返回 []（降级，不抛）。
+    """
+    # tracked 6 位代码 → 内部 symbol（600519 → 600519.SH）
+    code_map = {s.split(".")[0]: s for s in symbols}
+
+    def fetch():
+        import akshare as ak
+
+        return ak.stock_zh_a_spot_em()
+
+    try:
+        df = await call_akshare(fetch)
+    except Exception as e:
+        logger.warning(f"akshare spot quotes failed: {e}")
+        return []
+    if df is None or df.empty:
+        return []
+
+    quotes: list[dict] = []
+    for _, r in df.iterrows():
+        sym = code_map.get(str(r.get("代码") or "").strip())
+        if not sym:
+            continue
+        pct = _f(r.get("涨跌幅"))  # spot_em 返回百分数（7.15），转小数
+        quotes.append({
+            "symbol": sym,
+            "name": str(r.get("名称") or "") or None,
+            "last_price": _f(r.get("最新价")),
+            "change": _f(r.get("涨跌额")),
+            "change_percent": pct / 100 if pct is not None else None,
+            "volume": _i(r.get("成交量")),
+        })
+    return quotes
 
 
 async def fetch_and_store_quotes(symbols: list[str]) -> int:
@@ -20,11 +76,7 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
     all_quotes: list[dict] = []
 
     if akshare_syms:
-        data = await fetch_openbb(
-            "/equity/price/quote",
-            {"provider": "akshare", "symbol": ",".join(akshare_syms)},
-        )
-        all_quotes.extend(data.get("results", []))
+        all_quotes.extend(await _fetch_akshare_quotes(akshare_syms))
 
     if yfinance_syms:
         data = await fetch_openbb(

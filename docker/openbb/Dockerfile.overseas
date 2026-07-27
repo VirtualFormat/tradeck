@@ -1,7 +1,7 @@
 # OpenBB Platform — 海外节点（韩国瘦 OpenBB）
 # 用途：部署在海外机器（如韩国），专门服务需要出海的 provider
-#       （yfinance/sec/fred/federal_reserve/oecd 等），不含 akshare-provider。
-# 与 docker/openbb/Dockerfile（国内，含 akshare）区别：去掉 A 股本地扩展。
+#       （yfinance/sec/fred/federal_reserve/oecd 等）。
+# 注：A 股报价/深度数据已由 backend 直调 akshare，国内/海外镜像均不含自写 provider。
 # 部署：见 docker/openbb/docker-compose.overseas.yml
 
 FROM python:3.12-alpine

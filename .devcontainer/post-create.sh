@@ -10,12 +10,8 @@ corepack enable && corepack prepare pnpm@9.15.0 --activate
 node --version && pnpm --version
 
 echo ""
-echo "=== 2. 安装 Python 依赖（OpenBB + akshare）==="
-pip install --no-cache-dir openbb akshare
-# 安装 openbb-akshare-provider（本地包）
-pip install --no-cache-dir -e /workspace/packages/openbb-akshare-provider
-# 重建 OpenBB 静态资产（注册 akshare provider）
-openbb-build
+echo "=== 2. 安装 Python 依赖（backend requirements：OpenBB/akshare/tickflow 等）==="
+pip install --no-cache-dir -r /workspace/apps/backend/requirements.txt
 
 echo ""
 echo "=== 3. 安装前端依赖 ==="

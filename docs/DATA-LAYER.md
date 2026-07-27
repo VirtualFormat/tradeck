@@ -7,7 +7,7 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 | 源 | 职责 | 接入 |
 |---|---|---|
 | **TickFlow** | 日K（A/美/港，本地据此算技术指标） | 官方 SDK（自带分片 + 并发闸 + 429 退避），`datasource/tickflow_source.py` |
-| **akshare** | A 股**报价** + 深度数据（板块 / 资金流 / 研报 / 公告 / 龙虎 / 两融 / 北向 / 新闻 / 涨跌家数） | 报价走 provider `stock_quote`；深度数据 backend 直调，经 `call_akshare` |
+| **akshare** | A 股**报价** + 深度数据（板块 / 资金流 / 研报 / 公告 / 龙虎 / 两融 / 北向 / 新闻 / 涨跌家数） | 全部 backend 直调，经 `call_akshare`（报价用 `stock_zh_a_spot_em` 一次全市场→本地过滤） |
 | **OpenBB** | 宏观 / 海外指标（fred/oecd/fed）/ 分析师 / 财报日历 / 财务(yf) / 大宗 / 国债 / 指数 / 美港股报价(yf) | `fetch_openbb`（海外源经韩国节点，见 [`OVERSEAS-NODE.md`](OVERSEAS-NODE.md)） |
 
 ## 薄门面 `datasource/`
@@ -19,8 +19,8 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 
 > 门面只做**路由 + 横切**，**不统一 schema**（各源字段仍在 job/provider 内转换）。
 
-### provider 报价并发闸
-`stock_quote.py` 的 `aextract_data` 用 `asyncio.gather` 齐发多 symbol，加模块级 `_QUOTE_SEM = asyncio.Semaphore(4)` 把实际并发压到 ≤4，`fetch_individual` 两级降级（`stock_individual_info_em` → `stock_bid_ask_em`）+ 2 次退避重试。provider 是独立包，本地实现与 `call_akshare` 等价的语义。
+### A 股报价（backend 直调批量 spot）
+`realtime_quotes.py` 对 A 股一次调 `ak.stock_zh_a_spot_em()`（全市场 spot），本地按 tracked 代码过滤、映射到 `quote_snapshots`（名称/最新价/涨跌额/涨跌幅→小数/成交量），经 `call_akshare` 走统一限流闸；港/美股报价仍走 yfinance（`fetch_openbb`）。自写 OpenBB akshare provider 已整包退役。
 
 ## symbol 规范
 

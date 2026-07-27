@@ -1,8 +1,9 @@
 name: Build OpenBB Images
 
 # 构建并发布两个 OpenBB 镜像到 GHCR（org: virtualformat）：
-#   - tradeck-openbb           主/国内节点（含 akshare，A股）
-#   - tradeck-openbb-overseas  从/海外节点（瘦 OpenBB，无 akshare，韩国 ARM 机）
+#   - tradeck-openbb           主/国内节点（含国内源 provider）
+#   - tradeck-openbb-overseas  从/海外节点（瘦 OpenBB，韩国 ARM 机）
+# 注：A 股报价/深度数据已由 backend 直调 akshare，OpenBB 镜像不再含自写 provider。
 #
 # 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
 #   amd64 -> ubuntu-24.04，arm64 -> ubuntu-24.04-arm（public repo 免费）。
@@ -16,7 +17,6 @@ on:
     branches: ["master"]
     paths:
       - "docker/openbb/**"
-      - "packages/openbb-akshare-provider/**"
       - ".github/workflows/openbb-images.yml"
   workflow_dispatch:
 

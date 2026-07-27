@@ -50,9 +50,8 @@ tradeck/
 │       ├── app/openbb_client.py ← OpenBB HTTP 客户端（失败降级返回空 results）
 │       ├── app/markets.py       ← pick_provider / pick_market（按 symbol 后缀）
 │       ├── app/config.py        ← 环境变量（DATABASE_URL / OPENBB_API_URL）
+│       ├── app/datasource/      ← 数据层薄门面（call_akshare 限流闸 / fetch_openbb / tickflow_source）
 │       └── init.sql             ← 24 张表 DDL（postgres 容器首次启动自动执行）
-├── packages/
-│   └── openbb-akshare-provider/ ← 自写 OpenBB Provider 扩展（A 股深度数据，poetry 包）
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
 ├── docs/                        ← PIPELINE.md（管道架构）、DATA-LAYER.md（数据层特性）、OVERSEAS-NODE.md（海外节点）
 ├── docker-compose.yml           ← prod 用 compose（仅 prod 部署 + 部署前本地验证）
@@ -80,12 +79,12 @@ tradeck/
 devcontainer up --workspace-folder .
 ```
 
-`post-create.sh` 自动安装：Node 24 + pnpm 9.15.0、Python 依赖（openbb + akshare + 本地 provider + `openbb-build`）、`apps/web` 前端依赖。
+`post-create.sh` 自动安装：Node 24 + pnpm 9.15.0、Python 依赖（backend `requirements.txt`：openbb / akshare / tickflow 等）、`apps/web` 前端依赖。
 
 规则（来自 `CODEBUDDY.md`）：
 - ❌ 不要在宿主机跑 `pnpm install` / `pip install`
 - ✅ 所有依赖装在 devcontainer 内
-- 改了 `packages/openbb-akshare-provider` → 需重装 + `openbb-build` + 重启 openbb 容器才生效
+- 改了 backend `requirements.txt` → 在 backend 容器内重装依赖后重启生效
 
 ## 常用命令
 
@@ -109,26 +108,21 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 假数据种子（dev 专用）
 
-本地数据源被限流/封锁（yfinance 限流、东财封 IP）时，填充逼真假数据看页面效果：
+dev 环境（devcontainer backend 置 `DEV_SEED=1`）启动时自动灌假数据看页面效果；也可手动：
 
 ```bash
 docker exec tradeck-dev-backend python -m app.seed_mock
 ```
 
-`app/seed_mock.py` 覆盖 20 张表（UPSERT，可重复执行）；真数据到达后会被正常 job 覆盖。**勿在 prod 执行**。
-
-### OpenBB Provider（`packages/openbb-akshare-provider/`）
-
-```bash
-pip install -e packages/openbb-akshare-provider
-openbb-build                 # 重建静态资产，注册 provider，必做
-```
+`app/seed_mock.py` 覆盖全部 24 张表（UPSERT，可重复执行）；真数据到达后会被正常 job 覆盖。prod 根 compose 不置 `DEV_SEED`，**不会**自动灌。
 
 ### 数据层验证
 
 ```bash
-bash docker/openbb/verify.sh   # 8 项检查：路由数/provider 数/美股 A 股港股报价/财报/国债/Swagger
+bash docker/openbb/verify.sh   # OpenBB 侧检查：路由数/美股港股报价(yf)/财报/国债/Swagger
 ```
+
+> A 股报价/深度数据已由 backend 经 `call_akshare` 直调 akshare（不再走自写 OpenBB provider）；日K 走 TickFlow。
 
 ### 服务入口
 
@@ -221,12 +215,11 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 - 环境变量：`BACKEND_API_URL`（默认 `http://localhost:8080`）；`OPENBB_API_URL` 保留给个别未迁移场景。
 - `next.config.ts` 有 `outputFileTracingRoot: "/workspace/apps/web"`（devcontainer 路径）和 `serverExternalPackages: ["undici"]`（绕开 Server Component 的 DNS 解析问题）——改动需谨慎。
 
-### OpenBB Provider（packages/openbb-akshare-provider）
+### akshare 直调（backend 数据层门面）
 
-- 标准三件套模式：每个数据类型一个文件，`XxxQueryParams`（继承 OpenBB 标准模型）+ `XxxData`（`__alias_dict__` 映射 akshare 中文列名）+ `XxxFetcher`（`transform_query` / `aextract_data` / `transform_data`）。
-- 在 `openbb_akshare_provider/__init__.py` 的 `fetcher_dict` 注册，靠 poetry 插件入口 `openbb_provider_extension` 被 OpenBB 发现。
-- 已实现：EquityQuote、EquityHistorical、IndexHistorical、NorthFlow、MarginTrading、DragonTigerList、ConceptBoards。
-- **改完必须** `pip install -e . && openbb-build` 并重启 openbb 容器，否则不生效。
+- A 股报价与深度数据（板块/资金流/研报/公告/新闻/涨跌家数等）由 backend job 经 `app.datasource.call_akshare` 直调 akshare，统一走进程级 `Semaphore(4)` 限流闸 + 退避重试 + 节流；不再经 OpenBB 自写 provider（已退役）。
+- 报价用 `ak.stock_zh_a_spot_em()`（一次全市场 spot → 本地按 tracked 代码过滤），港/美股报价走 yfinance（`fetch_openbb`）。
+- 日K/指数走 TickFlow（`app.datasource.tickflow_source`）；OpenBB 只留海外源（yfinance/fred/oecd 等，经韩国节点）。
 
 ## 数据库
 

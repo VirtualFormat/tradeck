@@ -6,7 +6,7 @@
 
 - **前端**：Next.js 16 + shadcn/ui + Tailwind v4 + TradingView LC + ECharts
 - **后端**：FastAPI（数据管道 + API）+ PostgreSQL
-- **数据层**：OpenBB Platform；A 股走自写 `openbb-akshare-provider`，海外源经 Cloudflare 分流到韩国瘦 OpenBB 节点
+- **数据层**：日K 走 TickFlow；A 股报价/深度数据 backend 直调 akshare（统一限流门面）；宏观/海外源走 OpenBB Platform，经 Cloudflare 分流到韩国瘦节点
 
 ## 文档索引
 

@@ -20,7 +20,7 @@ devcontainer up --workspace-folder .
 
 devcontainer 配置在 `.devcontainer/`，自动装：
 - Node 24 + pnpm 9
-- Python 3.12 + OpenBB + akshare-provider
+- Python 3.12 + backend requirements（OpenBB / akshare / tickflow 等）
 - apps/web 依赖（pnpm install）
 - OpenBB Platform 服务（端口 6900）
 
@@ -60,9 +60,9 @@ tradeck/
 │   ├── devcontainer.json
 │   └── docker-compose.yml  ← dev 用 compose（dev + openbb）
 ├── apps/web/                ← Next.js 前端
+├── apps/backend/            ← FastAPI 后端（数据管道 + API；app/datasource 数据层门面）
 ├── docker/openbb/           ← OpenBB Platform Dockerfile（dev + prod 共用）
 ├── docker-compose.yml        ← prod 用 compose（web + openbb）
-├── packages/openbb-akshare-provider/  ← A 股数据扩展
 ├── docs/                    ← 技术文档
 └── .env                     ← API key 配置
 ```
@@ -70,5 +70,4 @@ tradeck/
 ## 技术栈（确认，不变）
 
 - **前端**：Next.js 16 + shadcn/ui + Tailwind v4 + TradingView LC + ECharts
-- **数据层**：OpenBB Platform（FastAPI，Python）
-- **A 股数据**：openbb-akshare-provider（自写扩展）
+- **数据层**：日K 走 TickFlow；A 股报价/深度数据 backend 直调 akshare；宏观/海外走 OpenBB Platform（FastAPI，Python）
