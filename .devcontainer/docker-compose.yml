@@ -63,8 +63,8 @@ services:
       # 海外节点（可选）：为空则海外源回落国内 openbb
       OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
-      # dev 启动自动灌假数据（prod 根 docker-compose.yml 不置，默认关）
-      DEV_SEED: "1"
+      # dev 启动自动灌假数据（默认开；可用环境变量 DEV_SEED= 临时关）
+      DEV_SEED: "${DEV_SEED-1}"
     volumes:
       - ../apps/backend:/app
     ports:

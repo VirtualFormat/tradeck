@@ -1,6 +1,10 @@
-FROM python:3.12-alpine
+FROM python:3.12-slim
 
-# 无额外系统依赖：asyncpg/pandas 等均用官方 musllinux wheel，免装编译工具链
+# 用 glibc（Debian slim）而非 alpine/musl：akshare 部分接口依赖 py_mini_racer
+# （V8 JS 引擎，glibc 二进制），在 musl 上加载 libgcc_s.so.1 失败。slim 下开箱可用。
+# curl 供健康检查/调试用。
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
