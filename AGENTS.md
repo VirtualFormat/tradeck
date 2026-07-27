@@ -7,7 +7,7 @@
 
 **tradeck** 是一个全球股票市场资讯看板（market dashboard），展示美股 / A 股 / 港股的行情、涨跌榜、新闻、宏观数据、基本面等。它是规划中三个独立项目里的「项目 1」，其数据层（OpenBB Platform）设计为可被后续项目复用。
 
-核心设计：**前端不直连数据源**。backend 通过 APScheduler 定时从 OpenBB 拉数据写入 PostgreSQL，前端 Server Components 从 backend API 读库（毫秒级），实现页面秒开（改造前直连 OpenBB 需 10-30s，改造后 <200ms，详见 `docs/PIPELINE-MIGRATION-COMPLETE.md`）。
+核心设计：**前端不直连数据源**。backend 通过 APScheduler 定时从数据源拉数据写入 PostgreSQL，前端 Server Components 从 backend API 读库（毫秒级），实现页面秒开（直连数据源需 10-30s，读库 <200ms，详见 `docs/PIPELINE.md`）。
 
 ## 架构与数据流
 
@@ -54,7 +54,7 @@ tradeck/
 ├── packages/
 │   └── openbb-akshare-provider/ ← 自写 OpenBB Provider 扩展（A 股深度数据，poetry 包）
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
-├── docs/                        ← TECH-PLAN.md（活文档）、PIPELINE-DESIGN.md、PIPELINE-MIGRATION-COMPLETE.md
+├── docs/                        ← PIPELINE.md（管道架构）、DATA-LAYER.md（数据层特性）、OVERSEAS-NODE.md（海外节点）
 ├── docker-compose.yml           ← prod 用 compose（仅 prod 部署 + 部署前本地验证）
 └── CODEBUDDY.md                 ← 开发规范（devcontainer 强制等）
 ```
@@ -230,7 +230,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 
 ## 数据库
 
-PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`quote_snapshots`、`index_prices`、`movers_cache`、`news_articles`、`macro_indicators`、`income_statements`、`equity_profiles`、`fundamental_metrics`、`board_heat`、`symbol_board_map`、`board_sentiment`、`fund_flow`、`analyst_consensus`、`balance_sheets`、`cash_flow_statements`、`earnings_calendar`、`economic_calendar`、`technical_indicators`、`announcements`、`research_reports`、`market_breadth`、`macro_asset_prices`、`yield_curve_rates`（表结构见 init.sql 或 `docs/PIPELINE-MIGRATION-COMPLETE.md`）。
+PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`quote_snapshots`、`index_prices`、`movers_cache`、`news_articles`、`macro_indicators`、`income_statements`、`equity_profiles`、`fundamental_metrics`、`board_heat`、`symbol_board_map`、`board_sentiment`、`fund_flow`、`analyst_consensus`、`balance_sheets`、`cash_flow_statements`、`earnings_calendar`、`economic_calendar`、`technical_indicators`、`announcements`、`research_reports`、`market_breadth`、`macro_asset_prices`、`yield_curve_rates`（表结构见 init.sql）。
 
 ⚠️ `init.sql` 由 postgres 容器**首次启动**时执行（`docker-entrypoint-initdb.d`）。改表结构后，已存在的数据卷不会自动重跑——需手动执行 SQL 或删数据卷重建。
 
@@ -270,6 +270,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 ## 相关文档
 
 - `CODEBUDDY.md` — 开发规范（devcontainer 强制、prod compose 用途）
-- `docs/TECH-PLAN.md` — 三项目规划 + 任务拆解（活文档）
-- `docs/PIPELINE-DESIGN.md` — 数据管道设计
-- `docs/PIPELINE-MIGRATION-COMPLETE.md` — 管道迁移完成文档（DB schema、API 端点、性能数据，最实用的参考）
+- `docs/PIPELINE.md` — 数据管道架构（拓扑、24 表存储、定时任务、API 端点、dev 假数据）
+- `docs/DATA-LAYER.md` — 数据层特性（三源分工、薄门面限流降级、symbol 规范、调度错峰）
+- `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）
