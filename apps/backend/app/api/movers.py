@@ -31,7 +31,7 @@ async def get_movers(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT rank, symbol, name, price, percent_change, volume
+            SELECT rank, symbol, name, price, percent_change, volume, snapshot_date
             FROM movers_cache
             WHERE type = $1 AND market = $2
               AND snapshot_date = COALESCE(
@@ -56,6 +56,7 @@ async def get_movers(
             "percent_change": float(r["percent_change"]) if r["percent_change"] else None,
             "volume": r["volume"],
             "exchange": None,
+            "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
         }
         for r in rows
     ]
@@ -72,6 +73,7 @@ async def get_movers_turnover(
         rows = await conn.fetch(
             """
             SELECT q.symbol, q.name, q.last_price, q.change_percent, q.volume,
+                   q.updated_at,
                    (q.volume * q.last_price / p.market_cap) AS turnover
             FROM quote_snapshots q
             JOIN equity_profiles p ON p.symbol = q.symbol
@@ -92,6 +94,7 @@ async def get_movers_turnover(
             "percent_change": float(r["change_percent"]) if r["change_percent"] else None,
             "volume": r["volume"],
             "turnover": float(r["turnover"]) if r["turnover"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]

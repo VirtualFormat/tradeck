@@ -5,12 +5,14 @@
  */
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { getEquityQuotes } from "@/lib/openbb";
+import { fmtDataTime } from "@/lib/format";
 import {
   AdvanceDeclineChart,
   type AdvanceDeclineData,
@@ -71,17 +73,36 @@ function countAdvanceDecline(
 
 async function fetchMarketData(
   market: MarketDef
-): Promise<{ market: MarketDef; data: AdvanceDeclineData }> {
+): Promise<{
+  market: MarketDef;
+  data: AdvanceDeclineData;
+  updatedAt: string | null;
+}> {
   try {
     const quotes = await getEquityQuotes(market.symbols);
-    return { market, data: countAdvanceDecline(quotes) };
+    // 取样本中最新的报价更新时间（盘中分钟级）
+    const updatedAt =
+      quotes
+        .map((q) => q.updated_at)
+        .filter((t): t is string => Boolean(t))
+        .sort()
+        .pop() ?? null;
+    return { market, data: countAdvanceDecline(quotes), updatedAt };
   } catch {
-    return { market, data: { up: 0, down: 0, flat: 0 } };
+    return { market, data: { up: 0, down: 0, flat: 0 }, updatedAt: null };
   }
 }
 
 export async function AdvanceDeclineBoard() {
   const results = await Promise.all(MARKETS.map(fetchMarketData));
+
+  // 全市场样本中最新的报价时间，作为面板数据时点
+  const latestUpdated = results
+    .map((r) => r.updatedAt)
+    .filter((t): t is string => Boolean(t))
+    .sort()
+    .pop();
+  const timeLabel = fmtDataTime(latestUpdated);
 
   return (
     <Card
@@ -93,6 +114,11 @@ export async function AdvanceDeclineBoard() {
           涨跌平
         </CardTitle>
         <CardDescription>各市场代表样本股的当日涨跌家数</CardDescription>
+        {timeLabel && (
+          <CardAction className="text-xs text-muted-foreground">
+            {timeLabel}
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

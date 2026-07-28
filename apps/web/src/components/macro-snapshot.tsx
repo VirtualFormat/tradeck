@@ -4,7 +4,7 @@
  * 卡片风格套用 shadcn block SectionCards，mini LineChart 展示历史序列
  */
 import { getCPI, getEFFR, getUnemployment } from "@/lib/openbb";
-import { fmtPct } from "@/lib/format";
+import { fmtPct, fmtDataMonth } from "@/lib/format";
 import Link from "next/link";
 import { MacroCard } from "@/components/macro-card";
 
@@ -47,11 +47,18 @@ function calcChange(
 
 export async function MacroSnapshot() {
   const macro = await fetchMacroSnapshot();
+  // 数据月份：以 CPI 最新一期为准（与 /macro 页「2026年6月」格式一致）
+  const monthLabel = fmtDataMonth(macro.cpi?.date);
 
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-xs font-medium text-fg-dim">宏观速览</h3>
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-xs font-medium text-fg-dim">宏观速览</h3>
+          {monthLabel && (
+            <span className="text-xs text-muted-foreground">{monthLabel}</span>
+          )}
+        </div>
         <Link href="/macro" className="text-[10px] text-muted-foreground hover:text-fg">
           更多 →
         </Link>

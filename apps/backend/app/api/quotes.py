@@ -15,7 +15,7 @@ async def _fetch_rows(pool, sym_list: list[str]):
         # 用 ANY($1::text[]) 匹配多个 symbol
         return await conn.fetch(
             """
-            SELECT symbol, name, last_price, change, change_percent, volume, market
+            SELECT symbol, name, last_price, change, change_percent, volume, market, updated_at
             FROM quote_snapshots
             WHERE symbol = ANY($1::text[])
             """,
@@ -69,6 +69,7 @@ async def get_quotes(symbols: str = Query(..., description="逗号分隔的股�
             "high": None,
             "low": None,
             "prev_close": None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]

@@ -18,6 +18,8 @@ import {
   type SentimentDim,
 } from "@/components/sentiment-radar-chart";
 import { EmptyState } from "@/components/empty-state";
+import { getEquityQuotes } from "@/lib/openbb";
+import { fmtDataTime } from "@/lib/format";
 
 interface SentimentData {
   score: number;
@@ -47,9 +49,29 @@ function scoreLevel(score: number): { label: string; colorClass: string } {
   return { label: "冰点", colorClass: "text-down" };
 }
 
+/** 情绪评分基于 quote_snapshots，取代表标的最新报价时间作为数据时点（盘中分钟级） */
+async function fetchSnapshotTime(): Promise<string | null> {
+  try {
+    const quotes = await getEquityQuotes(["AAPL", "MSFT", "NVDA", "TSLA"]);
+    return (
+      quotes
+        .map((q) => q.updated_at)
+        .filter((t): t is string => Boolean(t))
+        .sort()
+        .pop() ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function SentimentRadar() {
-  const data = await fetchSentiment();
+  const [data, snapshotTime] = await Promise.all([
+    fetchSentiment(),
+    fetchSnapshotTime(),
+  ]);
   const level = scoreLevel(data.score);
+  const timeLabel = fmtDataTime(snapshotTime);
 
   return (
     <Card
@@ -61,7 +83,12 @@ export async function SentimentRadar() {
           <CardTitle className="text-base font-medium text-fg-dim">
             情绪雷达
           </CardTitle>
-          <CardDescription>6 维市场情绪评分（0-100）</CardDescription>
+          <CardDescription>
+            6 维市场情绪评分（0-100）
+            {timeLabel && (
+              <span className="ml-1.5 text-muted-foreground">· {timeLabel}</span>
+            )}
+          </CardDescription>
         </div>
         <CardAction>
           <Badge variant="outline" className={level.colorClass}>

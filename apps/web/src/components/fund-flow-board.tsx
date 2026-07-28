@@ -6,11 +6,13 @@
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { FundFlowBarChart, type FlowBarRow } from "@/components/fund-flow-bar-chart";
 import { EmptyState } from "@/components/empty-state";
+import { fmtDataTime } from "@/lib/format";
 
 interface FundFlowItem {
   symbol: string;
@@ -19,6 +21,8 @@ interface FundFlowItem {
   change_percent: number | null;
   turnover_rate: number | null;
   net_amount: number | null;
+  /** 榜单更新时间（fund_flow.updated_at，5 分钟级即时榜） */
+  updated_at?: string | null;
 }
 
 async function fetchFundFlow(
@@ -58,11 +62,13 @@ function FlowCard({
   rows,
   colorClass,
   variant,
+  timeLabel,
 }: {
   title: string;
   rows: FlowBarRow[];
   colorClass: string;
   variant: "in" | "out";
+  timeLabel?: string | null;
 }) {
   return (
     <Card
@@ -73,6 +79,11 @@ function FlowCard({
         <CardTitle className={`text-base font-medium ${colorClass}`}>
           {title}
         </CardTitle>
+        {timeLabel && (
+          <CardDescription className="text-xs text-muted-foreground">
+            {timeLabel}
+          </CardDescription>
+        )}
       </CardHeader>
       <CardContent>
         {rows.length > 0 ? (
@@ -91,6 +102,10 @@ export async function FundFlowBoard({ date }: { date?: string }) {
     fetchFundFlow("out", date),
   ]);
 
+  // 即时榜（5 分钟级）：用榜单首行的 updated_at 显时分
+  const inTime = fmtDataTime(inflow[0]?.updated_at);
+  const outTime = fmtDataTime(outflow[0]?.updated_at);
+
   return (
     <>
       <FlowCard
@@ -98,12 +113,14 @@ export async function FundFlowBoard({ date }: { date?: string }) {
         rows={toRows(inflow)}
         colorClass="text-up"
         variant="in"
+        timeLabel={inTime}
       />
       <FlowCard
         title="资金流出绿榜 Top 10"
         rows={toRows(outflow)}
         colorClass="text-down"
         variant="out"
+        timeLabel={outTime}
       />
     </>
   );

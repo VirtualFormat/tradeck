@@ -13,12 +13,15 @@ import {
 } from "@/components/ui/card";
 import { BoardTypeTabs } from "@/components/board-type-tabs";
 import { EmptyState } from "@/components/empty-state";
+import { fmtDataDate } from "@/lib/format";
 
 export interface BoardSentimentItem {
   name: string;
   news_count: number;
   sentiment_avg: number | null;
   hot_score: number | null;
+  /** 聚合更新时间（board_sentiment.updated_at，其日期即快照日） */
+  updated_at?: string | null;
 }
 
 async function fetchSentiment(
@@ -60,6 +63,8 @@ export async function BoardSentimentBoard({
   date?: string;
 }) {
   const items = await fetchSentiment(type, date);
+  // 快照日期：用聚合 updated_at 的日期（日频快照）
+  const dateLabel = fmtDataDate(items[0]?.updated_at);
 
   return (
     <Card
@@ -75,6 +80,9 @@ export async function BoardSentimentBoard({
         </CardAction>
         <CardDescription className="truncate text-[10px]">
           热度倒序 · 新闻量 · 情绪均值
+          {dateLabel && (
+            <span className="ml-1 text-muted-foreground">· {dateLabel}</span>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent>

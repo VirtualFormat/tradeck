@@ -9,10 +9,12 @@ import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
 import { StockPreviewTrigger } from "@/components/stock-preview-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
+import { fmtDataDate, fmtDataTime } from "@/lib/format";
 import {
   Card,
   CardAction,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -26,6 +28,10 @@ interface ScreenerItem {
   volume: number | null;
   /** 换手率（成交额/市值，仅换手榜有） */
   turnover?: number | null;
+  /** 榜单快照日期（movers_cache.snapshot_date，日频） */
+  snapshot_date?: string | null;
+  /** 报价更新时间（换手榜来自 quote_snapshots.updated_at，盘中分钟级） */
+  updated_at?: string | null;
 }
 
 // A 股热门列表（按市值选；沪市用 .SH）
@@ -59,6 +65,7 @@ async function fetchScreener(
         change: q.change,
         percent_change: q.change_percent,
         volume: q.volume,
+        updated_at: q.updated_at,
       }));
       const sorted = [...items].sort((a, b) => {
         const pa = a.percent_change ?? -999;
@@ -125,6 +132,15 @@ function fmtVolume(v: number | null | undefined): string {
   return v.toLocaleString("en-US");
 }
 
+/** 从榜单首行推导时间标注：日频榜用 snapshot_date（日期），盘中榜用 updated_at（时分） */
+function deriveTimeLabel(items: ScreenerItem[]): string | null {
+  const first = items[0];
+  if (!first) return null;
+  const dateLabel = fmtDataDate(first.snapshot_date);
+  if (dateLabel) return dateLabel;
+  return fmtDataTime(first.updated_at);
+}
+
 function StockRow({
   item,
   metric,
@@ -179,12 +195,14 @@ function ScreenerColumn({
   href,
   colorClass,
   metric,
+  timeLabel,
 }: {
   title: string;
   items: ScreenerItem[];
   href: string;
   colorClass: string;
   metric?: "amount" | "turnover";
+  timeLabel?: string | null;
 }) {
   return (
     <Card
@@ -195,6 +213,11 @@ function ScreenerColumn({
         <CardTitle className={`text-base font-medium ${colorClass}`}>
           {title}
         </CardTitle>
+        {timeLabel && (
+          <CardDescription className="text-xs text-muted-foreground">
+            {timeLabel}
+          </CardDescription>
+        )}
         <CardAction>
           <Link href={href} className="text-xs text-muted-foreground hover:text-fg">
             更多 →
@@ -235,12 +258,14 @@ export async function MoversBoard({
         items={gainers.slice(0, 8)}
         href="/screener"
         colorClass="text-up"
+        timeLabel={deriveTimeLabel(gainers)}
       />
       <ScreenerColumn
         title="跌幅榜 Top 8"
         items={losers.slice(0, 8)}
         href="/screener"
         colorClass="text-down"
+        timeLabel={deriveTimeLabel(losers)}
       />
       <ScreenerColumn
         title="活跃榜 Top 8（成交额）"
@@ -248,6 +273,7 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-accent"
         metric="amount"
+        timeLabel={deriveTimeLabel(active)}
       />
       <ScreenerColumn
         title="换手榜 Top 8"
@@ -255,6 +281,7 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-warn"
         metric="turnover"
+        timeLabel={deriveTimeLabel(turnover)}
       />
     </div>
   );
@@ -272,6 +299,8 @@ export async function TopNews({ market = "global" }: { market?: string }) {
   const symbols = NEWS_SYMBOLS[market] ?? NEWS_SYMBOLS.global;
   const articles = await getAggregatedNews(symbols, 1);
   const top4 = articles.slice(0, 4);
+  // 最新一条资讯的发布时间（盘中分钟级，显时分）
+  const newsTime = fmtDataTime(top4[0]?.date);
 
   return (
     <Card
@@ -282,6 +311,11 @@ export async function TopNews({ market = "global" }: { market?: string }) {
         <CardTitle className="text-base font-medium text-fg-dim">
           热门资讯
         </CardTitle>
+        {newsTime && (
+          <CardDescription className="text-xs text-muted-foreground">
+            {newsTime}
+          </CardDescription>
+        )}
         <CardAction>
           <Link href="/news" className="text-xs text-muted-foreground hover:text-fg">
             更多 →

@@ -8,6 +8,7 @@ import { getIndexHistorical, getEquityHistorical } from "@/lib/openbb";
 import { Card } from "@/components/ui/card";
 import { IndexCard, type IndexQuote } from "@/components/index-card";
 import { EmptyState } from "@/components/empty-state";
+import { fmtDataDate } from "@/lib/format";
 
 // 全球大盘指数 watchlist（yfinance 代码）
 const ALL_INDICES = [
@@ -95,11 +96,26 @@ export async function MarketOverview({ market = "global" }: { market?: string })
     );
   }
 
+  // 最新交易日：取各指数历史序列中最大的日期
+  const latestDate = indices
+    .map((q) => q.hist?.[q.hist.length - 1]?.date)
+    .filter((d): d is string => Boolean(d))
+    .sort()
+    .pop();
+  const dateLabel = fmtDataDate(latestDate);
+
   return (
-    <div className="grid grid-cols-2 gap-3 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-4 @5xl/main:grid-cols-8 dark:*:data-[slot=card]:bg-card">
-      {indices.map((quote) => (
-        <IndexCard key={quote.symbol} quote={quote} />
-      ))}
-    </div>
+    <>
+      {dateLabel && (
+        <div className="mb-2 text-right text-xs text-muted-foreground">
+          最新交易日 {dateLabel}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-4 @5xl/main:grid-cols-8 dark:*:data-[slot=card]:bg-card">
+        {indices.map((quote) => (
+          <IndexCard key={quote.symbol} quote={quote} />
+        ))}
+      </div>
+    </>
   );
 }

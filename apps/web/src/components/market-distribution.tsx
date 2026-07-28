@@ -9,12 +9,14 @@ import {
 } from "@/lib/openbb";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { MarketPieChart } from "@/components/market-pie-chart";
+import { fmtDataDate } from "@/lib/format";
 
 // 全球大盘指数 watchlist（与 market-overview 保持一致）
 const ALL_INDICES = [
@@ -34,10 +36,11 @@ const MARKET_LABEL: Record<string, string> = {
   cn: "A股",
 };
 
-async function fetchIndexLoaded(
+/** 返回该指数近 7 日最新交易日日期（无数据返回 null） */
+async function fetchIndexLatestDate(
   symbol: string,
   type: "index" | "equity"
-): Promise<boolean> {
+): Promise<string | null> {
   const end = new Date();
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
@@ -47,39 +50,51 @@ async function fetchIndexLoaded(
       type === "index"
         ? await getIndexHistorical(symbol, fmt(start), fmt(end))
         : await getEquityHistorical(symbol, fmt(start), fmt(end));
-    return hist.length > 0;
+    return hist.length > 0 ? hist[hist.length - 1].date : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function fetchMarketDistribution(): Promise<
-  { name: string; value: number }[]
-> {
+async function fetchMarketDistribution(): Promise<{
+  distribution: { name: string; value: number }[];
+  latestDate: string | null;
+}> {
   const results = await Promise.all(
     ALL_INDICES.map(async (idx) => ({
       market: idx.market,
-      loaded: await fetchIndexLoaded(idx.symbol, idx.type),
+      latestDate: await fetchIndexLatestDate(idx.symbol, idx.type),
     }))
   );
 
   const counts = new Map<string, number>();
   for (const r of results) {
-    if (!r.loaded) continue;
+    if (!r.latestDate) continue;
     counts.set(r.market, (counts.get(r.market) ?? 0) + 1);
   }
 
+  // 全指数中最新的交易日
+  const latestDate =
+    results
+      .map((r) => r.latestDate)
+      .filter((d): d is string => Boolean(d))
+      .sort()
+      .pop() ?? null;
+
   // 按市场顺序输出，过滤掉没有数据的
-  return ["us", "hk", "cn"]
+  const distribution = ["us", "hk", "cn"]
     .map((m) => ({
       name: MARKET_LABEL[m] ?? m,
       value: counts.get(m) ?? 0,
     }))
     .filter((d) => d.value > 0);
+
+  return { distribution, latestDate };
 }
 
 export async function MarketDistribution() {
-  const distribution = await fetchMarketDistribution();
+  const { distribution, latestDate } = await fetchMarketDistribution();
+  const dateLabel = fmtDataDate(latestDate);
 
   const total = distribution.reduce((sum, d) => sum + d.value, 0);
 
@@ -90,6 +105,11 @@ export async function MarketDistribution() {
         <CardDescription>
           全球大盘指数覆盖（共 {total} 只）
         </CardDescription>
+        {dateLabel && (
+          <CardAction className="text-xs text-muted-foreground">
+            {dateLabel}
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent className="pt-2">
         <MarketPieChart data={distribution} />

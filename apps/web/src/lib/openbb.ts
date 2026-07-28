@@ -23,6 +23,8 @@ export interface EquityQuote {
   low: number | null;
   prev_close: number | null;
   exchange: string | null;
+  /** 报价快照更新时间（quote_snapshots.updated_at，ISO 字符串） */
+  updated_at?: string | null;
 }
 
 export interface HistoricalPrice {
