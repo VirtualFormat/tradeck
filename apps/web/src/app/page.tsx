@@ -14,6 +14,7 @@ import { AdvanceDeclineBoard } from "@/components/advance-decline-board";
 import { SentimentRadar } from "@/components/sentiment-radar";
 import { DatePicker } from "@/components/date-picker";
 import { RefreshButton } from "@/components/refresh-button";
+import { DataSyncStatus } from "@/components/data-sync-status";
 import { BoardSentimentBoard } from "@/components/board-sentiment-board";
 import { FundFlowBoard } from "@/components/fund-flow-board";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -49,6 +50,9 @@ export default async function Home({
           </Badge>
         )}
       </div>
+
+      {/* 数据同步状态（全量初始化/每日更新进度） */}
+      <DataSyncStatus />
 
       {/* 大盘指数（全球） */}
       <section className="px-4 lg:px-6">

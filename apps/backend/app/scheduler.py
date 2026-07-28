@@ -14,7 +14,7 @@ from app.jobs.board_sentiment import run_board_sentiment_job
 from app.jobs.akshare_news import run_akshare_news_job
 from app.jobs.fund_flow import run_fund_flow_job
 from app.jobs.news_score import run_news_score_job
-from app.jobs.daily_kline import run_daily_kline_job
+from app.jobs.daily_kline import needs_full_init, run_daily_kline_job
 from app.jobs.analyst_consensus import run_analyst_consensus_job
 from app.jobs.fundamentals import run_fundamentals_job
 from app.jobs.indices import run_indices_job
@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+# cron 错峰包装（APScheduler 只识别 coroutine function，lambda 返回协程不会被 await，必须用 async def）
+async def _daily_kline_cn_hk() -> None:
+    await run_daily_kline_job(markets=("CN", "HK"))
+
+
+async def _daily_kline_us() -> None:
+    await run_daily_kline_job(markets=("US",))
+
+
 async def start_scheduler() -> None:
     """启动调度器 + 立即触发一次所有 job（首次启动）"""
     global _scheduler
@@ -43,17 +52,17 @@ async def start_scheduler() -> None:
 
     _scheduler = AsyncIOScheduler()
 
-    # 日 K 线：每天 16:00 UTC（美股收盘后）+ 08:00 UTC（A 股收盘后）
+    # 日 K 线（TickFlow universe 全市场批量）：A 股/港股 08:30 UTC、美股 21:30 UTC（各自收盘后）
     _scheduler.add_job(
-        run_daily_kline_job,
-        CronTrigger(hour=16, minute=0, timezone="UTC"),
-        id="daily_kline_us",
+        _daily_kline_cn_hk,
+        CronTrigger(hour=8, minute=30, timezone="UTC"),
+        id="daily_kline_cn_hk",
         replace_existing=True,
     )
     _scheduler.add_job(
-        run_daily_kline_job,
-        CronTrigger(hour=8, minute=0, timezone="UTC"),
-        id="daily_kline_cn",
+        _daily_kline_us,
+        CronTrigger(hour=21, minute=30, timezone="UTC"),
+        id="daily_kline_us",
         replace_existing=True,
     )
 
@@ -177,16 +186,16 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 技术指标：每天 16:30 / 08:30 UTC（日 K job 之后半小时，本地计算）
+    # 技术指标：每天 09:00 / 22:00 UTC（日 K job 之后，本地计算）
     _scheduler.add_job(
         run_technical_indicators_job,
-        CronTrigger(hour=16, minute=30, timezone="UTC"),
+        CronTrigger(hour=22, minute=0, timezone="UTC"),
         id="technical_indicators_us",
         replace_existing=True,
     )
     _scheduler.add_job(
         run_technical_indicators_job,
-        CronTrigger(hour=8, minute=30, timezone="UTC"),
+        CronTrigger(hour=9, minute=0, timezone="UTC"),
         id="technical_indicators_cn",
         replace_existing=True,
     )
@@ -241,6 +250,9 @@ async def start_scheduler() -> None:
 async def _initial_fetch() -> None:
     """启动后后台跑一轮所有 job（首启不用等 cron）"""
     logger.info("=== initial fetch ===")
+    # 日K：未初始化（daily_prices < 100 万行）则全量拉一次——放最前，与其余预热并行（~30-60 分钟）
+    if await needs_full_init():
+        asyncio.create_task(run_daily_kline_job(full=True))
     await run_indices_job()
     await run_realtime_quotes_job()
     await run_movers_job()
@@ -256,7 +268,8 @@ async def _initial_fetch() -> None:
     await run_board_sentiment_job()
     await run_fundamentals_job()
     await run_analyst_consensus_job()
-    await run_daily_kline_job()
+    if not await needs_full_init():
+        await run_daily_kline_job()
     await run_technical_indicators_job()
     await run_announcements_job()
     await run_research_reports_job()
