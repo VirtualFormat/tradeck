@@ -8,6 +8,7 @@ import { MarketOverview } from "@/components/market-overview";
 import { MoversBoard, TopNews } from "@/components/movers-board";
 import { StockSearch } from "@/components/stock-search";
 import { RefreshButton } from "@/components/refresh-button";
+import { MarketStatusBar } from "@/components/market-status-bar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -26,6 +27,10 @@ export default function HkMarketPage() {
         <h1 className="text-lg font-semibold">港股</h1>
         <StockSearch />
         <RefreshButton />
+        {/* 市场状态带：本市场开闭市状态 + 倒计时 + 数据日期（ml-auto 靠右） */}
+        <Suspense fallback={null}>
+          <MarketStatusBar market="HK" />
+        </Suspense>
       </div>
 
       {/* 港股指数 */}

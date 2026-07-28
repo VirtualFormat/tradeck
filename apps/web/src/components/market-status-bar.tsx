@@ -17,11 +17,27 @@ async function latestIndexDate(symbol: string): Promise<string | null> {
   }
 }
 
-export async function MarketStatusBar() {
+/** 各市场对应的指数符号（取最新交易日） */
+const INDEX_SYMBOL: Record<"US" | "HK" | "CN", string> = {
+  US: "^GSPC",
+  HK: "^HSI",
+  CN: "000001.SS",
+};
+
+export async function MarketStatusBar({
+  market,
+}: {
+  // 传入则只显示该市场（市场页用）；不传三市全显（首页用）
+  market?: "US" | "HK" | "CN";
+}) {
+  if (market) {
+    const d = await latestIndexDate(INDEX_SYMBOL[market]);
+    return <MarketStatusStrip dates={{ [market]: d }} />;
+  }
   const [us, hk, cn] = await Promise.all([
-    latestIndexDate("^GSPC"),
-    latestIndexDate("^HSI"),
-    latestIndexDate("000001.SS"),
+    latestIndexDate(INDEX_SYMBOL.US),
+    latestIndexDate(INDEX_SYMBOL.HK),
+    latestIndexDate(INDEX_SYMBOL.CN),
   ]);
   return <MarketStatusStrip dates={{ US: us, HK: hk, CN: cn }} />;
 }

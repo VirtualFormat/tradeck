@@ -12,6 +12,7 @@ import { CommoditiesBoard } from "@/components/commodities-board";
 import { StockSearch } from "@/components/stock-search";
 import { DatePicker } from "@/components/date-picker";
 import { RefreshButton } from "@/components/refresh-button";
+import { MarketStatusBar } from "@/components/market-status-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 
@@ -34,6 +35,10 @@ export default async function UsMarketPage({
         <StockSearch />
         <DatePicker />
         <RefreshButton />
+        {/* 市场状态带：本市场开闭市状态 + 倒计时 + 数据日期（ml-auto 靠右） */}
+        <Suspense fallback={null}>
+          <MarketStatusBar market="US" />
+        </Suspense>
         {date && (
           <Badge variant="secondary" className="bg-accent/20 text-accent">
             快照模式：{date}

@@ -6,6 +6,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 interface MarketDef {
   key: "US" | "HK" | "CN";
@@ -64,33 +66,51 @@ function calcStatus(m: MarketDef, now: Date): Status {
 export function MarketStatusStrip({
   dates,
 }: {
-  dates: Record<"US" | "HK" | "CN", string | null>;
+  // 只显示 dates 中出现的市场（单市场页只传一个 key，首页传三个）
+  dates: Partial<Record<"US" | "HK" | "CN", string | null>>;
 }) {
   // null 初始态避免 SSR/客户端 hydration 时间不一致；挂载后再开始计时
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
-    setNow(new Date());
+    // 用 rAF 延后首次赋值（避免在 effect 体内同步 setState 触发级联渲染）
+    const raf = requestAnimationFrame(() => setNow(new Date()));
     const timer = setInterval(() => setNow(new Date()), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(timer);
+    };
   }, []);
 
+  // 仅渲染 dates 中存在的市场（单市场页只有一枚胶囊）
+  const shown = MARKETS.filter((m) => m.key in dates);
+
   return (
-    <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
-      {MARKETS.map((m) => {
+    <div className="ml-auto flex items-center gap-2">
+      {shown.map((m) => {
         const s = now ? calcStatus(m, now) : null;
         return (
-          <span key={m.key} className="flex items-center gap-1.5 whitespace-nowrap">
+          <Badge
+            key={m.key}
+            variant="secondary"
+            className={cn(
+              "gap-1.5",
+              // 开盘中用 accent 主题色调，非开盘沿用 secondary 灰
+              s?.open && "border-accent/50 bg-accent/10 text-accent"
+            )}
+          >
             <span
-              className="inline-block h-1.5 w-1.5 rounded-full"
+              className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
               style={{
                 backgroundColor: s?.open ? "var(--color-up)" : "var(--fg-dim)",
               }}
             />
-            <span className="font-medium text-foreground/80">{m.key}</span>
-            {s && <span className="tab-nums">{s.text}</span>}
-            {dates[m.key] && <span className="text-muted-foreground/70">· {dates[m.key]}</span>}
-          </span>
+            <span className="font-medium">{m.key}</span>
+            {s && <span className="tab-nums font-normal opacity-80">{s.text}</span>}
+            {dates[m.key] && (
+              <span className="font-normal opacity-60">· {dates[m.key]}</span>
+            )}
+          </Badge>
         );
       })}
     </div>
