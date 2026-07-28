@@ -270,6 +270,17 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 7. **APScheduler 定时任务必须传 `async def` 协程函数**——传返回协程的 lambda 不会被 await（任务静默不执行）；带参数的 job 用模块级 `async def` 包装（参考 `scheduler.py` 的 `_daily_kline_cn_hk`）。
 8. **backend 必须单进程运行**——APScheduler 嵌在 FastAPI 进程内，多 worker 会把所有定时 job 跑 N 遍；progress 注册表也是进程内存。`apps/backend/Dockerfile` CMD 为 `--workers 1`，不要调大。
 
+## 待优化项（backlog）
+
+> 已分析定案、待实施的事项；做完一项删一行。
+
+- [ ] **A 股报价兜底（纯数据层）**：`realtime_quotes` akshare 失败时从 `daily_prices` 最近两根日K 回填 `quote_snapshots`（延迟一天，东财实时优先）。恢复 CN 涨跌榜（预定义列表排序版）/换手榜/涨跌平 donut/个股报价。
+- [ ] **A 股全市场涨跌榜（数据层 + 前端 1 处）**：`movers.py` 加 CN 分支，`daily_prices` 全市场算涨跌幅/成交量 top 20 写 `movers_cache`（`snapshot_date` = K线日，兼容 `?date=` 回看）；前端 `movers-board.tsx` CN 分支从「预定义列表 + quotes 排序」切到 `/api/movers?market=CN`。
+  - 子项：`daily_prices` 加 `amount`（成交额）列（tickflow_source 字段映射 + init.sql），活跃榜按成交额排。
+- [ ] **板块热度/资金流的东财替代**（CVM 部署后实测 `stock_zh_a_spot_em`；被封则：降速/改 UA 自写慢分页 → 代理出口 → 接受缺失）。
+- [ ] **CN 指数迁 TickFlow（可选 P3）**：`000001.SH`/`399006.SZ` 等（免费档实测可用），减少 yfinance 依赖；存量 `.SS` 数据处理需先决策。
+- [ ] **个股页市值货币符号**：`fmtBigNumber` 硬编码 `$`，CNY/HKD 资产应按 currency 显示（cosmetic）。
+
 ## 相关文档
 
 - `CODEBUDDY.md` — 开发规范（devcontainer 强制、prod compose 用途）

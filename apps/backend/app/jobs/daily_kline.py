@@ -100,18 +100,27 @@ async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
 
 
 async def _backfill_names(tf_symbols: list[str], market: str) -> int:
-    """用 TickFlow instruments 给 equity_profiles 补名称（只补缺失行，不动已有行）。"""
+    """用 TickFlow instruments 补/校准标的名。
+
+    CN/HK：以 instruments 中文名为准（覆盖 yfinance 英文名），全量校准；
+    US：只补缺失行（已有 yfinance 英文名不动）。
+    """
     pool = await get_pool()
-    canonical = [_to_canonical(s, market) for s in tf_symbols]
-    async with pool.acquire() as conn:
-        existing = await conn.fetch(
-            "SELECT symbol FROM equity_profiles WHERE symbol = ANY($1)", canonical
-        )
-    existing_set = {r["symbol"] for r in existing}
-    missing = [s for s in tf_symbols if _to_canonical(s, market) not in existing_set]
-    if not missing:
+    if market in ("CN", "HK"):
+        targets = list(tf_symbols)
+    else:
+        canonical = [_to_canonical(s, market) for s in tf_symbols]
+        async with pool.acquire() as conn:
+            existing = await conn.fetch(
+                "SELECT symbol FROM equity_profiles WHERE symbol = ANY($1)", canonical
+            )
+        existing_set = {r["symbol"] for r in existing}
+        targets = [
+            s for s in tf_symbols if _to_canonical(s, market) not in existing_set
+        ]
+    if not targets:
         return 0
-    names = await tickflow_source.get_instrument_names(missing)
+    names = await tickflow_source.get_instrument_names(targets)
     if not names:
         return 0
     rows = [(_to_canonical(s, market), n) for s, n in names.items()]
@@ -120,7 +129,7 @@ async def _backfill_names(tf_symbols: list[str], market: str) -> int:
             """
             INSERT INTO equity_profiles (symbol, name, updated_at)
             VALUES ($1, $2, NOW())
-            ON CONFLICT (symbol) DO NOTHING
+            ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
             """,
             rows,
         )

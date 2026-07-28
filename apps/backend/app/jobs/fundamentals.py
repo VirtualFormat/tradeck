@@ -40,7 +40,11 @@ async def fetch_and_store_profile(symbol: str) -> int:
             INSERT INTO equity_profiles (symbol, name, sector, industry, market_cap, currency, exchange, description, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (symbol) DO UPDATE SET
-                name = EXCLUDED.name, sector = EXCLUDED.sector,
+                -- CN/HK 以 instruments 中文名为准（daily_kline 名称校准写库），不被 yfinance 英文名覆盖
+                name = CASE WHEN EXCLUDED.symbol ~ '[.](SH|SZ|BJ|HK)$'
+                            THEN COALESCE(equity_profiles.name, EXCLUDED.name)
+                            ELSE EXCLUDED.name END,
+                sector = EXCLUDED.sector,
                 industry = EXCLUDED.industry, market_cap = EXCLUDED.market_cap,
                 currency = EXCLUDED.currency, exchange = EXCLUDED.exchange,
                 description = EXCLUDED.description, updated_at = NOW()
