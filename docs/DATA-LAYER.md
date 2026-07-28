@@ -15,7 +15,7 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 - **`akshare_source.call_akshare(fn, *, retries=2, base_delay=0.5, backoff=1.5, throttle=0.5)`**
   进程级全局并发闸 `Semaphore(4)`（定时任务 / 冷启动 / 主动 load 共享同一上限），在信号量 + 线程池中执行同步 akshare 调用，异常指数退避重试，成功后 throttle 节流。重试耗尽仍抛出，由调用方决定降级（返回空 results / 保留旧快照）。
 - **`openbb_source.fetch_openbb`** —— 薄再导出，含海外节点分流。
-- **`tickflow_source.get_daily_kline(symbol, count=365)`** —— 封装 `klines.get`；免费档 1 只/次，adapter 内**串行 + 自限速（≥6s/次）**，SDK 内建 429 退避兜底；失败返回 `[]`。
+- **`tickflow_source.get_daily_kline(symbol, count=365)`** —— 封装 `klines.get`（单只/请求），adapter 内串行 + 自限速（≥6s/次，**保守实现，非免费档硬约束**——免费档实为 IP 60 次/分钟且有 `klines.batch` 100 只/请求，待迁），SDK 内建 429 退避兜底；失败返回 `[]`。
 
 > 门面只做**路由 + 横切**，**不统一 schema**（各源字段仍在 job/provider 内转换）。
 
@@ -24,9 +24,19 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 
 ## symbol 规范
 
-- A 股**个股**用 `.SH`（沪）/ `.SZ` / `.BJ`，港股 5 位补零（`00700.HK`）。
+业界无统一标准，两大阵营：Yahoo/Reuters 系用 `.SS`（沪）+ 港股 4 位不补零（`0700.HK`）；中国数据商系（Tushare/Wind/东财/TickFlow）用 `.SH/.SZ/.BJ` + 港股 5 位补零（`00700.HK`）；akshare 用裸 6 位代码。
+
+**tradeck 规范格式**（DB / API / 前端统一，采中国数据商阵营，与 TickFlow 对齐）：
+
+- A 股**个股**用 `.SH`（沪）/ `.SZ` / `.BJ`，港股 5 位补零（`00700.HK`），美股裸码（`AAPL`）。
 - **指数保留 `.SS`**（走 yfinance，其上证指数用 `.SS`；如 `000001.SS`）。
-- `tickflow_source` 内做入参映射：`.SS`→`.SH`、港股补零、美股裸码补 `.US`（`AAPL`→`AAPL.US`）；DB 存 tradeck 规范格式。
+
+**入向映射**（取数 → 规范格式）：
+
+- `tickflow_source._to_tf_symbol`：`.SS`→`.SH`、港股补零、美股裸码补 `.US`（`AAPL`→`AAPL.US`）；DB 存规范格式。
+- akshare：job 内 `split(".")[0]` 去后缀。
+
+**出向映射**（规范格式 → yfinance/Yahoo）：`markets.to_yahoo_symbol()` —— `.SH`→`.SS`、港股 5 位去前导零成 4 位（`00700.HK`→`0700.HK`），其余原样。**凡调 yfinance（`fetch_openbb` provider=yfinance 或直调 yfinance 库）必须经此映射**；响应里的 Yahoo symbol 由调用方映射回规范格式再写库（参考 `realtime_quotes` 的 `yahoo_to_canonical` 写法）。
 
 ## 调度错峰
 
@@ -44,11 +54,18 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 
 ## TickFlow 免费档约束
 
-| 能力 | 每次标的 | 说明 |
-|---|---|---|
-| A/港/美 日K | 1 只/次 | 周期 1d/1w/1M/1Q/1Y；**盘中不实时** |
+> 以下经 2026-07 对免费 API（`free-api.tickflow.org`）实测 + SDK 源码确认，取代早期「1 只/次、无 universe」的误判。
 
-免费档**没有** universe 全市场、财务、分钟线。因此只迁**日K**到 TickFlow：报价（akshare/yf）、财务（yf）、全市场（无 universe）、指数（yf）均不迁。`TICKFLOW_API_KEY` 为空则用 `TickFlow.free()`。
+| 能力 | 免费档 | 说明 |
+|---|---|---|
+| A/港/美 日K `klines.get` | 单只/请求 | 周期 1d/1w/1M/1Q/1Y；**盘中不实时** |
+| A/港/美 日K `klines.batch` | **100 只/请求** | SDK 自动分片 + 并发 5 + 分片级失败隔离 |
+| 限频 | **IP 60 次/分钟** | SDK 不主动限速，内建 429 指数退避 |
+| universe 标的池 | ✅ 可用 | 1013 个池：`CN_Equity_A` 5528 / `US_Equity` 11645 / `HK_Equity` 2841 / `CN_Index` 611（实测） |
+| 指数日K | ✅ 可用 | 指数即 symbol（`000001.SH`/`399006.SZ`） |
+| 实时报价 / 分钟K / 财务 | ❌ 无 | 报价仍走 akshare/yf，财务仍走 yf |
+
+`TICKFLOW_API_KEY` 为空则用 `TickFlow.free()`。因此日K 走 TickFlow；报价（akshare/yf）、财务（yf）不迁。
 
 ## 边界（不做）
 
@@ -57,4 +74,6 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 
 ## 全市场规模提示
 
-当前跟踪 100 只，一次全量 ~1000 次调用、限流后 8–15 分钟。若放大到真·全市场（~1.2 万只），单 IP 逐股 akshare 几乎必被封——全量应改用支持批量接口的源（如 Tushare），而非硬扛 akshare。
+- **日K 全市场：免费档可行，已落地为 `daily_kline` job**。universe 拿清单 + `klines.batch`（100 只/请求，60 次/分钟）：三市 ~2 万只 ≈ 200 次请求（2026-07 实测全量初始化 ~5 分钟写入 ~310 万行）；首启自动全量一次，此后每日增量。
+- **akshare 深度数据（板块/资金流/研报/公告/新闻）不能逐股全市场**：单 IP 逐股调东财几乎必被封——全市场层面的这类数据只能用其现成的批量榜单接口（movers/资金流/板块热度均为一次全市场调用），深度明细仍限 tracked 范围。
+- 当前 tracked 100 只是手工精选列表（`daily_kline.py` `TRACKED_SYMBOLS`），是历史误判（「TickFlow 1 只/次」）下的保守产物，**不是任何源的硬上限**。

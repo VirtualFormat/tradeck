@@ -35,6 +35,8 @@ DDL 见 `apps/backend/init.sql`（postgres 容器首次启动自动执行）：
 
 APScheduler 注册于 `apps/backend/app/scheduler.py`，覆盖日K / 报价 / 指数 / 涨跌榜 / 新闻 / 宏观 / 财报 / 板块 / 资金流 / 研报 / 公告 / 市场宽度 / 宏观资产 / 收益率曲线等。启动时 `_initial_fetch()` 后台跑一轮预热（受数据层全局并发闸约束）。碰 akshare 的高频 job 错峰，见 [`DATA-LAYER.md`](DATA-LAYER.md)。
 
+**日K 全量初始化**：启动时检测 `daily_prices` < 100 万行（未初始化）→ 自动后台全量拉一次（TickFlow universe 三市 ~2 万只 × 250 天，~5 分钟，实测写入 ~310 万行）；此后每日增量（近 5 天 UPSERT）。进度经内存注册表（`app/jobs/progress.py`）上报，`GET /api/system/jobs` 暴露，前端首页状态条（`data-sync-status.tsx`，5s 轮询）对初始化与每日更新都做进度提示。
+
 ## API 端点（只读 DB）
 
 `apps/backend/app/api/` 各 router，前端 Server Components 直接消费：
@@ -47,6 +49,7 @@ APScheduler 注册于 `apps/backend/app/scheduler.py`，覆盖日K / 报价 / �
 /api/boards/{heat,sentiment}  /api/fundflow  /api/technicals
 /api/announcements  /api/research  /api/breadth  /api/market-internals
 /api/sentiment  /api/cross-assets  /api/yield-curve  /api/yield-curve/spread
+/api/system/jobs（任务进度，读内存注册表而非 DB）
 ```
 
 ## dev 假数据

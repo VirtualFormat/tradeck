@@ -1,6 +1,6 @@
 #!/bin/bash
 # devcontainer 创建后的初始化脚本
-# 安装所有开发依赖（Node + Python + OpenBB + 前端依赖）
+# 安装所有开发依赖（Node + Python/backend requirements + 前端依赖；OpenBB Platform 由独立容器运行）
 set -e
 
 echo "=== 1. 安装 Node 24 + pnpm 9 ==="
@@ -10,7 +10,7 @@ corepack enable && corepack prepare pnpm@9.15.0 --activate
 node --version && pnpm --version
 
 echo ""
-echo "=== 2. 安装 Python 依赖（backend requirements：OpenBB/akshare/tickflow 等）==="
+echo "=== 2. 安装 Python 依赖（backend requirements：akshare/yfinance/tickflow 等，不含 OpenBB）==="
 pip install --no-cache-dir -r /workspace/apps/backend/requirements.txt
 
 echo ""

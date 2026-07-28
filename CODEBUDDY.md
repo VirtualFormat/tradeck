@@ -20,14 +20,14 @@ devcontainer up --workspace-folder .
 
 devcontainer 配置在 `.devcontainer/`，自动装：
 - Node 24 + pnpm 9
-- Python 3.12 + backend requirements（OpenBB / akshare / tickflow 等）
+- Python 3.12 + backend requirements（akshare / yfinance / tickflow 等；OpenBB Platform 独立容器运行）
 - apps/web 依赖（pnpm install）
 - OpenBB Platform 服务（端口 6900）
 
 ### 在 devcontainer 内开发
 
 - 改前端代码 → `cd apps/web && pnpm dev`（HMR 工作）
-- 改 OpenBB Provider → 重启 openbb 容器
+- 改 backend 代码 → uvicorn --reload 自动生效
 - 跑 Python 脚本 → `python3 script.py`
 - 装新依赖 → 在 devcontainer 内装，不污染宿主机
 
@@ -58,16 +58,16 @@ docker compose -f docker-compose.yml up -d --build
 tradeck/
 ├── .devcontainer/          ← 开发环境配置
 │   ├── devcontainer.json
-│   └── docker-compose.yml  ← dev 用 compose（dev + openbb）
+│   └── docker-compose.yml  ← dev 用 compose（dev + postgres + backend + openbb）
 ├── apps/web/                ← Next.js 前端
 ├── apps/backend/            ← FastAPI 后端（数据管道 + API；app/datasource 数据层门面）
 ├── docker/openbb/           ← OpenBB Platform Dockerfile（dev + prod 共用）
-├── docker-compose.yml        ← prod 用 compose（web + openbb）
+├── docker-compose.yml        ← prod 用 compose（postgres + openbb + backend + web）
 ├── docs/                    ← 技术文档
 └── .env                     ← API key 配置
 ```
 
 ## 技术栈（确认，不变）
 
-- **前端**：Next.js 16 + shadcn/ui + Tailwind v4 + TradingView LC + ECharts
+- **前端**：Next.js 16 + shadcn/ui + Tailwind v4 + lightweight-charts（K线）+ recharts
 - **数据层**：日K 走 TickFlow；A 股报价/深度数据 backend 直调 akshare；宏观/海外走 OpenBB Platform（FastAPI，Python）

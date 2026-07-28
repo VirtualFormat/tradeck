@@ -12,18 +12,22 @@
 ## 架构与数据流
 
 ```
-OpenBB Platform (:6900)          ← 数据源层（yfinance / akshare / sec / oecd / federal_reserve）
-    ▲
-    │ ① 定时拉取（APScheduler cron，全部 UTC 时区）
-    │
+数据源层（三源分工，详见 docs/DATA-LAYER.md）：
+  TickFlow（官方 SDK）          ← 日K
+  akshare（backend 直调）        ← A 股报价 + 深度数据
+  OpenBB Platform (:6900)       ← 海外源（yfinance/sec/fred/oecd/federal_reserve，
+                                  可分流韩国瘦节点，见 docs/OVERSEAS-NODE.md）
+        ▲
+        │ ① 定时拉取（APScheduler cron，全部 UTC 时区）
+        │
 backend (FastAPI, :8080) ──写入──▶ PostgreSQL 16 (:5432, 24 张表)
-    ▲
-    │ ② REST API（/api/*，从 DB 读，<50ms）
-    │
+        ▲
+        │ ② REST API（/api/*，从 DB 读，<50ms）
+        │
 web (Next.js, :3000)             ← Server Components 通过 backendFetch 读
 ```
 
-4 个 docker service：`postgres`、`openbb`、`backend`、`web`。全部通过 docker compose 编排，无 Kubernetes、无 CI/CD 配置。
+4 个 docker service：`postgres`、`openbb`、`backend`、`web`，全部通过 docker compose 编排；CI 仅 `.github/workflows/openbb-images.yml` 构建发布 OpenBB 镜像到 GHCR（多架构 amd64+arm64），无部署流水线。
 
 ## 目录结构
 
@@ -32,24 +36,24 @@ tradeck/
 ├── .devcontainer/               ← 开发环境（强制使用，见下）
 │   ├── devcontainer.json
 │   ├── docker-compose.yml       ← dev 用 compose（dev + postgres + backend + openbb）
-│   └── post-create.sh           ← 容器创建后装 Node/pnpm/OpenBB/前端依赖
+│   └── post-create.sh           ← 容器创建后装 Node/pnpm/Python(backend requirements)/前端依赖
 ├── apps/
 │   ├── web/                     ← Next.js 前端（pnpm 包：tradeck-web）
 │   │   ├── src/app/             ← App Router 页面：/（全球概览）/global（全球宏观）/markets/{cn,us,hk} /macro /news /screener /stocks/[symbol]
-│   │   ├── src/app/api/         ← Next API 路由（quotes/screener，仅代理 backend）
+│   │   ├── src/app/api/         ← Next API 路由（quotes/screener/historical，仅代理 backend）
 │   │   ├── src/components/      ← 业务组件（看板/图表/导航）
 │   │   ├── src/components/ui/   ← shadcn/ui 组件
 │   │   ├── src/lib/openbb.ts    ← 数据访问层（全部走 backendFetch，勿直连 OpenBB）
 │   │   └── src/lib/utils.ts     ← cn() 等工具
 │   └── backend/                 ← FastAPI 后端（数据管道 + API 服务）
-│       ├── app/api/             ← 16 个路由模块（quotes/historical/indices/movers/news/macro/profile/fundamentals/analyst/sentiment/boards/fundflow/calendar/technicals/cn_extras/cross_asset）
+│       ├── app/api/             ← 17 个路由模块（quotes/historical/indices/movers/news/macro/profile/fundamentals/analyst/sentiment/boards/fundflow/calendar/technicals/cn_extras/cross_asset/system）
 │       ├── app/jobs/            ← 22 个定时任务（daily_kline/realtime_quotes/indices/movers/news/macro/fundamentals/analyst_consensus/earnings_calendar/economic_calendar/announcements/research_reports/market_breadth/macro_assets/cleanup 等）
 │       ├── app/main.py          ← FastAPI 入口 + lifespan（连 DB、起调度器）
 │       ├── app/scheduler.py     ← APScheduler 任务注册
 │       ├── app/db.py            ← asyncpg 连接池（min 2 / max 10）
 │       ├── app/openbb_client.py ← OpenBB HTTP 客户端（失败降级返回空 results）
-│       ├── app/markets.py       ← pick_provider / pick_market（按 symbol 后缀）
-│       ├── app/config.py        ← 环境变量（DATABASE_URL / OPENBB_API_URL）
+│       ├── app/markets.py       ← pick_provider / pick_market（按 symbol 后缀）+ to_yahoo_symbol（yfinance 出向映射）
+│       ├── app/config.py        ← 环境变量（DATABASE_URL / OPENBB_API_URL / OVERSEAS 分流 / TICKFLOW_API_KEY / DEV_SEED）
 │       ├── app/datasource/      ← 数据层薄门面（call_akshare 限流闸 / fetch_openbb / tickflow_source）
 │       └── init.sql             ← 24 张表 DDL（postgres 容器首次启动自动执行）
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
@@ -64,10 +68,10 @@ tradeck/
 |---|---|
 | 前端 | Next.js 16.2.10（App Router + RSC）、React 19、TypeScript 5、Tailwind CSS v4、shadcn/ui（preset `b2fms620zo`：nova 风格 + mist 主题 + phosphor 图标）、recharts 3.8（preset 锁定；注意其 RadialBar stackId 只渲染首段的缺陷，堆叠环用 Pie 半环实现）、lightweight-charts 5（TradingView 开源 K 线库）、@tanstack/react-table、dnd-kit、framer-motion、zod 4 |
 | 后端 | Python 3.12、FastAPI、uvicorn、asyncpg、APScheduler 3、httpx、pydantic 2 |
-| 数据层 | OpenBB Platform（pip 安装，FastAPI via uvicorn，4 workers）+ 自写 akshare provider（akshare>=1.12, openbb-core>=1.6.10） |
+| 数据层 | OpenBB Platform（海外源，uvicorn 4 workers）+ backend 直调 akshare + TickFlow SDK（日K） |
 | 数据库 | PostgreSQL 16-alpine |
 | 包管理 | Node 24（`.nvmrc`）+ pnpm 9.15.0（锁死，pnpm 10+ 的 approve-builds 太严格） |
-| 部署 | docker compose（VPS），无 CI/CD |
+| 部署 | docker compose（VPS）；CI 仅构建 OpenBB 镜像（GHCR） |
 
 ## 开发环境（devcontainer，强制）
 
@@ -79,7 +83,7 @@ tradeck/
 devcontainer up --workspace-folder .
 ```
 
-`post-create.sh` 自动安装：Node 24 + pnpm 9.15.0、Python 依赖（backend `requirements.txt`：openbb / akshare / tickflow 等）、`apps/web` 前端依赖。
+`post-create.sh` 自动安装：Node 24 + pnpm 9.15.0、Python 依赖（backend `requirements.txt`：akshare / yfinance / tickflow 等，OpenBB Platform 跑在独立容器，不在此安装）、`apps/web` 前端依赖。
 
 规则（来自 `CODEBUDDY.md`）：
 - ❌ 不要在宿主机跑 `pnpm install` / `pip install`
@@ -108,7 +112,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 假数据种子（dev 专用）
 
-dev 环境（devcontainer backend 置 `DEV_SEED=1`）启动时自动灌假数据看页面效果；也可手动：
+dev 环境启动时自动灌假数据看页面效果（dev compose 里为 `${DEV_SEED-1}`，默认开；shell 置 `DEV_SEED=`（空值）可临时关，便于 dev 看真实数据）；也可手动：
 
 ```bash
 docker exec tradeck-dev-backend python -m app.seed_mock
@@ -167,16 +171,19 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 
 - **加一种新数据的完整链路**：`init.sql` 加表 → `app/jobs/` 加 job（拉 OpenBB + UPSERT 写库）→ `app/scheduler.py` 注册 cron → `app/api/` 加路由 → `app/main.py` `include_router` → 前端 `src/lib/openbb.ts` 加 `backendFetch` 函数。
 - 路由返回**扁平数组**，不用 OpenBB 的 `{ results: [...] }` 包裹。
+- **读 API 按需回源**（`app/api/_ensure.py`，per-key 锁防踩踏 + symbol 白名单）：profile/metrics/income/balance/cash/consensus/quotes 在 DB 无数据时经对应 job 函数现拉写库（首访 2-5s，此后读库）；报价仅美/港股回源（A 股 spot 为全市场接口，单标的回源太重，由 30 分钟 job 覆盖）。`/api/technicals` 对非 tracked 标的从 `daily_prices` 本地现算（复用 `compute_indicators`），不走外部源。
 - 写库统一 `INSERT ... ON CONFLICT ... DO UPDATE`（UPSERT）；日期字符串用 `_parse_date()` 转成 `date` 对象（asyncpg 不接受字符串）。
 - job 约定：log 打 `=== xxx job start/done: N rows ===`，返回写入条数。
-- `markets.py` 的市场/provider 判定规则：symbol 以 `.SS/.SZ/.BJ` 结尾 → akshare + CN 市场；`.HK` 结尾 → HK；其余 → yfinance + US。
-- 配置只从环境变量读（`app/config.py`）：`DATABASE_URL`、`OPENBB_API_URL`。
+- `markets.py` 的市场/provider 判定规则：symbol 以 `.SH/.SS/.SZ/.BJ` 结尾 → akshare + CN 市场（`.SH` 为沪市个股新标准；`.SS` 仅 yfinance 指数用）；`.HK` 结尾 → HK；其余 → yfinance + US。
+- **symbol 规范与出向映射**：规范格式采中国数据商阵营（`.SH/.SZ/.BJ` + 港股 5 位补零 + 美股裸码，指数例外保留 `.SS`）；凡调 yfinance 必须经 `markets.to_yahoo_symbol()` 出向映射（`.SH`→`.SS`、港股 5 位→4 位），响应 symbol 映射回规范格式再写库。完整规则见 `docs/DATA-LAYER.md`「symbol 规范」；前端用户输入由 `lib/utils.ts` 的 `normalizeSymbol()` 归一（裸码补后缀/港股补零）。
+- 配置只从环境变量读（`app/config.py`）：`DATABASE_URL`、`OPENBB_API_URL`、`OPENBB_OVERSEAS_API_URL`、`OPENBB_OVERSEAS_TOKEN`、`TICKFLOW_API_KEY`、`DEV_SEED`。
 
 定时任务（全部 UTC）：
 
 | 任务 | Cron | 数据源 | 写表 |
 |---|---|---|---|
-| 日 K 线（美股/A 股） | 16:00 / 08:00 每天 | yfinance/akshare | daily_prices |
+| 日 K 线（TickFlow universe 全市场 ~2 万只：CN 5528 + HK 2841 + US 11645；100 只/片批量并发，分片失败隔离；首启检测 daily_prices < 100 万行自动全量初始化一次 ~250 天，此后每日增量 5 天 UPSERT） | A/港 08:30、美股 21:30 每天 | TickFlow | daily_prices |
+| 技术指标（本地计算，tracked 100 只） | 09:00 / 22:00 每天 | —（读 daily_prices） | technical_indicators |
 | 实时报价 | 每 30 分钟 | yfinance/akshare | quote_snapshots |
 | 指数历史（^GSPC ^IXIC ^DJI ^HSI ^HSCEI 000001.SS 399001.SZ 399006.SZ ^N225 ^STOXX50E ^VIX + GC=F CL=F SI=F HG=F BTC-USD，共 16 个符号） | 17:00 每天 | yfinance | index_prices |
 | 宏观资产/收益率曲线（美元指数/离岸人民币/7 只 ETF + treasury_rates 11 期限） | 21:30 每天 | yfinance/federal_reserve | macro_asset_prices/yield_curve_rates |
@@ -200,7 +207,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 
 跟踪标的定义在 `app/jobs/daily_kline.py` 的 `TRACKED_SYMBOLS`（100 只：美股 60 + A 股 30 + 港股 10）。
 
-注：**OpenBB REST API 只暴露标准模型**（quote/historical/index），akshare provider 里的自定义模型（ConceptBoards/NorthFlow/MarginTrading/DragonTigerList）只有 Python SDK 能用。backend 需要这类数据时（如板块热度 job）在 `requirements.txt` 装了 akshare 直接调用，不经 OpenBB。同理，`/equity/calendar/earnings` 仅 fmp 付费源可用，财报日历 job 直调 yfinance 库（A 股财报日历无免费源：yfinance 无数据、akshare `stock_yysj_em` 因东财改格式解析失败，暂跳过）。
+注：**OpenBB REST API 只暴露标准模型**（quote/historical/index），板块/资金流等自定义模型 REST 不可用，backend 直接在 `requirements.txt` 装 akshare 调用，不经 OpenBB（自写 akshare provider 已退役删除）。同理，`/equity/calendar/earnings` 仅 fmp 付费源可用，财报日历 job 直调 yfinance 库（A 股财报日历无免费源：yfinance 无数据、akshare `stock_yysj_em` 因东财改格式解析失败，暂跳过）。
 
 注 2：**榜单类表是「每日快照」模型**（movers_cache / fund_flow / board_heat / board_sentiment 均带 `snapshot_date`）：同日重跑只覆盖当天，历史日期保留 30 天（cleanup TTL）。所有榜单 API 支持 `?date=YYYY-MM-DD`（默认最近快照日），前端首页/热力图页有 DatePicker 快照回看（`?date=` URL 参数）。
 
@@ -209,17 +216,19 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 - 路径别名 `@/*` → `./src/*`。
 - **数据访问只走 `src/lib/openbb.ts` 的 `backendFetch`**（管道迁移已完成，不要新增直连 OpenBB 的 `fetchJSON` 调用）；失败时返回空数组降级。
 - 页面为 Server Component，板块用独立 `<Suspense>` + Skeleton 分块加载（参考 `src/app/page.tsx`）；首页按 `?market=global|us|cn|hk` 过滤。
+- **取数约定**：Server Component 用 `lib/openbb.ts` 的 `backendFetch`（`BACKEND_API_URL` 指向 backend）；**Client Component 不能直连 backend**（浏览器侧 `process.env.BACKEND_API_URL` 为空、localhost:8080 不通容器网络），一律走 `src/app/api/` 的 Next 代理路由（如 `/api/quotes`、`/api/system/jobs`，参考 `stock-preview-dialog.tsx`、`data-sync-status.tsx`）。
+- 首页顶部 `data-sync-status.tsx`（Client Component，5s 轮询 `/api/system/jobs`）：日K 全量初始化/每日更新进行中显示进度条，完成后显示一行完成提示。
 - 样式：基于 preset mist 主题的深色模式（`<html class="dark">` 强制开启），令牌定义在 `src/app/globals.css`；**红涨绿跌**（A 股习惯，`--up: #f0556b` 红 / `--down: #20cd8d` 绿，preset 之外的业务扩展色），不要反过来。
 - 组件用 shadcn/ui（preset `b2fms620zo`：nova 风格、mist 主题、phosphor 图标、CSS 变量模式，详见「UI 强制规则」）；类名合并用 `cn()`（`@/lib/utils`）。
 - K 线蜡烛图用 lightweight-charts（`tradingview-chart.tsx`，TradingView 开源库，本地渲染无 CDN 依赖；曾因 s3.tradingview.com 不可达放弃官方 iframe widget）；个股预览弹窗为 shadcn Dialog（`stock-preview-dialog.tsx`，榜单行点击触发）。
-- 环境变量：`BACKEND_API_URL`（默认 `http://localhost:8080`）；`OPENBB_API_URL` 保留给个别未迁移场景。
+- 环境变量：`BACKEND_API_URL`（默认 `http://localhost:8080`）；直连 OpenBB 的 `fetchJSON`/`OPENBB_API_URL` 已随管道迁移完成移除，`openbb.ts` 只走 backend。
 - `next.config.ts` 有 `outputFileTracingRoot: "/workspace/apps/web"`（devcontainer 路径）和 `serverExternalPackages: ["undici"]`（绕开 Server Component 的 DNS 解析问题）——改动需谨慎。
 
 ### akshare 直调（backend 数据层门面）
 
 - A 股报价与深度数据（板块/资金流/研报/公告/新闻/涨跌家数等）由 backend job 经 `app.datasource.call_akshare` 直调 akshare，统一走进程级 `Semaphore(4)` 限流闸 + 退避重试 + 节流；不再经 OpenBB 自写 provider（已退役）。
 - 报价用 `ak.stock_zh_a_spot_em()`（一次全市场 spot → 本地按 tracked 代码过滤），港/美股报价走 yfinance（`fetch_openbb`）。
-- 日K/指数走 TickFlow（`app.datasource.tickflow_source`）；OpenBB 只留海外源（yfinance/fred/oecd 等，经韩国节点）。
+- 日K 走 TickFlow（`app.datasource.tickflow_source`）；指数历史仍走 OpenBB/yfinance；OpenBB 只留海外源（yfinance/fred/oecd 等，经韩国节点）。
 
 ## 数据库
 
@@ -229,7 +238,7 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 ## 测试与验证
 
-- **仓库目前没有自动化测试套件**（无 pytest/vitest/测试文件），也没有 CI。
+- **仓库目前没有自动化测试套件**（无 pytest/vitest/测试文件）；CI 仅构建 OpenBB 镜像（见「架构与数据流」），不跑测试。
 - 验证手段：
   - `pnpm lint`（前端 ESLint）
   - `bash docker/openbb/verify.sh`（数据层 8 项冒烟检查）
@@ -256,9 +265,10 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 2. **`openbb-api` 命令不支持 `--workers`**——OpenBB 用 `uvicorn openbb_platform_api.main:app --workers 4` 直接启动。
 3. **Docker bind mount 下文件监听不稳定**：前端 dev 必须用 `next dev --webpack`（非 Turbopack）+ `WATCHPACK_POLLING=true` / `CHOKIDAR_USEPOLLING=true`（Dockerfile / dev compose 已配）。
 4. **pnpm 锁死 9.15.0**（10+ 的 approve-builds 机制太严格）。
-5. **数据源限流/封锁**：本地环境 yfinance 常被限流（profile/metrics/news 可能为空）、akshare 被东方财富封 IP（A 股日 K 线可能为空）——属已知限制，不是代码 bug，VPS 上需另行验证。
-6. **`scheduler.py` 里「实时报价」注释写「每 30 秒」，实际 cron 是每 30 分钟**——以 cron 为准。
-7. OpenBB 的 news 端点只支持 benzinga/fmp/intrinio/tiingo（需 key），yfinance 不支持 news。
+5. **数据源限流/封锁**：本地环境 yfinance 常被限流（profile/metrics 可能为空）、akshare 被东方财富断连/封 IP（板块热度、A 股报价 spot、资金流等 akshare 直调数据可能为空；日K 走 TickFlow 不受影响）——属已知限制，不是代码 bug，VPS 上需另行验证。
+6. **backend `uvicorn --reload` 对 bind mount 文件变更不一定触发**（macOS 宿主机 ↔ 容器 bind mount 下 watchfiles 可能漏事件；改完 backend 代码没生效时 `docker restart tradeck-dev-backend`）。
+7. **APScheduler 定时任务必须传 `async def` 协程函数**——传返回协程的 lambda 不会被 await（任务静默不执行）；带参数的 job 用模块级 `async def` 包装（参考 `scheduler.py` 的 `_daily_kline_cn_hk`）。
+8. **backend 必须单进程运行**——APScheduler 嵌在 FastAPI 进程内，多 worker 会把所有定时 job 跑 N 遍；progress 注册表也是进程内存。`apps/backend/Dockerfile` CMD 为 `--workers 1`，不要调大。
 
 ## 相关文档
 
