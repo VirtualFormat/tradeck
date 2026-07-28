@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react";
+import { normalizeSymbol } from "@/lib/utils";
 
 export function StockSearch() {
   const [symbol, setSymbol] = useState("");
@@ -16,9 +17,9 @@ export function StockSearch() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = symbol.trim().toUpperCase();
-    if (!trimmed) return;
-    router.push(`/stocks/${encodeURIComponent(trimmed)}`);
+    const normalized = normalizeSymbol(symbol);
+    if (!normalized) return;
+    router.push(`/stocks/${encodeURIComponent(normalized)}`);
   }
 
   return (

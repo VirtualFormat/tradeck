@@ -1,31 +1,14 @@
 /**
  * API 客户端
- * - 阶段 1 已迁移到 backend（quotes/historical/indices）：< 50ms
- * - 阶段 2 待迁移（movers/news/macro/commodities/treasury/profile/metrics/income）：直连 OpenBB
+ * - 全部走 backend（从 DB 读，< 50ms），管道迁移已完成
+ * - 失败降级返回空数组，页面永远可渲染
  */
 
 // Backend API（从 DB 读，< 50ms）
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
-// OpenBB API（阶段 1 暂保留给未迁移的组件）
-const OPENBB_API_URL =
-  process.env.OPENBB_API_URL ?? "http://localhost:6900";
-
-export { OPENBB_API_URL };
-
 const BACKEND = BACKEND_API_URL;
-const OPENBB_BASE = `${OPENBB_API_URL}/api/v1`;
-
-/** 按数据类型的缓存时间（秒）— 仅用于 OpenBB 调用 */
-const CACHE = {
-  quote: 30,
-  historical: 300,
-  discovery: 300,
-  profile: 3600,
-  fundamental: 3600,
-  macro: 3600,
-} as const;
 
 export interface EquityQuote {
   symbol: string;
@@ -51,11 +34,6 @@ export interface HistoricalPrice {
   volume: number;
 }
 
-export interface OpenBBResponse<T> {
-  results: T[];
-  warnings?: { message: string }[];
-}
-
 // ─── Backend API（从 DB 读，< 50ms） ──────────────────────
 
 async function backendFetch<T>(path: string): Promise<T> {
@@ -74,61 +52,6 @@ async function backendFetch<T>(path: string): Promise<T> {
   } catch (err) {
     console.warn(`backend ${path} error:`, err);
     return [] as unknown as T;
-  }
-}
-
-// ─── OpenBB API（阶段 1 暂保留，阶段 2 迁移） ──────────────
-
-const memCache = new Map<string, { data: unknown; ts: number }>();
-
-export async function fetchJSON<T>(
-  path: string,
-  init?: RequestInit,
-  revalidate: number = CACHE.quote
-): Promise<T> {
-  const url = `${OPENBB_BASE}${path}`;
-  const cached = memCache.get(url);
-  if (cached && Date.now() - cached.ts < revalidate * 1000) {
-    return cached.data as T;
-  }
-  try {
-    const res = (await Promise.race([
-      fetch(url, {
-        ...init,
-        cache: "no-store",
-        headers: { Accept: "application/json", ...init?.headers },
-      }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-    ])) as Response | null;
-
-    if (!res) {
-      console.warn(`OpenBB ${path} timeout (5s), returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    if (!res.ok) {
-      throw new Error(`OpenBB API ${path} failed: ${res.status}`);
-    }
-    const text = await res.text();
-    let data: T;
-    if (!text) {
-      data = { results: [] } as unknown as T;
-    } else {
-      try {
-        data = JSON.parse(text) as T;
-      } catch {
-        data = { results: [] } as unknown as T;
-      }
-    }
-    memCache.set(url, { data, ts: Date.now() });
-    return data;
-  } catch (err) {
-    if (err instanceof Error && (err.message.includes("ECONNRESET") || err.message.includes("fetch failed"))) {
-      console.warn(`OpenBB ${path} reset, returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    throw err;
   }
 }
 
@@ -208,21 +131,7 @@ export async function fetchTechnicals(
   );
 }
 
-// ─── 阶段 2 待迁移（暂保留直连 OpenBB） ────────────────────
-
-function pickProvider(symbol: string): string {
-  const sym = symbol.toUpperCase();
-  // .SH（沪，新标准）/.SS（沪，指数仍用）/.SZ/.BJ
-  if (
-    sym.endsWith(".SH") ||
-    sym.endsWith(".SS") ||
-    sym.endsWith(".SZ") ||
-    sym.endsWith(".BJ")
-  ) {
-    return "akshare";
-  }
-  return "yfinance";
-}
+// ─── 公司信息 / 基本面（backend DB） ─────────────────────
 
 export interface EquityProfile {
   symbol: string;
@@ -638,4 +547,18 @@ export async function fetchMarketInternals(
   days: number = 180
 ): Promise<MarketInternal[]> {
   return backendFetch<MarketInternal[]>(`/api/market-internals?days=${days}`);
+}
+
+// ─── 系统任务进度（/api/system/jobs） ─────────────────────
+
+export interface JobProgress {
+  job: string;
+  label: string;
+  status: "running" | "done" | "error";
+  processed: number;
+  total: number;
+  percent: number;
+  note: string;
+  started_at: string;
+  finished_at: string | null;
 }

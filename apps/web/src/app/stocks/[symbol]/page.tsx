@@ -3,7 +3,8 @@
  * 路由：/stocks/[symbol]
  * 数据：OpenBB API（profile + metrics + income + historical）
  */
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { normalizeSymbol } from "@/lib/utils";
 import {
   getEquityProfile,
   getFundamentalMetrics,
@@ -140,21 +141,25 @@ export default async function StockDetailPage({
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const { symbol } = await params;
-  if (!symbol) notFound();
+  const { symbol: rawSymbol } = await params;
+  if (!rawSymbol) notFound();
 
-  // A 股判断（profile/metrics 不支持 akshare，yfinance 调 A 股太慢 15s+）
-  const isAShare = /\.(SS|SZ|BJ)$/.test(symbol.toUpperCase());
+  // 归一化为标准 symbol（裸码补后缀/港股补零），非标准写法重定向到规范 URL
+  const symbol = normalizeSymbol(rawSymbol);
+  if (symbol !== rawSymbol.toUpperCase()) {
+    redirect(`/stocks/${encodeURIComponent(symbol)}`);
+  }
 
-  // 并行拉取所有数据
-  // A 股：只调 akshare historical（140ms 稳定），跳过 profile/metrics（yfinance 太慢）
-  // 美股：调 yfinance profile + metrics + sec income + yfinance historical
-  // 共识/资产负债表/现金流量表：全部读 backend DB（<50ms），各市场都可调，无数据走空态
-  // 公告/研报：仅 A 股（东财源），同样读 backend DB
+  // A 股判断（.SH 新标准/.SS/.SZ/.BJ）
+  const isAShare = /\.(SH|SS|SZ|BJ)$/.test(symbol.toUpperCase());
+
+  // 并行拉取所有数据（全部读 backend DB，<50ms，无数据走空态）
+  // profile/metrics：全市场都可读（A 股沪市经 yfinance 出向映射已可拉取）
+  // income：SEC 源仅美股，A 股跳过；公告/研报：仅 A 股（东财源）
   const [profile, metrics, income, historical, consensus, balance, cashFlow, technicals, announcements, researchReports] =
     await Promise.all([
-      isAShare ? Promise.resolve(null) : getEquityProfile(symbol).catch(() => null),
-      isAShare ? Promise.resolve(null) : getFundamentalMetrics(symbol).catch(() => null),
+      getEquityProfile(symbol).catch(() => null),
+      getFundamentalMetrics(symbol).catch(() => null),
       isAShare ? Promise.resolve([]) : getIncomeStatements(symbol).catch(() => []),
       getEquityHistorical(
         symbol,
@@ -263,6 +268,13 @@ export default async function StockDetailPage({
           </div>
         )}
       </header>
+
+      {/* 非精选标的兜底提示：有 K 线但无 profile（按需回源也拿不到）时说明覆盖范围 */}
+      {!profile && historical.length > 0 && (
+        <p className="mb-6 text-xs text-muted-foreground">
+          该标的为全市场扩展覆盖：K线、技术指标可用；基本面、新闻等深度数据可能缺失
+        </p>
+      )}
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* TradingView K 线图（占 2 列） */}
