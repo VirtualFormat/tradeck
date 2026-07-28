@@ -6,6 +6,7 @@ from datetime import date
 
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.markets import to_yahoo_symbol
 from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ async def fetch_and_store_profile(symbol: str) -> int:
     """拉公司信息，写入 equity_profiles。"""
     data = await fetch_openbb(
         "/equity/profile",
-        {"provider": "yfinance", "symbol": symbol},
+        {"provider": "yfinance", "symbol": to_yahoo_symbol(symbol)},
     )
     results = data.get("results", [])
     if not results:
@@ -60,7 +61,7 @@ async def fetch_and_store_metrics(symbol: str) -> int:
     """拉基本面指标，写入 fundamental_metrics。"""
     data = await fetch_openbb(
         "/equity/fundamental/metrics",
-        {"provider": "yfinance", "symbol": symbol},
+        {"provider": "yfinance", "symbol": to_yahoo_symbol(symbol)},
     )
     results = data.get("results", [])
     if not results:
@@ -94,7 +95,8 @@ async def fetch_and_store_metrics(symbol: str) -> int:
             float(r["enterprise_to_ebitda"]) if r.get("enterprise_to_ebitda") else None,
             float(r["earnings_growth"]) if r.get("earnings_growth") else None,
             float(r["revenue_growth"]) if r.get("revenue_growth") else None,
-            float(r["dividend_yield"]) if r.get("dividend_yield") else None,
+            # yfinance dividend_yield 已是百分数（0.32 = 0.32%），统一存小数口径（前端 ×100 显示）
+            float(r["dividend_yield"]) / 100 if r.get("dividend_yield") else None,
             float(r["beta"]) if r.get("beta") else None,
             float(r["profit_margins"]) if r.get("profit_margins") else None,
             float(r["return_on_equity"]) if r.get("return_on_equity") else None,
@@ -151,7 +153,7 @@ async def fetch_and_store_balance(symbol: str) -> int:
     for period, limit in (("annual", 5), ("quarter", 5)):
         data = await fetch_openbb(
             "/equity/fundamental/balance",
-            {"provider": "yfinance", "symbol": symbol, "period": period, "limit": limit},
+            {"provider": "yfinance", "symbol": to_yahoo_symbol(symbol), "period": period, "limit": limit},
         )
         for r in data.get("results", []):
             fiscal_date = _parse_date(r.get("period_ending"))
@@ -214,7 +216,7 @@ async def fetch_and_store_cash(symbol: str) -> int:
     for period, limit in (("annual", 5), ("quarter", 5)):
         data = await fetch_openbb(
             "/equity/fundamental/cash",
-            {"provider": "yfinance", "symbol": symbol, "period": period, "limit": limit},
+            {"provider": "yfinance", "symbol": to_yahoo_symbol(symbol), "period": period, "limit": limit},
         )
         for r in data.get("results", []):
             fiscal_date = _parse_date(r.get("period_ending"))

@@ -7,7 +7,7 @@ from typing import Any
 from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
-from app.markets import pick_market, pick_provider
+from app.markets import pick_market, pick_provider, to_yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +79,26 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
         all_quotes.extend(await _fetch_akshare_quotes(akshare_syms))
 
     if yfinance_syms:
+        # 出向映射：yfinance 用 Yahoo 格式（.SH→.SS、港股 5→4 位），
+        # 响应 symbol 映射回规范格式再写库
+        yahoo_to_canonical = {to_yahoo_symbol(s): s for s in yfinance_syms}
         data = await fetch_openbb(
             "/equity/price/quote",
-            {"provider": "yfinance", "symbol": ",".join(yfinance_syms)},
+            {"provider": "yfinance", "symbol": ",".join(yahoo_to_canonical)},
         )
-        all_quotes.extend(data.get("results", []))
+        for q in data.get("results", []):
+            resp_sym = q.get("symbol")
+            if resp_sym in yahoo_to_canonical:
+                q["symbol"] = yahoo_to_canonical[resp_sym]
+            # yfinance quote 不返回 change/change_percent，用 prev_close 现算
+            # （change_percent 存小数，与 akshare 分支口径一致）
+            last, prev = _f(q.get("last_price")), _f(q.get("prev_close"))
+            if last is not None and prev:
+                if q.get("change") is None:
+                    q["change"] = round(last - prev, 4)
+                if q.get("change_percent") is None:
+                    q["change_percent"] = (last - prev) / prev
+            all_quotes.append(q)
 
     if not all_quotes:
         logger.warning("No quotes fetched")
@@ -112,7 +127,7 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
             ON CONFLICT (symbol) DO UPDATE SET
                 name = EXCLUDED.name,
                 last_price = EXCLUDED.last_price,
-                -- yfinance 常返回 null 涨跌，保留已有值避免清掉有效数据
+                -- 缺涨跌时保留已有值（兜底；yfinance 正常已由 prev_close 现算）
                 change = COALESCE(EXCLUDED.change, quote_snapshots.change),
                 change_percent = COALESCE(EXCLUDED.change_percent, quote_snapshots.change_percent),
                 volume = EXCLUDED.volume,

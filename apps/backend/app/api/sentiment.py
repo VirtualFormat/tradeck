@@ -30,9 +30,9 @@ async def get_sentiment():
             """
             SELECT count(*) AS n,
                    avg(change_percent) AS avg_pct,
-                   count(*) FILTER (WHERE change_percent > 0)::float / count(*) AS up_ratio,
-                   count(*) FILTER (WHERE change_percent >= 0.02)::float / count(*) AS strong_ratio,
-                   count(*) FILTER (WHERE change_percent <= -0.02)::float / count(*) AS weak_ratio
+                   count(*) FILTER (WHERE change_percent > 0)::float / NULLIF(count(*), 0) AS up_ratio,
+                   count(*) FILTER (WHERE change_percent >= 0.02)::float / NULLIF(count(*), 0) AS strong_ratio,
+                   count(*) FILTER (WHERE change_percent <= -0.02)::float / NULLIF(count(*), 0) AS weak_ratio
             FROM quote_snapshots
             WHERE change_percent IS NOT NULL
             """

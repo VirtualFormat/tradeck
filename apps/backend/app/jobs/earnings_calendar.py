@@ -14,7 +14,7 @@ from typing import Any
 
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
-from app.markets import pick_market
+from app.markets import pick_market, to_yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _fetch_calendar(symbol: str) -> dict[str, Any] | None:
     import yfinance as yf
 
     try:
-        cal = yf.Ticker(symbol).calendar
+        cal = yf.Ticker(to_yahoo_symbol(symbol)).calendar
         return cal if isinstance(cal, dict) else None
     except Exception as e:
         logger.warning(f"yfinance calendar {symbol} failed: {e}")

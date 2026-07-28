@@ -6,6 +6,7 @@ from datetime import date
 
 from app.db import get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.markets import to_yahoo_symbol
 from app.openbb_client import fetch_openbb
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ async def fetch_and_store_consensus(symbol: str, snapshot_date: date) -> int:
     """拉单只标的的分析师共识，UPSERT 写入 analyst_consensus。返回写入条数。"""
     data = await fetch_openbb(
         "/equity/estimates/consensus",
-        {"provider": "yfinance", "symbol": symbol},
+        {"provider": "yfinance", "symbol": to_yahoo_symbol(symbol)},
     )
     results = data.get("results", [])
     if not results:
