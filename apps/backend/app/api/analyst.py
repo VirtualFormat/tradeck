@@ -1,18 +1,20 @@
-"""GET /api/analyst — 从 analyst_consensus 读"""
+"""GET /api/analyst — 从 analyst_consensus 读；无数据时按需回源现拉写库"""
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Query
+
+from app.api._ensure import ensure, valid_symbol
 from app.db import get_pool
+from app.jobs.analyst_consensus import fetch_and_store_consensus
 
 router = APIRouter()
 
 
-@router.get("/api/analyst/consensus")
-async def get_consensus(symbol: str = Query(...)):
-    """获取最新一条分析师共识/目标价。无数据返回 null。"""
-    pool = await get_pool()
+async def _fetch_row(pool, symbol: str):
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+        return await conn.fetchrow(
             """
             SELECT symbol, snapshot_date, recommendation, recommendation_mean,
                 number_of_analysts, target_high, target_low, target_consensus,
@@ -22,8 +24,21 @@ async def get_consensus(symbol: str = Query(...)):
             ORDER BY snapshot_date DESC
             LIMIT 1
             """,
-            symbol.upper(),
+            symbol,
         )
+
+
+@router.get("/api/analyst/consensus")
+async def get_consensus(symbol: str = Query(...)):
+    """获取最新一条分析师共识/目标价。无数据先按需回源现拉，仍无返回 null。"""
+    sym = symbol.upper()
+    pool = await get_pool()
+    row = await _fetch_row(pool, sym)
+    if not row and valid_symbol(sym):
+        await ensure(
+            f"consensus:{sym}", lambda: fetch_and_store_consensus(sym, date.today())
+        )
+        row = await _fetch_row(pool, sym)
 
     if not row:
         return None
