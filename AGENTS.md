@@ -46,7 +46,7 @@ tradeck/
 │   │   ├── src/lib/openbb.ts    ← 数据访问层（全部走 backendFetch，勿直连 OpenBB）
 │   │   └── src/lib/utils.ts     ← cn() 等工具
 │   └── backend/                 ← FastAPI 后端（数据管道 + API 服务）
-│       ├── app/api/             ← 17 个路由模块（quotes/historical/indices/movers/news/macro/profile/fundamentals/analyst/sentiment/boards/fundflow/calendar/technicals/cn_extras/cross_asset/system）
+│       ├── app/api/             ← 18 个路由模块（quotes/historical/indices/movers/news/macro/profile/fundamentals/analyst/boards/fundflow/calendar/technicals/cn_extras/cross_asset/system/market_summary/search）
 │       ├── app/jobs/            ← 22 个定时任务（daily_kline/realtime_quotes/indices/movers/news/macro/fundamentals/analyst_consensus/earnings_calendar/economic_calendar/announcements/research_reports/market_breadth/macro_assets/cleanup 等）
 │       ├── app/main.py          ← FastAPI 入口 + lifespan（连 DB、起调度器）
 │       ├── app/scheduler.py     ← APScheduler 任务注册
@@ -203,6 +203,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 | A 股公告（东财全市场公告过滤 tracked 30 只，直调 akshare；当天空则试前一自然日） | 10:30 每天 | akshare | announcements |
 | A 股券商研报（30 只串行限速 0.5s，直调 akshare，只留近 90 天） | 周一 09:00 | akshare | research_reports |
 | 市场宽度（乐咕涨跌家数快照，直调 akshare，UPSERT 当天行） | 每 30 分钟 | akshare | market_breadth |
+| 市场宽度（US/HK，读 daily_prices 全市场计算，CROSS JOIN LATERAL 走索引） | 09:05 / 22:05 每天 | —（本地计算） | market_breadth |
 | 数据清理（TTL） | 03:00 每天 | — | 各表 |
 
 跟踪标的定义在 `app/jobs/daily_kline.py` 的 `TRACKED_SYMBOLS`（100 只：美股 60 + A 股 30 + 港股 10）。

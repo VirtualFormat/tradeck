@@ -821,7 +821,11 @@ async def seed_yield_curve_rates(conn) -> int:
 
 
 async def seed_market_breadth(conn) -> int:
-    """market_breadth（近 5 个交易日 A 股涨跌家数序列）。"""
+    """market_breadth（近 5 个交易日三市涨跌家数序列）。
+
+    CN 含涨跌停/活跃度（legu 口径）；US/HK 仅涨/跌/平（日K 自算口径，
+    limit 系列/activity_rate 为 null），供三市对比卡使用。
+    """
     days = _weekdays(5)
     rows = []
     for d in days:
@@ -845,6 +849,20 @@ async def seed_market_breadth(conn) -> int:
             Decimal(str(round(rng.uniform(8, 18), 2))),  # activity_rate %
             "mock",
         ))
+        # US/HK：日K 全市场自算口径，仅涨/跌/平，limit 系列与 activity_rate 为 null
+        for market, base in (("US", 11000), ("HK", 2600)):
+            g_up = int(rng.gauss(base * 0.5, base * 0.12))
+            g_down = int(rng.gauss(base * 0.45, base * 0.12))
+            g_flat = rng.randint(int(base * 0.02), int(base * 0.05))
+            rows.append((
+                d,
+                market,
+                max(0, g_up),
+                max(0, g_down),
+                g_flat,
+                None, None, None, None, None, None,
+                "mock",
+            ))
     await conn.executemany(
         """
         INSERT INTO market_breadth

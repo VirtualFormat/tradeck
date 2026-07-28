@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import analyst, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, movers, news, profile, quotes, search, sentiment, system, technicals
+from app.api import analyst, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, market_summary, movers, news, profile, quotes, search, system, technicals
 from app.config import settings
 from app.db import close_pool, get_pool
 from app.scheduler import start_scheduler, stop_scheduler
@@ -73,7 +73,6 @@ app.include_router(macro.router)
 app.include_router(profile.router)
 app.include_router(fundamentals.router)
 app.include_router(analyst.router)
-app.include_router(sentiment.router)
 app.include_router(system.router)
 app.include_router(search.router)
 app.include_router(boards.router)
@@ -82,6 +81,7 @@ app.include_router(technicals.router)
 app.include_router(calendar.router)
 app.include_router(cn_extras.router)
 app.include_router(cross_asset.router)
+app.include_router(market_summary.router)
 
 
 @app.get("/health")

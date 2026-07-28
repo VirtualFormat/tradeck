@@ -48,7 +48,8 @@ APScheduler 注册于 `apps/backend/app/scheduler.py`，覆盖日K / 报价 / �
 /api/analyst/consensus  /api/calendar/{earnings,economic}
 /api/boards/{heat,sentiment}  /api/fundflow  /api/technicals
 /api/announcements  /api/research  /api/breadth  /api/market-internals
-/api/sentiment  /api/cross-assets  /api/yield-curve  /api/yield-curve/spread
+/api/cross-assets  /api/yield-curve  /api/yield-curve/spread
+/api/market-summary（三市宽度对比）  /api/search（代码/名称搜索）
 /api/system/jobs（任务进度，读内存注册表而非 DB）
 ```
 

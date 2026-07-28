@@ -26,6 +26,7 @@ from app.jobs.economic_calendar import run_economic_calendar_job
 from app.jobs.announcements import run_announcements_job
 from app.jobs.research_reports import run_research_reports_job
 from app.jobs.market_breadth import run_market_breadth_job
+from app.jobs.market_breadth_global import run_market_breadth_global_job
 from app.jobs.realtime_quotes import run_realtime_quotes_job
 from app.jobs.technical_indicators import run_technical_indicators_job
 from app.jobs.macro_assets import run_macro_assets_job
@@ -224,6 +225,20 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # US/HK 市场宽度（日K 自算）：每天 09:05 与 22:05 UTC（各自日K job 后 35 分钟）
+    _scheduler.add_job(
+        run_market_breadth_global_job,
+        CronTrigger(hour=9, minute=5, timezone="UTC"),
+        id="market_breadth_global_cn_hk",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        run_market_breadth_global_job,
+        CronTrigger(hour=22, minute=5, timezone="UTC"),
+        id="market_breadth_global_us",
+        replace_existing=True,
+    )
+
     # 宏观资产/收益率曲线：每天 21:30 UTC（美元指数/离岸人民币/ETF + treasury_rates）
     _scheduler.add_job(
         run_macro_assets_job,
@@ -274,6 +289,7 @@ async def _initial_fetch() -> None:
     await run_announcements_job()
     await run_research_reports_job()
     await run_market_breadth_job()
+    await run_market_breadth_global_job()
     await run_macro_assets_job()
     await run_cleanup_job()
     logger.info("=== initial fetch done ===")

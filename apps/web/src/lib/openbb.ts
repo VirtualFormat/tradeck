@@ -483,6 +483,29 @@ export async function fetchMarketBreadth(
   return backendFetch<MarketBreadth[]>(`/api/breadth?days=${days}`);
 }
 
+/** 三市对比总览行（CN/US/HK 市场宽度最新快照，up_ratio 后端算好） */
+export interface MarketSummary {
+  market: string;
+  date: string | null;
+  up: number;
+  down: number;
+  flat: number;
+  /** 涨跌停：仅 CN 非 null（legu 口径）；US/HK 为 null（日K 自算无此项） */
+  limit_up: number | null;
+  limit_down: number | null;
+  total: number;
+  /** 上涨占比 = up / (up + down)，平盘不计入分母；分母为 0 时 null */
+  up_ratio: number | null;
+}
+
+/** 三市对比总览（CN/US/HK 各取最新一行；date 传入则查历史快照） */
+export async function fetchMarketSummary(
+  date?: string
+): Promise<MarketSummary[]> {
+  const dateQuery = date ? `?date=${encodeURIComponent(date)}` : "";
+  return backendFetch<MarketSummary[]>(`/api/market-summary${dateQuery}`);
+}
+
 // ─── 全球宏观（/global 页） ───────────────────────────────
 
 /** 跨资产总览行（股指/商品/汇率/波动率/债券） */

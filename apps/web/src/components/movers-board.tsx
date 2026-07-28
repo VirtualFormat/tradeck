@@ -196,6 +196,7 @@ function ScreenerColumn({
   colorClass,
   metric,
   timeLabel,
+  marketBadge,
 }: {
   title: string;
   items: ScreenerItem[];
@@ -203,6 +204,8 @@ function ScreenerColumn({
   colorClass: string;
   metric?: "amount" | "turnover";
   timeLabel?: string | null;
+  /** 数据来源市场标注（如「美股」，如实标注非 cn/hk 分支的美股榜） */
+  marketBadge?: string;
 }) {
   return (
     <Card
@@ -210,8 +213,15 @@ function ScreenerColumn({
       className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
     >
       <CardHeader>
-        <CardTitle className={`text-base font-medium ${colorClass}`}>
+        <CardTitle
+          className={`flex items-center gap-2 text-base font-medium ${colorClass}`}
+        >
           {title}
+          {marketBadge ? (
+            <Badge variant="secondary" className="shrink-0 text-[10px]">
+              {marketBadge}
+            </Badge>
+          ) : null}
         </CardTitle>
         {timeLabel && (
           <CardDescription className="text-xs text-muted-foreground">
@@ -251,6 +261,9 @@ export async function MoversBoard({
     fetchTurnover(market),
   ]);
 
+  // 非 cn/hk 分支四榜数据实为美股（backend market=US），如实标注来源
+  const usBadge = market !== "cn" && market !== "hk" ? "美股" : undefined;
+
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <ScreenerColumn
@@ -259,6 +272,7 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-up"
         timeLabel={deriveTimeLabel(gainers)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="跌幅榜 Top 8"
@@ -266,6 +280,7 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-down"
         timeLabel={deriveTimeLabel(losers)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="活跃榜 Top 8（成交额）"
@@ -274,6 +289,7 @@ export async function MoversBoard({
         colorClass="text-accent"
         metric="amount"
         timeLabel={deriveTimeLabel(active)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="换手榜 Top 8"
@@ -282,6 +298,7 @@ export async function MoversBoard({
         colorClass="text-warn"
         metric="turnover"
         timeLabel={deriveTimeLabel(turnover)}
+        marketBadge={usBadge}
       />
     </div>
   );
