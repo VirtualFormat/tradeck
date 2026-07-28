@@ -15,6 +15,7 @@ import { SentimentRadar } from "@/components/sentiment-radar";
 import { DatePicker } from "@/components/date-picker";
 import { RefreshButton } from "@/components/refresh-button";
 import { DataSyncStatus } from "@/components/data-sync-status";
+import { MarketStatusBar } from "@/components/market-status-bar";
 import { BoardSentimentBoard } from "@/components/board-sentiment-board";
 import { FundFlowBoard } from "@/components/fund-flow-board";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -44,6 +45,10 @@ export default async function Home({
         <StockSearch />
         <DatePicker />
         <RefreshButton />
+        {/* 市场状态带：三市开闭市状态 + 数据日期 + 倒计时 */}
+        <Suspense fallback={null}>
+          <MarketStatusBar />
+        </Suspense>
         {date && (
           <Badge variant="secondary" className="bg-accent/20 text-accent">
             快照模式：{date}
