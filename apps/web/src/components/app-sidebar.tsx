@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 
-import { NavMain } from "@/components/nav-main"
+import { NavMain, type NavItem } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import {
   Sidebar,
@@ -26,18 +26,21 @@ import {
   GlobeIcon,
 } from "@phosphor-icons/react"
 
-const navMain = [
-  { title: "看板", url: "/", icon: <SquaresFourIcon /> },
+const navMain: NavItem[] = [
+  {
+    title: "总看板",
+    url: "/",
+    icon: <SquaresFourIcon />,
+    items: [
+      { title: "A股", url: "/markets/cn", icon: <FlagIcon /> },
+      { title: "美股", url: "/markets/us", icon: <BankIcon /> },
+      { title: "港股", url: "/markets/hk", icon: <CityIcon /> },
+    ],
+  },
   { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
   { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
   { title: "全球宏观", url: "/global", icon: <GlobeIcon /> },
   { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
-]
-
-const markets = [
-  { title: "A股", url: "/markets/cn", icon: <FlagIcon /> },
-  { title: "美股", url: "/markets/us", icon: <BankIcon /> },
-  { title: "港股", url: "/markets/hk", icon: <CityIcon /> },
 ]
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -58,7 +61,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={navMain} />
-        <NavMain items={markets} label="市场" />
       </SidebarContent>
       <SidebarFooter>
         <NavUser

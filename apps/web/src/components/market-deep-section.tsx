@@ -1,0 +1,148 @@
+/**
+ * 三市深度区（服务端组件）
+ * - 顶部段控 tab（next/link，保留 date，切 ?dmkt=cn|us|hk），当前项高亮
+ * - 面板按 market 渲染：四榜（复用 MoversBoard）
+ *   CN 额外：板块热力（BoardTerrain）+ 主力资金（FundFlowBoard）
+ *   US/HK：板块/资金仅 A 股 → 显一行灰字说明，不放空壳
+ * - 全部复用现有组件，本文件只做布局与 tab
+ */
+import Link from "next/link";
+
+import { MoversBoard } from "@/components/movers-board";
+import { BoardTerrain, type BoardItem } from "@/components/board-terrain";
+import { FundFlowBoard } from "@/components/fund-flow-board";
+import { cn } from "@/lib/utils";
+
+type Market = "cn" | "us" | "hk";
+
+const MARKETS: { key: Market; label: string }[] = [
+  { key: "cn", label: "A股" },
+  { key: "us", label: "美股" },
+  { key: "hk", label: "港股" },
+];
+
+/** 板块热力数据（backend /api/boards/heat，仅 A 股口径） */
+async function fetchBoardHeat(
+  type: string,
+  date?: string
+): Promise<BoardItem[]> {
+  const BACKEND_API_URL =
+    process.env.BACKEND_API_URL ?? "http://localhost:8080";
+  try {
+    const dateQuery = date ? `&date=${date}` : "";
+    const res = await fetch(
+      `${BACKEND_API_URL}/api/boards/heat?type=${type}&limit=80${dateQuery}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 段控 tab（Link 实现，避免客户端） */
+function DeepTabs({ market, date }: { market: Market; date?: string }) {
+  const dateQuery = date ? `&date=${date}` : "";
+  return (
+    <div className="inline-flex h-8 items-center gap-1 rounded-lg bg-muted p-[3px]">
+      {MARKETS.map((m) => {
+        const active = m.key === market;
+        return (
+          <Link
+            key={m.key}
+            href={`?dmkt=${m.key}${dateQuery}`}
+            scroll={false}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "inline-flex h-full items-center justify-center rounded-md px-3 text-sm font-medium whitespace-nowrap transition-all",
+              active
+                ? "bg-background text-foreground shadow-sm dark:bg-input/30"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {m.label}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A 股专属：板块热力地形图 */
+async function BoardHeatSection({ date }: { date?: string }) {
+  const items = await fetchBoardHeat("industry", date);
+  return <BoardTerrain items={items} />;
+}
+
+/** US/HK：板块热力/资金流向暂仅 A 股 → 一行灰字说明 */
+function CnOnlyNote({ label }: { label: string }) {
+  return (
+    <p className="text-xs text-muted-foreground">
+      {label}暂仅 A 股提供
+    </p>
+  );
+}
+
+export async function MarketDeepSection({
+  date,
+  market = "cn",
+}: {
+  date?: string;
+  market?: Market;
+}) {
+  const m: Market = market === "us" || market === "hk" ? market : "cn";
+
+  return (
+    <div className="space-y-4">
+      {/* 段控 tab */}
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-fg-dim">三市深度</h2>
+        <DeepTabs market={m} date={date} />
+      </div>
+
+      {/* 四榜（涨/跌/活跃/换手） */}
+      <MoversBoard market={m} date={date} />
+
+      {m === "cn" ? (
+        <>
+          {/* 板块热力地形图（A 股专属） */}
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-fg-dim">
+                板块热力 · 申万一级
+              </h3>
+            </div>
+            <BoardHeatSection date={date} />
+          </section>
+
+          {/* 主力资金红绿榜（A 股专属） */}
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-fg-dim">主力资金</h3>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <FundFlowBoard date={date} />
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-fg-dim">板块热力</h3>
+            </div>
+            <CnOnlyNote label="板块热力" />
+          </section>
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-fg-dim">主力资金</h3>
+            </div>
+            <CnOnlyNote label="资金流向" />
+          </section>
+        </>
+      )}
+    </div>
+  );
+}

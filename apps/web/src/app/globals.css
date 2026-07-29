@@ -148,7 +148,10 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-html {
+:root {
+  color-scheme: light;
+}
+.dark {
   color-scheme: dark;
 }
 
@@ -175,7 +178,7 @@ html {
     @apply border-border outline-ring/50;
   }
   html {
-    @apply font-serif;
+    @apply font-sans;
   }
   body {
     @apply bg-background text-foreground;
