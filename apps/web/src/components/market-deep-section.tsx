@@ -11,7 +11,7 @@ import Link from "next/link";
 import { BoardTerrain } from "@/components/board-terrain";
 import { MoversPanel } from "@/components/dashboard/movers-panel";
 import { FundFlowBoard } from "@/components/fund-flow-board";
-import { fetchBoardHeat } from "@/lib/openbb";
+import { fetchBoardHeat, fetchMarketSummary } from "@/lib/openbb";
 import { cn } from "@/lib/utils";
 
 type Market = "cn" | "us" | "hk";
@@ -53,12 +53,21 @@ function DeepTabs({ market, date }: { market: Market; date?: string }) {
 
 /** A 股专属：板块热力地形图 */
 async function BoardHeatSection({ date }: { date?: string }) {
-  const items = await fetchBoardHeat("industry", date, 15, "market_cap");
+  const [items, summaries] = await Promise.all([
+    fetchBoardHeat("industry", date, 120, "market_cap"),
+    fetchMarketSummary(date),
+  ]);
+  const snapshotDate = items[0]?.snapshot_date ?? date;
+  const referenceDate =
+    summaries.find((summary) => summary.market === "CN")?.date ?? null;
   return (
     <BoardTerrain
       items={items}
       variant="dashboard"
-      date={items[0]?.snapshot_date ?? date}
+      date={snapshotDate}
+      referenceDate={referenceDate}
+      source={items[0]?.source ?? null}
+      sizeBasis={items[0]?.size_basis ?? null}
     />
   );
 }

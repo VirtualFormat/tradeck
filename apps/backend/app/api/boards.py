@@ -59,6 +59,8 @@ async def get_board_heat(
             "leader_stock": r["leader_stock"],
             "leader_change": float(r["leader_change"]) if r["leader_change"] else None,
             "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
+            "source": "ths" if (r["code"] or "").startswith("THS:") else "eastmoney",
+            "size_basis": "turnover" if (r["code"] or "").startswith("THS:") else "market_cap",
         }
         for r in rows
     ]

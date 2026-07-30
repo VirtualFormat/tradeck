@@ -80,7 +80,7 @@ export default async function Home({
       </section>
 
       {/* 主+侧布局：主区三市深度 · 侧栏资讯/事件/日历 */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_20rem]">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_20rem]">
         {/* 主区 Band3 三市深度（URL ?dmkt= 切市） */}
         <div className="space-y-6">
           <Suspense

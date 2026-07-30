@@ -68,6 +68,8 @@ export interface BoardHeatItem {
   leader_stock: string | null;
   leader_change: number | null;
   snapshot_date?: string | null;
+  source?: "eastmoney" | "ths" | null;
+  size_basis?: "market_cap" | "turnover" | null;
 }
 
 export interface FundFlowItem {

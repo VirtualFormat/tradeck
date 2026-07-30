@@ -16,16 +16,66 @@ logger = logging.getLogger(__name__)
 
 def _f(v: Any) -> float | None:
     try:
-        return float(v) if v is not None else None
+        f = float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+    return None if f is not None and f != f else f
 
 
 def _i(v: Any) -> int | None:
     try:
-        return int(float(v)) if v is not None else None
+        f = float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+    return None if f is None or f != f else int(f)
+
+
+async def _fetch_ths_industry_rows() -> list[tuple]:
+    """同花顺行业行情兜底。
+
+    东财行业接口被断连时，使用同花顺行业一览表。该源没有总市值，
+    因此将总成交额（亿元→元）作为 Treemap 面积权重，并用 THS: 前缀
+    标记 code，API 据此返回正确的数据源与面积口径。
+    """
+    import akshare as ak
+
+    try:
+        summary = await call_akshare(ak.stock_board_industry_summary_ths)
+        names = await call_akshare(ak.stock_board_industry_name_ths)
+    except Exception as e:
+        logger.warning(f"akshare boards industry THS fallback failed: {e}")
+        return []
+    if summary is None or summary.empty:
+        return []
+
+    code_map: dict[str, str] = {}
+    if names is not None and not names.empty:
+        code_map = {
+            str(r.get("name") or "").strip(): str(r.get("code") or "").strip()
+            for _, r in names.iterrows()
+            if r.get("name")
+        }
+
+    rows = []
+    for _, r in summary.iterrows():
+        name = str(r.get("板块") or "").strip()
+        if not name:
+            continue
+        amount_100m = _f(r.get("总成交额"))
+        rows.append(
+            (
+                "industry",
+                name,
+                f"THS:{code_map.get(name, '')}",
+                _f(r.get("涨跌幅")),
+                int(amount_100m * 1e8) if amount_100m is not None else None,
+                None,
+                str(r.get("领涨股") or "").strip() or None,
+                _f(r.get("领涨股-涨跌幅")),
+            )
+        )
+    logger.info(f"ths industry fallback: {len(rows)} boards")
+    return rows
 
 
 async def fetch_and_store_boards(board_type: str) -> int:
@@ -41,26 +91,30 @@ async def fetch_and_store_boards(board_type: str) -> int:
         df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare boards {board_type} failed: {e}")
-        return 0
-    if df is None or df.empty:
-        logger.warning(f"No boards data for {board_type}")
-        return 0
+        df = None
 
-    rows = [
-        (
-            board_type,
-            str(r.get("板块名称") or ""),
-            str(r.get("板块代码") or "") or None,
-            _f(r.get("涨跌幅")),
-            _i(r.get("总市值")),
-            _f(r.get("换手率")),
-            str(r.get("领涨股票") or "") or None,
-            _f(r.get("领涨股票-涨跌幅")),
-        )
-        for _, r in df.iterrows()
-        if r.get("板块名称")
-    ]
+    if df is not None and not df.empty:
+        rows = [
+            (
+                board_type,
+                str(r.get("板块名称") or ""),
+                str(r.get("板块代码") or "") or None,
+                _f(r.get("涨跌幅")),
+                _i(r.get("总市值")),
+                _f(r.get("换手率")),
+                str(r.get("领涨股票") or "") or None,
+                _f(r.get("领涨股票-涨跌幅")),
+            )
+            for _, r in df.iterrows()
+            if r.get("板块名称")
+        ]
+    elif board_type == "industry":
+        rows = await _fetch_ths_industry_rows()
+    else:
+        rows = []
+
     if not rows:
+        logger.warning(f"No boards data for {board_type}")
         return 0
 
     pool = await get_pool()

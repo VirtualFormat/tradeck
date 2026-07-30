@@ -1,4 +1,4 @@
-/** 首页补充指数区：删除情绪卡已经展示的三只旗舰指数，不绘制 Sparkline。 */
+/** 首页主要指数区：三市完整展示；缺数据保留卡位，不隐藏整个市场。 */
 import { CompactIndexCard } from "@/components/dashboard/compact-index-card";
 import { EmptyState } from "@/components/empty-state";
 import { Card } from "@/components/ui/card";
@@ -16,6 +16,7 @@ const MARKET_GROUPS: {
     key: "cn",
     label: "A股",
     indices: [
+      { symbol: "000001.SS", name: "上证指数" },
       { symbol: "399001.SZ", name: "深证成指" },
       { symbol: "399006.SZ", name: "创业板指" },
     ],
@@ -24,6 +25,7 @@ const MARKET_GROUPS: {
     key: "us",
     label: "美股",
     indices: [
+      { symbol: "^GSPC", name: "标普500" },
       { symbol: "^IXIC", name: "纳斯达克" },
       { symbol: "^DJI", name: "道琼斯" },
     ],
@@ -31,7 +33,10 @@ const MARKET_GROUPS: {
   {
     key: "hk",
     label: "港股",
-    indices: [{ symbol: "^HSCEI", name: "恒生国企" }],
+    indices: [
+      { symbol: "^HSI", name: "恒生指数" },
+      { symbol: "^HSCEI", name: "恒生国企" },
+    ],
   },
 ];
 
@@ -91,11 +96,11 @@ export async function IndicesByMarket() {
       quotes: await fetchGroupQuotes(group),
     }))
   );
-  const visibleGroups = groups.filter((group) =>
-    group.quotes.some((quote) => quote.price != null)
-  );
-
-  if (visibleGroups.length === 0) {
+  if (
+    groups.every((group) =>
+      group.quotes.every((quote) => quote.price == null)
+    )
+  ) {
     return (
       <Card className="flex h-28 items-center justify-center">
         <EmptyState compact title="等待指数数据" />
@@ -105,7 +110,7 @@ export async function IndicesByMarket() {
 
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {visibleGroups.map((group) => {
+      {groups.map((group) => {
         const latestDate = group.quotes
           .map((quote) => quote.date)
           .filter((value): value is string => Boolean(value))
@@ -127,13 +132,19 @@ export async function IndicesByMarket() {
                 <span className="text-[11px] text-muted-foreground tabular-nums">
                   最新 · {datePrefix}{dateLabel}
                 </span>
-              ) : null}
+              ) : (
+                <span className="text-[11px] text-muted-foreground">
+                  等待数据
+                </span>
+              )}
             </div>
             <div
               className={
                 group.quotes.length === 1
                   ? "grid grid-cols-1 gap-2.5"
-                  : "grid grid-cols-2 gap-2.5"
+                  : group.quotes.length === 2
+                    ? "grid grid-cols-2 gap-2.5"
+                    : "grid grid-cols-2 gap-2.5 sm:grid-cols-3"
               }
             >
               {group.quotes.map((quote) => (

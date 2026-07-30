@@ -97,8 +97,9 @@ export function MarketStatusStrip({
             variant="secondary"
             className={cn(
               "gap-1.5",
-              // 开盘中用 accent 主题色调，非开盘沿用 secondary 灰
-              s?.open && "border-accent/50 bg-accent/10 text-accent"
+              // 开盘中使用业务上涨色；不能用 text-accent（浅色主题下 accent
+              // 本身接近白色，会导致状态文字几乎不可见）。
+              s?.open && "border-up/30 bg-up/10 text-up"
             )}
           >
             <span

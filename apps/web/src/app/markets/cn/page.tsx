@@ -15,6 +15,7 @@ import { StockSearch } from "@/components/stock-search";
 import { DatePicker } from "@/components/date-picker";
 import { RefreshButton } from "@/components/refresh-button";
 import { MarketStatusBar } from "@/components/market-status-bar";
+import { fetchMarketSummary } from "@/lib/openbb";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +41,7 @@ async function fetchBoardHeat(type: string, date?: string): Promise<BoardItem[]>
   }
 }
 
-function Legend() {
+function Legend({ sizeBasis }: { sizeBasis?: BoardItem["size_basis"] }) {
   return (
     <Card>
       <CardContent className="pt-4">
@@ -67,7 +68,10 @@ function Legend() {
             />
             无数据
           </span>
-          <span className="ml-4">面积 = 板块总市值 · 颜色按 ±3% 饱和</span>
+          <span className="ml-4">
+            面积 = {sizeBasis === "turnover" ? "板块成交额" : "板块总市值"} ·
+            颜色按 ±3% 饱和
+          </span>
         </div>
       </CardContent>
     </Card>
@@ -75,8 +79,25 @@ function Legend() {
 }
 
 async function BoardHeatSection({ type, date }: { type: string; date?: string }) {
-  const items = await fetchBoardHeat(type, date);
-  return <BoardTerrain items={items} />;
+  const [items, summaries] = await Promise.all([
+    fetchBoardHeat(type, date),
+    fetchMarketSummary(date),
+  ]);
+  const item = items[0];
+  return (
+    <div className="space-y-3">
+      <Legend sizeBasis={item?.size_basis} />
+      <BoardTerrain
+        items={items}
+        date={item?.snapshot_date ?? date}
+        referenceDate={
+          summaries.find((summary) => summary.market === "CN")?.date ?? null
+        }
+        source={item?.source ?? null}
+        sizeBasis={item?.size_basis ?? null}
+      />
+    </div>
+  );
 }
 
 export default async function CnMarketPage({
@@ -126,9 +147,6 @@ export default async function CnMarketPage({
         <div className="mb-3 flex items-center gap-3">
           <h2 className="text-sm font-medium text-fg-dim">板块热力地形图</h2>
           <BoardTypeTabs />
-        </div>
-        <div className="mb-3">
-          <Legend />
         </div>
         <Suspense
           key={`${boardType}-${date ?? ""}`}
