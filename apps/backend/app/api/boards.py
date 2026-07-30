@@ -23,19 +23,25 @@ def _parse_date(s: str | None) -> date_type | None:
 async def get_board_heat(
     type: str = Query("industry"),
     limit: int = Query(80),
+    order: str = Query("change"),
     date: str | None = Query(None),
 ):
-    """板块行情热度。type: concept / industry；date: YYYY-MM-DD（默认最近快照日）"""
+    """板块行情热度。order: change 按涨幅 / market_cap 按市值。"""
+    order_sql = (
+        "market_cap DESC NULLS LAST"
+        if order.lower() == "market_cap"
+        else "change_percent DESC NULLS LAST"
+    )
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT name, code, change_percent, market_cap, turnover_rate,
-                   leader_stock, leader_change
+                   leader_stock, leader_change, snapshot_date
             FROM board_heat
             WHERE board_type = $1
               AND snapshot_date = COALESCE($3::date, (SELECT max(snapshot_date) FROM board_heat WHERE board_type = $1))
-            ORDER BY change_percent DESC NULLS LAST
+            ORDER BY {order_sql}
             LIMIT $2
             """,
             type,
@@ -52,6 +58,7 @@ async def get_board_heat(
             "turnover_rate": float(r["turnover_rate"]) if r["turnover_rate"] else None,
             "leader_stock": r["leader_stock"],
             "leader_change": float(r["leader_change"]) if r["leader_change"] else None,
+            "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
         }
         for r in rows
     ]

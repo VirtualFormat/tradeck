@@ -59,6 +59,61 @@ async function backendFetch<T>(path: string): Promise<T> {
 
 // ─── 已迁移到 backend 的 API ─────────────────────────────
 
+export interface BoardHeatItem {
+  name: string;
+  code?: string | null;
+  change_percent: number | null;
+  market_cap: number | null;
+  turnover_rate: number | null;
+  leader_stock: string | null;
+  leader_change: number | null;
+  snapshot_date?: string | null;
+}
+
+export interface FundFlowItem {
+  symbol: string;
+  name: string | null;
+  price: number | null;
+  change_percent: number | null;
+  turnover_rate: number | null;
+  net_amount: number | null;
+  snapshot_date?: string | null;
+  /** 榜单更新时间（fund_flow.updated_at，5 分钟级即时榜） */
+  updated_at?: string | null;
+}
+
+/** 板块热力日快照（仅 A 股，默认返回最近快照日）。 */
+export async function fetchBoardHeat(
+  type: "industry" | "concept" = "industry",
+  date?: string,
+  limit: number = 80,
+  order: "change" | "market_cap" = "change"
+): Promise<BoardHeatItem[]> {
+  const params = new URLSearchParams({
+    type,
+    limit: String(limit),
+    order,
+  });
+  if (date) params.set("date", date);
+  return backendFetch<BoardHeatItem[]>(
+    `/api/boards/heat?${params.toString()}`
+  );
+}
+
+/** 个股主力资金日快照（仅 A 股，默认返回最近快照日）。 */
+export async function fetchFundFlow(
+  direction: "in" | "out",
+  date?: string,
+  limit: number = 10
+): Promise<FundFlowItem[]> {
+  const params = new URLSearchParams({
+    direction,
+    limit: String(limit),
+  });
+  if (date) params.set("date", date);
+  return backendFetch<FundFlowItem[]>(`/api/fundflow?${params.toString()}`);
+}
+
 export async function getEquityQuote(
   symbol: string
 ): Promise<EquityQuote | null> {
@@ -74,6 +129,223 @@ export async function getEquityQuotes(
   return backendFetch<EquityQuote[]>(
     `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`
   );
+}
+
+// ─── 首页异动榜（RSC 预取，Client 仅切换已传入数据） ─────────
+
+export type MoversMarket = "cn" | "us" | "hk";
+export type MoversType = "gainers" | "losers" | "active" | "turnover";
+
+export interface MoversItem {
+  symbol: string;
+  name: string | null;
+  price: number | null;
+  change: number | null;
+  percent_change: number | null;
+  volume: number | null;
+  /** 成交额近似值：最新价 × 成交量，仅活跃榜展示 */
+  amount: number | null;
+  /** 估算换手小数（成交额近似值 / 总市值），仅换手榜返回 */
+  turnover: number | null;
+  /** movers_cache 日快照日期；CN/HK 跟踪标的报价没有此字段 */
+  snapshot_date: string | null;
+  /** quote_snapshots 更新时间；当前报价/换手榜使用 */
+  updated_at: string | null;
+}
+
+export type MoversPrimaryData = Record<
+  Exclude<MoversType, "turnover">,
+  MoversItem[]
+>;
+
+// D8 完成前，A 股/港股异动榜仅覆盖这些跟踪标的。
+const DASHBOARD_CN_SYMBOLS = [
+  "600519.SH",
+  "601318.SH",
+  "600036.SH",
+  "000858.SZ",
+  "002594.SZ",
+  "300750.SZ",
+  "601012.SH",
+  "600900.SH",
+  "000001.SZ",
+  "601166.SH",
+  "600276.SH",
+  "601398.SH",
+];
+
+const DASHBOARD_HK_SYMBOLS = [
+  "00700.HK",
+  "09988.HK",
+  "00005.HK",
+  "01299.HK",
+  "00883.HK",
+  "00939.HK",
+  "00388.HK",
+  "02318.HK",
+  "00941.HK",
+  "01810.HK",
+  "03690.HK",
+  "09618.HK",
+];
+
+function quoteToMoversItem(quote: EquityQuote): MoversItem {
+  const amount =
+    quote.last_price != null && quote.volume != null
+      ? quote.last_price * quote.volume
+      : null;
+
+  return {
+    symbol: quote.symbol,
+    name: quote.name,
+    price: quote.last_price,
+    change: quote.change,
+    percent_change: quote.change_percent,
+    volume: quote.volume,
+    amount,
+    turnover: null,
+    snapshot_date: null,
+    updated_at: quote.updated_at ?? null,
+  };
+}
+
+function normalizeMoversItem(item: Partial<MoversItem>): MoversItem {
+  const amount =
+    item.amount ??
+    (item.price != null && item.volume != null
+      ? item.price * item.volume
+      : null);
+
+  return {
+    symbol: item.symbol ?? "",
+    name: item.name ?? null,
+    price: item.price ?? null,
+    change: item.change ?? null,
+    percent_change: item.percent_change ?? null,
+    volume: item.volume ?? null,
+    amount,
+    turnover: item.turnover ?? null,
+    snapshot_date: item.snapshot_date ?? null,
+    updated_at: item.updated_at ?? null,
+  };
+}
+
+function compareNullable(
+  a: number | null,
+  b: number | null,
+  direction: "asc" | "desc"
+): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return direction === "asc" ? a - b : b - a;
+}
+
+/**
+ * 首页涨幅/跌幅/活跃榜。
+ * - US：movers_cache 全市场榜，支持 date 日快照。
+ * - CN/HK：D8 前使用跟踪标的当前报价，date 不适用。
+ */
+export async function fetchMovers(
+  type: Exclude<MoversType, "turnover">,
+  market: MoversMarket,
+  date?: string,
+  limit: number = 6
+): Promise<MoversItem[]> {
+  if (market === "cn" || market === "hk") {
+    const symbols =
+      market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS;
+    const quotes = await getEquityQuotes(symbols);
+    const items = quotes.map(quoteToMoversItem);
+
+    items.sort((a, b) => {
+      if (type === "gainers") {
+        return compareNullable(a.percent_change, b.percent_change, "desc");
+      }
+      if (type === "losers") {
+        return compareNullable(a.percent_change, b.percent_change, "asc");
+      }
+      return compareNullable(a.amount, b.amount, "desc");
+    });
+
+    return items.slice(0, limit);
+  }
+
+  const dateQuery = date ? `&date=${encodeURIComponent(date)}` : "";
+  const data = await backendFetch<Partial<MoversItem>[]>(
+    `/api/movers?type=${type}&market=US&limit=${limit}${dateQuery}`
+  );
+  if (!Array.isArray(data)) return [];
+  return data
+    .map(normalizeMoversItem)
+    .filter((item) => item.symbol)
+    .slice(0, limit);
+}
+
+/** 首页三类主榜一次取齐；CN/HK 仅发起一次批量报价请求。 */
+export async function fetchMoversPrimaryData(
+  market: MoversMarket,
+  date?: string,
+  limit: number = 6
+): Promise<MoversPrimaryData> {
+  if (market === "us") {
+    const [gainers, losers, active] = await Promise.all([
+      fetchMovers("gainers", market, date, limit),
+      fetchMovers("losers", market, date, limit),
+      fetchMovers("active", market, date, limit),
+    ]);
+    return { gainers, losers, active };
+  }
+
+  const symbols =
+    market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS;
+  const items = (await getEquityQuotes(symbols)).map(quoteToMoversItem);
+  const sorted = (
+    field: "percent_change" | "amount",
+    direction: "asc" | "desc"
+  ) =>
+    [...items]
+      .sort((a, b) => compareNullable(a[field], b[field], direction))
+      .slice(0, limit);
+
+  return {
+    gainers: sorted("percent_change", "desc"),
+    losers: sorted("percent_change", "asc"),
+    active: sorted("amount", "desc"),
+  };
+}
+
+/**
+ * 首页换手榜。该接口使用当前 quote_snapshots + equity_profiles，
+ * 不支持历史 date；调用方必须标注“当前”。
+ */
+export async function fetchMoversTurnover(
+  market: MoversMarket,
+  limit: number = 6
+): Promise<MoversItem[]> {
+  const backendMarket = market.toUpperCase();
+  // quote_snapshots 仅是报价覆盖集，不是全市场；多取一些后再按首页
+  // 跟踪集合过滤，避免逐标的 profile 请求拖慢默认涨幅榜。
+  const requestLimit = market === "us" ? limit : 100;
+  const data = await backendFetch<Partial<MoversItem>[]>(
+    `/api/movers/turnover?market=${backendMarket}&limit=${requestLimit}`
+  );
+  if (!Array.isArray(data)) return [];
+  const normalized = data
+    .map(normalizeMoversItem)
+    .filter((item) => item.symbol);
+
+  if (market === "cn" || market === "hk") {
+    const tracked = new Set(
+      market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS
+    );
+    return normalized
+      .filter((item) => tracked.has(item.symbol))
+      .slice(0, limit);
+  }
+
+  return normalized
+    .slice(0, limit);
 }
 
 export async function getEquityHistorical(
@@ -194,10 +466,12 @@ export async function getFundamentalMetrics(
 
 export async function getIncomeStatements(
   symbol: string,
-  provider: string = "sec",
-  period: string = "annual",
+  _provider: string = "sec",
+  _period: string = "annual",
   limit: number = 3
 ): Promise<IncomeStatement[]> {
+  void _provider;
+  void _period;
   return backendFetch<IncomeStatement[]>(
     `/api/fundamentals/income?symbol=${encodeURIComponent(symbol)}&limit=${limit}`
   );
@@ -331,9 +605,10 @@ export interface RateSeries {
 }
 
 export async function getCPI(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=CPI&limit=${limit}`
   );
@@ -341,27 +616,30 @@ export async function getCPI(
 }
 
 export async function getUnemployment(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
+  void _provider;
   return backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=Unemployment&limit=${limit}`
   );
 }
 
 export async function getGDPNominal(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 20
 ): Promise<MacroSeries[]> {
+  void _provider;
   return backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=GDP_Nominal&limit=${limit}`
   );
 }
 
 export async function getEFFR(
-  provider: string = "federal_reserve",
+  _provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=EFFR&limit=${limit}`
   );
@@ -369,9 +647,10 @@ export async function getEFFR(
 }
 
 export async function getSOFR(
-  provider: string = "federal_reserve",
+  _provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=SOFR&limit=${limit}`
   );
@@ -513,6 +792,7 @@ export interface CrossAssetItem {
   symbol: string;
   name: string;
   category: "equity_index" | "commodity" | "fx" | "volatility" | "bond";
+  latest_date?: string | null;
   close: number | null;
   chg_1d: number | null;
   chg_1w: number | null;
@@ -526,6 +806,7 @@ export interface CrossAssetItem {
 export interface YieldCurvePoint {
   tenor: string;
   months: number;
+  latest_date?: string | null;
   latest: number | null;
   ago_1m: number | null;
   ago_1y: number | null;

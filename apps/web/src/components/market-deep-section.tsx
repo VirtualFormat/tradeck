@@ -1,16 +1,17 @@
 /**
  * 三市深度区（服务端组件）
  * - 顶部段控 tab（next/link，保留 date，切 ?dmkt=cn|us|hk），当前项高亮
- * - 面板按 market 渲染：四榜（复用 MoversBoard）
+ * - 面板按 market 渲染：首页专用单卡异动榜
  *   CN 额外：板块热力（BoardTerrain）+ 主力资金（FundFlowBoard）
  *   US/HK：板块/资金仅 A 股 → 显一行灰字说明，不放空壳
- * - 全部复用现有组件，本文件只做布局与 tab
+ * - 不改变市场页继续使用的旧 MoversBoard
  */
 import Link from "next/link";
 
-import { MoversBoard } from "@/components/movers-board";
-import { BoardTerrain, type BoardItem } from "@/components/board-terrain";
+import { BoardTerrain } from "@/components/board-terrain";
+import { MoversPanel } from "@/components/dashboard/movers-panel";
 import { FundFlowBoard } from "@/components/fund-flow-board";
+import { fetchBoardHeat } from "@/lib/openbb";
 import { cn } from "@/lib/utils";
 
 type Market = "cn" | "us" | "hk";
@@ -21,38 +22,18 @@ const MARKETS: { key: Market; label: string }[] = [
   { key: "hk", label: "港股" },
 ];
 
-/** 板块热力数据（backend /api/boards/heat，仅 A 股口径） */
-async function fetchBoardHeat(
-  type: string,
-  date?: string
-): Promise<BoardItem[]> {
-  const BACKEND_API_URL =
-    process.env.BACKEND_API_URL ?? "http://localhost:8080";
-  try {
-    const dateQuery = date ? `&date=${date}` : "";
-    const res = await fetch(
-      `${BACKEND_API_URL}/api/boards/heat?type=${type}&limit=80${dateQuery}`,
-      { headers: { Accept: "application/json" } }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
 /** 段控 tab（Link 实现，避免客户端） */
 function DeepTabs({ market, date }: { market: Market; date?: string }) {
-  const dateQuery = date ? `&date=${date}` : "";
   return (
     <div className="inline-flex h-8 items-center gap-1 rounded-lg bg-muted p-[3px]">
       {MARKETS.map((m) => {
         const active = m.key === market;
+        const params = new URLSearchParams({ dmkt: m.key });
+        if (date) params.set("date", date);
         return (
           <Link
             key={m.key}
-            href={`?dmkt=${m.key}${dateQuery}`}
+            href={`?${params.toString()}`}
             scroll={false}
             aria-current={active ? "page" : undefined}
             className={cn(
@@ -72,8 +53,14 @@ function DeepTabs({ market, date }: { market: Market; date?: string }) {
 
 /** A 股专属：板块热力地形图 */
 async function BoardHeatSection({ date }: { date?: string }) {
-  const items = await fetchBoardHeat("industry", date);
-  return <BoardTerrain items={items} />;
+  const items = await fetchBoardHeat("industry", date, 15, "market_cap");
+  return (
+    <BoardTerrain
+      items={items}
+      variant="dashboard"
+      date={items[0]?.snapshot_date ?? date}
+    />
+  );
 }
 
 /** US/HK：板块热力/资金流向暂仅 A 股 → 一行灰字说明 */
@@ -102,29 +89,19 @@ export async function MarketDeepSection({
         <DeepTabs market={m} date={date} />
       </div>
 
-      {/* 四榜（涨/跌/活跃/换手） */}
-      <MoversBoard market={m} date={date} />
+      {/* 单卡四榜（类型 Tabs 在客户端切换，数据由 RSC 一次预取） */}
+      <MoversPanel market={m} date={date} />
 
       {m === "cn" ? (
         <>
           {/* 板块热力地形图（A 股专属） */}
-          <section>
-            <div className="mb-3">
-              <h3 className="text-sm font-medium text-fg-dim">
-                板块热力 · 申万一级
-              </h3>
-            </div>
+          <section aria-label="板块热力">
             <BoardHeatSection date={date} />
           </section>
 
           {/* 主力资金红绿榜（A 股专属） */}
-          <section>
-            <div className="mb-3">
-              <h3 className="text-sm font-medium text-fg-dim">主力资金</h3>
-            </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <FundFlowBoard date={date} />
-            </div>
+          <section aria-label="主力资金">
+            <FundFlowBoard date={date} variant="dashboard" />
           </section>
         </>
       ) : (

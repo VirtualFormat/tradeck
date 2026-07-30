@@ -41,10 +41,10 @@
   --sidebar-border: oklch(0.925 0.005 214.3);
   --sidebar-ring: oklch(0.723 0.014 214.4);
 
-  /* 业务语义色（preset 之外）：红涨绿跌（A 股习惯），明暗模式一致 */
-  --up: #f0556b;
-  --down: #20cd8d;
-  --warn: #f0a050;
+  /* 业务语义色（preset 之外）：红涨绿跌（A 股习惯），浅色模式提高小字号对比度 */
+  --up: #d72f50;
+  --down: #087a55;
+  --warn: #a85a00;
 
   /* 存量组件别名 → 主题令牌（引用 var()，随明暗模式自动切换） */
   --bg: var(--background);
@@ -88,6 +88,9 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.56 0.021 213.5);
 
+  --up: #f0556b;
+  --down: #20cd8d;
+  --warn: #f0a050;
   --fg-dim: oklch(0.87 0.008 214);
 }
 

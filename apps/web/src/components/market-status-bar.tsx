@@ -26,18 +26,25 @@ const INDEX_SYMBOL: Record<"US" | "HK" | "CN", string> = {
 
 export async function MarketStatusBar({
   market,
+  className,
 }: {
   // 传入则只显示该市场（市场页用）；不传三市全显（首页用）
   market?: "US" | "HK" | "CN";
+  className?: string;
 }) {
   if (market) {
     const d = await latestIndexDate(INDEX_SYMBOL[market]);
-    return <MarketStatusStrip dates={{ [market]: d }} />;
+    return <MarketStatusStrip dates={{ [market]: d }} className={className} />;
   }
   const [us, hk, cn] = await Promise.all([
     latestIndexDate(INDEX_SYMBOL.US),
     latestIndexDate(INDEX_SYMBOL.HK),
     latestIndexDate(INDEX_SYMBOL.CN),
   ]);
-  return <MarketStatusStrip dates={{ US: us, HK: hk, CN: cn }} />;
+  return (
+    <MarketStatusStrip
+      dates={{ US: us, HK: hk, CN: cn }}
+      className={className}
+    />
+  );
 }

@@ -4,11 +4,9 @@ import * as React from "react"
 import Link from "next/link"
 
 import { NavMain, type NavItem } from "@/components/nav-main"
-import { NavUser } from "@/components/nav-user"
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -62,11 +60,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarContent>
         <NavMain items={navMain} />
       </SidebarContent>
-      <SidebarFooter>
-        <NavUser
-          user={{ name: "tradeck", email: "v0.1", avatar: "/avatars/shadcn.jpg" }}
-        />
-      </SidebarFooter>
     </Sidebar>
   )
 }

@@ -36,6 +36,8 @@ pnpm-debug.log*
 # vite / test cache
 .vite/
 coverage/
+tmp/
+.tasks/
 
 # cloudflare / wrangler
 .wrangler/

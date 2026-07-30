@@ -33,7 +33,7 @@ async def get_macro(
         return [
             {
                 "date": r["date"].isoformat() if r["date"] else None,
-                "value": float(r["value"]) if r["value"] else None,
+                "value": float(r["value"]) if r["value"] is not None else None,
                 "country": None,
             }
             for r in rows
@@ -53,7 +53,7 @@ async def get_macro(
         {
             "name": r["name"],
             "date": r["date"].isoformat() if r["date"] else None,
-            "value": float(r["value"]) if r["value"] else None,
+            "value": float(r["value"]) if r["value"] is not None else None,
         }
         for r in rows
     ]

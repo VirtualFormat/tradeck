@@ -65,9 +65,11 @@ function calcStatus(m: MarketDef, now: Date): Status {
 
 export function MarketStatusStrip({
   dates,
+  className,
 }: {
   // 只显示 dates 中出现的市场（单市场页只传一个 key，首页传三个）
   dates: Partial<Record<"US" | "HK" | "CN", string | null>>;
+  className?: string;
 }) {
   // null 初始态避免 SSR/客户端 hydration 时间不一致；挂载后再开始计时
   const [now, setNow] = useState<Date | null>(null);
@@ -86,7 +88,7 @@ export function MarketStatusStrip({
   const shown = MARKETS.filter((m) => m.key in dates);
 
   return (
-    <div className="ml-auto flex items-center gap-2">
+    <div className={cn("ml-auto flex items-center gap-2", className)}>
       {shown.map((m) => {
         const s = now ? calcStatus(m, now) : null;
         return (

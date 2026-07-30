@@ -16,6 +16,7 @@ import {
 import { type JobProgress } from "@/lib/openbb";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 5000;
 const RECENT_DONE_MS = 24 * 60 * 60 * 1000;
@@ -59,15 +60,19 @@ function StatusLine({ job }: { job: JobProgress }) {
   );
 }
 
-export function DataSyncStatus() {
+export function DataSyncStatus({ className }: { className?: string } = {}) {
   const [jobs, setJobs] = useState<JobProgress[]>([]);
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const data = await fetchJobs();
-        if (!cancelled) setJobs(data);
+        if (!cancelled) {
+          setJobs(data);
+          setNow(Date.now());
+        }
       } catch {
         /* 降级：拉不到就不显示 */
       }
@@ -85,14 +90,14 @@ export function DataSyncStatus() {
     (j) =>
       j.status === "done" &&
       j.finished_at &&
-      Date.now() - new Date(j.finished_at).getTime() < RECENT_DONE_MS
+      now - new Date(j.finished_at).getTime() < RECENT_DONE_MS
   );
   const latestError = jobs.find((j) => j.status === "error");
 
   if (!running && !latestDone && !latestError) return null;
 
   return (
-    <div className="px-4 lg:px-6">
+    <div className={cn("px-4 lg:px-6", className)}>
       <Card className="border-border/60 py-3">
         <CardContent className="px-4">
           {running ? (

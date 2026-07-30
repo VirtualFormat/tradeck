@@ -50,25 +50,38 @@ const chartConfig = {
 export function FundFlowBarChart({
   rows,
   variant,
+  compact = false,
 }: {
   rows: FlowBarRow[];
   variant: "in" | "out";
+  compact?: boolean;
 }) {
   const isIn = variant === "in";
   const fill = isIn ? "var(--up)" : "var(--down)";
   // 绿榜用负值让柱子向左生长
-  const data = rows.map((r) => ({ ...r, value: isIn ? r.size : -r.size }));
+  const data = rows.map((r) => ({
+    ...r,
+    value: compact || isIn ? r.size : -r.size,
+  }));
 
   return (
     <ChartContainer
       config={chartConfig}
-      className="aspect-auto h-[300px] w-full"
+      className={
+        compact
+          ? "aspect-auto h-[120px] w-full"
+          : "aspect-auto h-[300px] w-full"
+      }
     >
       <BarChart
         data={data}
         layout="vertical"
+        barSize={compact ? 7 : undefined}
+        barCategoryGap={compact ? 12 : undefined}
         margin={
-          isIn
+          compact
+            ? { top: 0, right: 58, bottom: 0, left: 72 }
+            : isIn
             ? { top: 0, right: 56, bottom: 0, left: 0 }
             : { top: 0, right: 0, bottom: 0, left: 56 }
         }
@@ -76,9 +89,17 @@ export function FundFlowBarChart({
         <XAxis
           type="number"
           hide
-          domain={isIn ? [0, "dataMax"] : ["dataMin", 0]}
+          domain={compact || isIn ? [0, "dataMax"] : ["dataMin", 0]}
         />
-        <YAxis dataKey="name" type="category" hide />
+        <YAxis
+          dataKey="name"
+          type="category"
+          hide={!compact}
+          width={compact ? 68 : undefined}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fill: "var(--foreground)", fontSize: 11 }}
+        />
         <ChartTooltip
           cursor={false}
           content={
@@ -107,21 +128,24 @@ export function FundFlowBarChart({
           }
         />
         <Bar dataKey="value" radius={4}>
-          {/* 名称嵌柱内 */}
-          <LabelList
-            dataKey="name"
-            position={isIn ? "insideLeft" : "insideRight"}
-            offset={8}
-            className="fill-white"
-            fontSize={11}
-          />
+          {!compact && (
+            <LabelList
+              dataKey="name"
+              position={isIn ? "insideLeft" : "insideRight"}
+              offset={8}
+              className="fill-white"
+              fontSize={11}
+            />
+          )}
           {/* 金额标柱端 */}
           <LabelList
             dataKey="net"
-            position={isIn ? "right" : "left"}
+            position={compact ? "right" : isIn ? "right" : "left"}
             offset={8}
-            className="fill-fg-dim"
-            fontSize={10}
+            className={
+              compact ? (isIn ? "fill-up" : "fill-down") : "fill-fg-dim"
+            }
+            fontSize={compact ? 11 : 10}
             formatter={(v) => fmtAmount(Number(v))}
           />
           {data.map((entry) => (

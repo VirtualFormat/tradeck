@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from app.datasource import call_akshare
 from app.db import get_pool
@@ -10,6 +11,7 @@ from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market
 
 logger = logging.getLogger(__name__)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _parse_time(s: object) -> datetime | None:
@@ -17,8 +19,11 @@ def _parse_time(s: object) -> datetime | None:
     if not s:
         return None
     try:
-        return datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
+        # 东财发布时间是中国本地时间；先赋上海时区，再统一转 UTC 入库。
+        return (
+            datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S")
+            .replace(tzinfo=SHANGHAI_TZ)
+            .astimezone(timezone.utc)
         )
     except (ValueError, TypeError):
         return None
@@ -64,7 +69,13 @@ async def fetch_and_store_akshare_news(symbol: str) -> int:
             """
             INSERT INTO news_articles (symbol, title, url, summary, publisher, published_at)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (url) DO NOTHING
+            ON CONFLICT (url) DO UPDATE SET
+                symbol = EXCLUDED.symbol,
+                title = EXCLUDED.title,
+                summary = EXCLUDED.summary,
+                publisher = EXCLUDED.publisher,
+                published_at = EXCLUDED.published_at,
+                fetched_at = NOW()
             """,
             rows,
         )

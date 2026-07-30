@@ -9,8 +9,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Treemap } from "recharts";
 
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/empty-state";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 export interface BoardItem {
   name: string;
@@ -19,16 +25,27 @@ export interface BoardItem {
   turnover_rate: number | null;
   leader_stock: string | null;
   leader_change: number | null;
+  snapshot_date?: string | null;
 }
 
+type BoardTerrainVariant = "default" | "dashboard";
+
 /** 红涨绿跌热力色（|3%| 饱和） */
-function heatColor(pct: number | null): string {
-  if (pct == null) return "rgba(107,114,128,0.25)";
+function heatColor(pct: number | null, dashboard: boolean): string {
+  if (!dashboard) {
+    if (pct == null) return "rgba(107,114,128,0.25)";
+    const t = Math.min(Math.abs(pct) / 3, 1);
+    const alpha = 0.25 + t * 0.75;
+    return pct >= 0
+      ? `rgba(240, 85, 107, ${alpha})`
+      : `rgba(32, 205, 141, ${alpha})`;
+  }
+
+  if (pct == null) return "var(--muted)";
   const t = Math.min(Math.abs(pct) / 3, 1);
-  const alpha = 0.25 + t * 0.75;
-  return pct >= 0
-    ? `rgba(240, 85, 107, ${alpha})`
-    : `rgba(32, 205, 141, ${alpha})`;
+  const weight = Math.round(30 + t * 60);
+  const color = pct >= 0 ? "var(--up)" : "var(--down)";
+  return `color-mix(in srgb, ${color} ${weight}%, var(--muted))`;
 }
 
 function Tile(props: {
@@ -39,12 +56,29 @@ function Tile(props: {
   name?: string;
   change?: number | null;
   leader?: string | null;
+  dashboard?: boolean;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, name = "", change, leader } = props;
+  const {
+    x = 0,
+    y = 0,
+    width = 0,
+    height = 0,
+    name = "",
+    change,
+    leader,
+    dashboard = false,
+  } = props;
   if (width < 6 || height < 6) return <g />;
-  const showName = width >= 56 && height >= 24;
-  const showPct = width >= 56 && height >= 40;
-  const showLeader = width >= 80 && height >= 56;
+  const showName = width >= 48 && height >= 22;
+  const showPct = width >= 48 && height >= 34;
+  const showLeader = !dashboard && width >= 80 && height >= 56;
+  const nameY = dashboard
+    ? showPct
+      ? y + height / 2 - 3
+      : y + height / 2 + 4
+    : y + 15;
+  const textX = dashboard ? x + width / 2 : x + 5;
+  const textAnchor = dashboard ? "middle" : "start";
   return (
     <g>
       <rect
@@ -52,31 +86,40 @@ function Tile(props: {
         y={y}
         width={width}
         height={height}
-        fill={heatColor(change ?? null)}
-        stroke="#090b11"
-        strokeWidth={1.5}
-        rx={2}
+        fill={heatColor(change ?? null, dashboard)}
+        stroke={dashboard ? "var(--card)" : "#090b11"}
+        strokeWidth={dashboard ? 4 : 1.5}
+        rx={dashboard ? 8 : 2}
       />
       {showName && (
         <text
-          x={x + 5}
-          y={y + 15}
-          fontSize={11}
+          x={textX}
+          y={nameY}
+          fontSize={dashboard ? 10 : 11}
           fontWeight={600}
-          fill="#fff"
+          fill={dashboard ? "var(--foreground)" : "#fff"}
+          textAnchor={textAnchor}
           style={{ pointerEvents: "none", userSelect: "none" }}
         >
-          {name.length * 11 > width - 10
-            ? `${name.slice(0, Math.max(2, Math.floor((width - 10) / 11) - 1))}…`
+          {name.length * (dashboard ? 10 : 11) > width - 10
+            ? `${name.slice(
+                0,
+                Math.max(
+                  2,
+                  Math.floor((width - 10) / (dashboard ? 10 : 11)) - 1
+                )
+              )}…`
             : name}
         </text>
       )}
       {showPct && change != null && (
         <text
-          x={x + 5}
-          y={y + 29}
+          x={textX}
+          y={dashboard ? y + height / 2 + 11 : y + 29}
           fontSize={10}
-          fill="rgba(255,255,255,0.85)"
+          fill={dashboard ? "var(--foreground)" : "rgba(255,255,255,0.85)"}
+          fillOpacity={dashboard ? 0.85 : 1}
+          textAnchor={textAnchor}
           style={{ pointerEvents: "none", userSelect: "none" }}
         >
           {`${change > 0 ? "+" : ""}${change.toFixed(2)}%`}
@@ -97,9 +140,25 @@ function Tile(props: {
   );
 }
 
-export function BoardTerrain({ items }: { items: BoardItem[] }) {
+function formatSnapshotDate(date?: string): string | null {
+  const match = date?.match(/^\d{4}-(\d{2})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}` : null;
+}
+
+export function BoardTerrain({
+  items,
+  variant = "default",
+  date,
+}: {
+  items: BoardItem[];
+  variant?: BoardTerrainVariant;
+  date?: string;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  const dashboard = variant === "dashboard";
+  const chartHeight = dashboard ? 172 : 520;
+  const snapshotDate = formatSnapshotDate(date);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -129,6 +188,20 @@ export function BoardTerrain({ items }: { items: BoardItem[] }) {
     }));
 
   if (data.length === 0) {
+    if (dashboard) {
+      return (
+        <Card size="sm" className="h-[219px] gap-2 py-3">
+          <CardHeader className="px-3">
+            <CardTitle className="text-xs font-semibold text-fg-dim">
+              板块热力&nbsp; A股 · 东财行业
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-1 items-center justify-center px-3">
+            <EmptyState compact title="等待板块数据" />
+          </CardContent>
+        </Card>
+      );
+    }
     return (
       <Card className="flex h-48 items-center justify-center">
         <EmptyState compact title="等待板块数据" />
@@ -136,17 +209,37 @@ export function BoardTerrain({ items }: { items: BoardItem[] }) {
     );
   }
 
-  return (
-    <div ref={containerRef} className="h-[520px] w-full">
+  const terrain = (
+    <div
+      ref={containerRef}
+      className={cn("w-full", dashboard ? "h-[172px]" : "h-[520px]")}
+    >
       {width > 0 && (
         <Treemap
           data={data}
           dataKey="size"
           width={Math.round(width)}
-          height={520}
-          content={<Tile />}
+          height={chartHeight}
+          content={<Tile dashboard={dashboard} />}
         />
       )}
     </div>
+  );
+
+  if (!dashboard) return terrain;
+
+  return (
+    <Card size="sm" className="h-[219px] gap-2 py-3">
+      <CardHeader className="flex-row items-center justify-between gap-3 px-3">
+        <CardTitle className="text-xs font-semibold text-fg-dim">
+          板块热力&nbsp; A股 · 东财行业
+        </CardTitle>
+        <div className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
+          <span>深 = 涨跌幅大</span>
+          {snapshotDate && <span>{snapshotDate}</span>}
+        </div>
+      </CardHeader>
+      <CardContent className="px-2">{terrain}</CardContent>
+    </Card>
   );
 }
