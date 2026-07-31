@@ -1,4 +1,5 @@
 """GET /api/search — 按代码/名称搜索标的（equity_profiles，全市场 ~1.9 万只）"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
@@ -7,6 +8,39 @@ from app.db import get_pool
 from app.markets import pick_market
 
 router = APIRouter()
+
+
+@router.get("/api/search/validate")
+async def validate_symbols(
+    symbols: str = Query(..., description="逗号分隔的规范股票代码"),
+):
+    """批量校验股票代码是否存在于已知全市场标的库。"""
+    sym_list = list(
+        dict.fromkeys(s.strip().upper() for s in symbols.split(",") if s.strip())
+    )[:100]
+    if not sym_list:
+        return []
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT symbol
+            FROM equity_profiles
+            WHERE symbol = ANY($1::text[])
+            UNION
+            SELECT DISTINCT symbol
+            FROM daily_prices
+            WHERE symbol = ANY($1::text[])
+            UNION
+            SELECT symbol
+            FROM quote_snapshots
+            WHERE symbol = ANY($1::text[])
+            """,
+            sym_list,
+        )
+    valid = {r["symbol"] for r in rows}
+    return [{"symbol": symbol} for symbol in sym_list if symbol in valid]
 
 
 @router.get("/api/search")

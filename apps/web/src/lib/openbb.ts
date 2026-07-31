@@ -149,7 +149,7 @@ export interface MoversItem {
   amount: number | null;
   /** 估算换手小数（成交额近似值 / 总市值），仅换手榜返回 */
   turnover: number | null;
-  /** movers_cache 日快照日期；CN/HK 跟踪标的报价没有此字段 */
+  /** movers_cache 日快照日期；港股跟踪标的报价没有此字段 */
   snapshot_date: string | null;
   /** quote_snapshots 更新时间；当前报价/换手榜使用 */
   updated_at: string | null;
@@ -160,22 +160,7 @@ export type MoversPrimaryData = Record<
   MoversItem[]
 >;
 
-// D8 完成前，A 股/港股异动榜仅覆盖这些跟踪标的。
-const DASHBOARD_CN_SYMBOLS = [
-  "600519.SH",
-  "601318.SH",
-  "600036.SH",
-  "000858.SZ",
-  "002594.SZ",
-  "300750.SZ",
-  "601012.SH",
-  "600900.SH",
-  "000001.SZ",
-  "601166.SH",
-  "600276.SH",
-  "601398.SH",
-];
-
+// 港股异动榜暂时只覆盖这些跟踪标的；CN/US 已走 movers_cache 全市场榜。
 const DASHBOARD_HK_SYMBOLS = [
   "00700.HK",
   "09988.HK",
@@ -245,8 +230,8 @@ function compareNullable(
 
 /**
  * 首页涨幅/跌幅/活跃榜。
- * - US：movers_cache 全市场榜，支持 date 日快照。
- * - CN/HK：D8 前使用跟踪标的当前报价，date 不适用。
+ * - CN/US：movers_cache 全市场榜，支持 date 日快照。
+ * - HK：使用跟踪标的当前报价，date 不适用。
  */
 export async function fetchMovers(
   type: Exclude<MoversType, "turnover">,
@@ -254,10 +239,8 @@ export async function fetchMovers(
   date?: string,
   limit: number = 6
 ): Promise<MoversItem[]> {
-  if (market === "cn" || market === "hk") {
-    const symbols =
-      market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS;
-    const quotes = await getEquityQuotes(symbols);
+  if (market === "hk") {
+    const quotes = await getEquityQuotes(DASHBOARD_HK_SYMBOLS);
     const items = quotes.map(quoteToMoversItem);
 
     items.sort((a, b) => {
@@ -275,7 +258,7 @@ export async function fetchMovers(
 
   const dateQuery = date ? `&date=${encodeURIComponent(date)}` : "";
   const data = await backendFetch<Partial<MoversItem>[]>(
-    `/api/movers?type=${type}&market=US&limit=${limit}${dateQuery}`
+    `/api/movers?type=${type}&market=${market.toUpperCase()}&limit=${limit}${dateQuery}`
   );
   if (!Array.isArray(data)) return [];
   return data
@@ -284,13 +267,13 @@ export async function fetchMovers(
     .slice(0, limit);
 }
 
-/** 首页三类主榜一次取齐；CN/HK 仅发起一次批量报价请求。 */
+/** 首页三类主榜一次取齐；港股仅发起一次批量报价请求。 */
 export async function fetchMoversPrimaryData(
   market: MoversMarket,
   date?: string,
   limit: number = 6
 ): Promise<MoversPrimaryData> {
-  if (market === "us") {
+  if (market !== "hk") {
     const [gainers, losers, active] = await Promise.all([
       fetchMovers("gainers", market, date, limit),
       fetchMovers("losers", market, date, limit),
@@ -299,9 +282,9 @@ export async function fetchMoversPrimaryData(
     return { gainers, losers, active };
   }
 
-  const symbols =
-    market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS;
-  const items = (await getEquityQuotes(symbols)).map(quoteToMoversItem);
+  const items = (await getEquityQuotes(DASHBOARD_HK_SYMBOLS)).map(
+    quoteToMoversItem
+  );
   const sorted = (
     field: "percent_change" | "amount",
     direction: "asc" | "desc"
@@ -326,9 +309,9 @@ export async function fetchMoversTurnover(
   limit: number = 6
 ): Promise<MoversItem[]> {
   const backendMarket = market.toUpperCase();
-  // quote_snapshots 仅是报价覆盖集，不是全市场；多取一些后再按首页
+  // quote_snapshots 仅是报价覆盖集，不是全市场；港股多取一些后再按
   // 跟踪集合过滤，避免逐标的 profile 请求拖慢默认涨幅榜。
-  const requestLimit = market === "us" ? limit : 100;
+  const requestLimit = market === "hk" ? 100 : limit;
   const data = await backendFetch<Partial<MoversItem>[]>(
     `/api/movers/turnover?market=${backendMarket}&limit=${requestLimit}`
   );
@@ -337,10 +320,8 @@ export async function fetchMoversTurnover(
     .map(normalizeMoversItem)
     .filter((item) => item.symbol);
 
-  if (market === "cn" || market === "hk") {
-    const tracked = new Set(
-      market === "cn" ? DASHBOARD_CN_SYMBOLS : DASHBOARD_HK_SYMBOLS
-    );
+  if (market === "hk") {
+    const tracked = new Set(DASHBOARD_HK_SYMBOLS);
     return normalized
       .filter((item) => tracked.has(item.symbol))
       .slice(0, limit);

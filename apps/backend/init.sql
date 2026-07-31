@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS daily_prices (
     low DECIMAL(12,4),
     close DECIMAL(12,4),
     volume BIGINT,
+    amount DECIMAL(24,4),
     UNIQUE(symbol, date)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_prices_symbol_date ON daily_prices(symbol, date DESC);
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS movers_cache (
     price DECIMAL(12,4),
     percent_change DECIMAL(8,6),
     volume BIGINT,
+    amount DECIMAL(24,4),
     snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

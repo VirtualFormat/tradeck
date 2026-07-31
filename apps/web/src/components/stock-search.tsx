@@ -37,11 +37,7 @@ export function StockSearch() {
   // 防抖搜索（最新一次请求生效，过期响应丢弃）
   useEffect(() => {
     const kw = query.trim();
-    if (!kw) {
-      setResults([]);
-      setOpen(false);
-      return;
-    }
+    if (!kw) return;
     const seq = ++seqRef.current;
     const timer = setTimeout(async () => {
       try {
@@ -78,7 +74,13 @@ export function StockSearch() {
       <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <CommandInput
         value={query}
-        onValueChange={setQuery}
+        onValueChange={(value) => {
+          setQuery(value);
+          if (!value.trim()) {
+            setResults([]);
+            setOpen(false);
+          }
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();

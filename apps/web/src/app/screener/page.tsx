@@ -28,8 +28,14 @@ import {
 } from "@/components/ui/table";
 import { PlusIcon, TrashIcon, StarIcon } from "@phosphor-icons/react";
 import { EmptyState } from "@/components/empty-state";
-
-const WATCHLIST_KEY = "tradeck-watchlist";
+import {
+  fetchValidQuotes,
+  parseWatchlist,
+  reconcileWatchlist,
+  validateWatchlistSymbols,
+  validateWatchlistSymbol,
+  WATCHLIST_KEY,
+} from "@/lib/watchlist";
 
 interface ScreenerItem {
   symbol: string;
@@ -81,31 +87,45 @@ export default function ScreenerPage() {
   const [screenerType, setScreenerType] = useState<ScreenerType>("gainers");
   const [screenerData, setScreenerData] = useState<ScreenerItem[]>([]);
   const [watchlistData, setWatchlistData] = useState<ScreenerItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   // 加载自选股
   useEffect(() => {
     const saved = localStorage.getItem(WATCHLIST_KEY);
-    if (saved) {
-      try {
-        setWatchlist(JSON.parse(saved));
-      } catch {
-        // ignore
-      }
-    }
+    if (!saved) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWatchlist(parseWatchlist(saved));
   }, []);
 
   // 保存自选股
   const saveWatchlist = useCallback((list: string[]) => {
     localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
     setWatchlist(list);
+    setWatchlistData((current) =>
+      current.filter((item) => list.includes(item.symbol))
+    );
   }, []);
 
-  function addToWatchlist(symbol: string) {
-    const trimmed = symbol.trim().toUpperCase();
-    if (!trimmed || watchlist.includes(trimmed)) return;
-    saveWatchlist([...watchlist, trimmed]);
-    setNewSymbol("");
+  async function addToWatchlist(symbol: string) {
+    setAddError(null);
+    setAdding(true);
+    try {
+      const result = await validateWatchlistSymbol(symbol);
+      if (!result.valid) {
+        setAddError("未找到该股票，请输入合法的股票代码");
+        return;
+      }
+      if (!watchlist.includes(result.symbol)) {
+        saveWatchlist([...watchlist, result.symbol]);
+      }
+      setNewSymbol("");
+    } catch {
+      setAddError("暂时无法校验股票代码，请稍后重试");
+    } finally {
+      setAdding(false);
+    }
   }
 
   function removeFromWatchlist(symbol: string) {
@@ -114,7 +134,6 @@ export default function ScreenerPage() {
 
   // 拉筛选数据
   useEffect(() => {
-    setLoading(true);
     fetch(`/api/screener?type=${screenerType}`)
       .then((r) => r.json())
       .then((data: ScreenerItem[]) => {
@@ -129,16 +148,25 @@ export default function ScreenerPage() {
 
   // 拉自选股报价
   useEffect(() => {
-    if (watchlist.length === 0) {
-      setWatchlistData([]);
-      return;
-    }
+    if (watchlist.length === 0) return;
+    let cancelled = false;
     // 加时间戳避免浏览器缓存
-    fetch(`/api/quotes?symbols=${watchlist.join(",")}&_t=${Date.now()}`)
-      .then((r) => r.json())
-      .then((data: ScreenerItem[]) => setWatchlistData(data))
+    validateWatchlistSymbols(watchlist)
+      .then(async (validSymbols) => {
+        if (cancelled) return;
+        const cleaned = reconcileWatchlist(watchlist, validSymbols);
+        if (cleaned.length !== watchlist.length) {
+          saveWatchlist(cleaned);
+        }
+        const data = await fetchValidQuotes<ScreenerItem>(cleaned);
+        if (cancelled) return;
+        setWatchlistData(data);
+      })
       .catch(() => setWatchlistData([]));
-  }, [watchlist]);
+    return () => {
+      cancelled = true;
+    };
+  }, [saveWatchlist, watchlist]);
 
   return (
     <div className="px-4 lg:px-6">
@@ -162,14 +190,28 @@ export default function ScreenerPage() {
               >
                 <Input
                   value={newSymbol}
-                  onChange={(e) => setNewSymbol(e.target.value)}
+                  onChange={(e) => {
+                    setNewSymbol(e.target.value);
+                    if (addError) setAddError(null);
+                  }}
                   placeholder="代码（如 AAPL）"
+                  aria-invalid={Boolean(addError)}
+                  aria-describedby={addError ? "watchlist-add-error" : undefined}
                   className="flex-1"
                 />
-                <Button type="submit" size="sm">
+                <Button type="submit" size="sm" disabled={adding}>
                   <PlusIcon className="h-3 w-3" />
                 </Button>
               </form>
+              {addError ? (
+                <p
+                  id="watchlist-add-error"
+                  role="alert"
+                  className="-mt-1 mb-3 text-xs text-destructive"
+                >
+                  {addError}
+                </p>
+              ) : null}
 
               {watchlistData.length > 0 ? (
                 <Table>
@@ -237,7 +279,10 @@ export default function ScreenerPage() {
               {/* 类型切换 */}
               <Tabs
                 value={screenerType}
-                onValueChange={(v) => setScreenerType(v as ScreenerType)}
+                onValueChange={(v) => {
+                  setLoading(true);
+                  setScreenerType(v as ScreenerType);
+                }}
                 className="mb-4 flex-row gap-0"
               >
                 <TabsList className="rounded-md border border-border bg-panel-2 p-0.5">

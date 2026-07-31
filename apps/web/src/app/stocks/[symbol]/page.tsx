@@ -152,6 +152,11 @@ export default async function StockDetailPage({
 
   // A 股判断（.SH 新标准/.SS/.SZ/.BJ）
   const isAShare = /\.(SH|SS|SZ|BJ)$/.test(symbol.toUpperCase());
+  const historyEnd = new Date();
+  const historyStart = new Date(historyEnd);
+  historyStart.setUTCDate(historyStart.getUTCDate() - 180);
+  const historyStartDate = historyStart.toISOString().slice(0, 10);
+  const historyEndDate = historyEnd.toISOString().slice(0, 10);
 
   // 并行拉取所有数据（全部读 backend DB，<50ms，无数据走空态）
   // profile/metrics：全市场都可读（A 股沪市经 yfinance 出向映射已可拉取）
@@ -163,10 +168,8 @@ export default async function StockDetailPage({
       isAShare ? Promise.resolve([]) : getIncomeStatements(symbol).catch(() => []),
       getEquityHistorical(
         symbol,
-        new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 10),
-        new Date().toISOString().slice(0, 10)
+        historyStartDate,
+        historyEndDate
       ).catch(() => []),
       getAnalystConsensus(symbol).catch(() => null),
       getBalanceSheets(symbol, "annual").catch(() => []),

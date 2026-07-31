@@ -67,8 +67,8 @@ async def _fetch_akshare_quotes(symbols: list[str]) -> list[dict]:
     return quotes
 
 
-async def fetch_and_store_quotes(symbols: list[str]) -> int:
-    """批量拉报价，写入 quote_snapshots。返回写入条数。"""
+async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]:
+    """批量拉报价并写库，返回各市场实际写入条数。"""
     # 按 provider 分组
     akshare_syms = [s for s in symbols if pick_provider(s) == "akshare"]
     yfinance_syms = [s for s in symbols if pick_provider(s) == "yfinance"]
@@ -102,7 +102,7 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
 
     if not all_quotes:
         logger.warning("No quotes fetched")
-        return 0
+        return {}
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -136,12 +136,33 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
             """,
             rows,
         )
-    logger.info(f"fetched {len(all_quotes)} quotes")
-    return len(all_quotes)
+    counts: dict[str, int] = {}
+    for row in rows:
+        market = row[6]
+        counts[market] = counts.get(market, 0) + 1
+    logger.info(
+        "quotes stored: "
+        + ", ".join(
+            f"{market}={counts.get(market, 0)}" for market in ("CN", "HK", "US")
+        )
+    )
+    return counts
+
+
+async def fetch_and_store_quotes(symbols: list[str]) -> int:
+    """兼容按需回源调用：批量拉报价并返回总写入条数。"""
+    counts = await fetch_and_store_quotes_by_market(symbols)
+    return sum(counts.values())
 
 
 async def run_realtime_quotes_job() -> None:
     """定时任务：轮询所有跟踪股票报价"""
     logger.info("=== realtime quotes job start ===")
-    count = await fetch_and_store_quotes(TRACKED_SYMBOLS)
-    logger.info(f"=== realtime quotes job done: {count} rows ===")
+    counts = await fetch_and_store_quotes_by_market(TRACKED_SYMBOLS)
+    logger.info(
+        "=== realtime quotes job done: "
+        + ", ".join(
+            f"{market}={counts.get(market, 0)}" for market in ("CN", "HK", "US")
+        )
+        + " ==="
+    )

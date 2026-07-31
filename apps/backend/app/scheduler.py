@@ -14,12 +14,12 @@ from app.jobs.board_sentiment import run_board_sentiment_job
 from app.jobs.akshare_news import run_akshare_news_job
 from app.jobs.fund_flow import run_fund_flow_job
 from app.jobs.news_score import run_news_score_job
-from app.jobs.daily_kline import needs_full_init, run_daily_kline_job
+from app.jobs.daily_kline import markets_needing_full_init, needs_full_init, run_daily_kline_job
 from app.jobs.analyst_consensus import run_analyst_consensus_job
 from app.jobs.fundamentals import run_fundamentals_job
 from app.jobs.indices import run_indices_job
 from app.jobs.macro import run_macro_job
-from app.jobs.movers import run_movers_job
+from app.jobs.movers import fetch_and_store_cn_movers, run_movers_job
 from app.jobs.news import run_news_job
 from app.jobs.earnings_calendar import run_earnings_calendar_job
 from app.jobs.economic_calendar import run_economic_calendar_job
@@ -39,10 +39,15 @@ _scheduler: AsyncIOScheduler | None = None
 # cron 错峰包装（APScheduler 只识别 coroutine function，lambda 返回协程不会被 await，必须用 async def）
 async def _daily_kline_cn_hk() -> None:
     await run_daily_kline_job(markets=("CN", "HK"))
+    await fetch_and_store_cn_movers()
 
 
 async def _daily_kline_us() -> None:
     await run_daily_kline_job(markets=("US",))
+
+
+async def _daily_cn_movers() -> None:
+    await fetch_and_store_cn_movers()
 
 
 async def start_scheduler() -> None:
@@ -88,6 +93,12 @@ async def start_scheduler() -> None:
         run_movers_job,
         CronTrigger(minute="*/5", timezone="UTC"),
         id="movers",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _daily_cn_movers,
+        CronTrigger(hour=9, minute=10, timezone="UTC"),
+        id="movers_cn",
         replace_existing=True,
     )
 
@@ -266,8 +277,9 @@ async def _initial_fetch() -> None:
     """启动后后台跑一轮所有 job（首启不用等 cron）"""
     logger.info("=== initial fetch ===")
     # 日K：未初始化（daily_prices < 100 万行）则全量拉一次——放最前，与其余预热并行（~30-60 分钟）
-    if await needs_full_init():
-        asyncio.create_task(run_daily_kline_job(full=True))
+    full_markets = await markets_needing_full_init()
+    if full_markets:
+        asyncio.create_task(run_daily_kline_job(full=True, markets=full_markets))
     await run_indices_job()
     await run_realtime_quotes_job()
     await run_movers_job()
@@ -290,6 +302,7 @@ async def _initial_fetch() -> None:
     await run_research_reports_job()
     await run_market_breadth_job()
     await run_market_breadth_global_job()
+    await fetch_and_store_cn_movers()
     await run_macro_assets_job()
     await run_cleanup_job()
     logger.info("=== initial fetch done ===")

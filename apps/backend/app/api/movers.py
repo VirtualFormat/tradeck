@@ -31,7 +31,8 @@ async def get_movers(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT rank, symbol, name, price, percent_change, volume, snapshot_date
+            SELECT rank, symbol, name, price, percent_change, volume, amount,
+                   snapshot_date, updated_at
             FROM movers_cache
             WHERE type = $1 AND market = $2
               AND snapshot_date = COALESCE(
@@ -53,10 +54,16 @@ async def get_movers(
             "name": r["name"],
             "price": float(r["price"]) if r["price"] else None,
             "change": None,
-            "percent_change": float(r["percent_change"]) if r["percent_change"] else None,
+            "percent_change": (
+                float(r["percent_change"]) if r["percent_change"] else None
+            ),
             "volume": r["volume"],
+            "amount": float(r["amount"]) if r["amount"] else None,
             "exchange": None,
-            "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
+            "snapshot_date": (
+                r["snapshot_date"].isoformat() if r["snapshot_date"] else None
+            ),
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]

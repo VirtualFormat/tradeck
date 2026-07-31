@@ -206,18 +206,30 @@ async def seed_daily_prices(conn, quotes: dict[str, tuple[float, float]]) -> int
             open_ = prev * (1 + rng.gauss(0, 0.004))
             high = max(open_, close) * (1 + abs(rng.gauss(0, 0.004)))
             low = min(open_, close) * (1 - abs(rng.gauss(0, 0.004)))
-            rows.append((
-                sym, market, d, round(open_, 2), round(high, 2),
-                round(low, 2), round(close, 2), rng.randint(1_000_000, 300_000_000),
-            ))
+            volume = rng.randint(1_000_000, 300_000_000)
+            rows.append(
+                (
+                    sym,
+                    market,
+                    d,
+                    round(open_, 2),
+                    round(high, 2),
+                    round(low, 2),
+                    round(close, 2),
+                    volume,
+                    round(close * volume, 2),
+                )
+            )
             prev = close
     await conn.executemany(
         """
-        INSERT INTO daily_prices (symbol, market, date, open, high, low, close, volume)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO daily_prices
+            (symbol, market, date, open, high, low, close, volume, amount)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (symbol, date) DO UPDATE SET
             open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-            close = EXCLUDED.close, volume = EXCLUDED.volume
+            close = EXCLUDED.close, volume = EXCLUDED.volume,
+            amount = EXCLUDED.amount
         """,
         rows,
     )
@@ -256,14 +268,26 @@ async def seed_movers(conn, quotes: dict[str, tuple[float, float]]) -> int:
     rows = []
     for mtype, group in (("gainers", gainers), ("losers", losers), ("active", active)):
         for rank, (sym, price, pct) in enumerate(group, 1):
-            rows.append((
-                mtype, "US", rank, sym, NAMES.get(sym, sym), price,
-                round(pct, 4), rng.randint(5_000_000, 800_000_000),
-            ))
+            volume = rng.randint(5_000_000, 800_000_000)
+            rows.append(
+                (
+                    mtype,
+                    "US",
+                    rank,
+                    sym,
+                    NAMES.get(sym, sym),
+                    price,
+                    round(pct, 4),
+                    volume,
+                    round(price * volume, 2),
+                )
+            )
     await conn.executemany(
         """
-        INSERT INTO movers_cache (type, market, rank, symbol, name, price, percent_change, volume, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        INSERT INTO movers_cache
+            (type, market, rank, symbol, name, price, percent_change,
+             volume, amount, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
         """,
         rows,
     )

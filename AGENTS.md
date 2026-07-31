@@ -182,7 +182,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 
 | 任务 | Cron | 数据源 | 写表 |
 |---|---|---|---|
-| 日 K 线（TickFlow universe 全市场 ~2 万只：CN 5528 + HK 2841 + US 11645；100 只/片批量并发，分片失败隔离；首启检测 daily_prices < 100 万行自动全量初始化一次 ~250 天，此后每日增量 5 天 UPSERT） | A/港 08:30、美股 21:30 每天 | TickFlow | daily_prices |
+| 日 K 线（TickFlow universe 全市场 ~2 万只：CN 5528 + HK 2841 + US 11645；100 只/片批量并发，分片失败隔离；首启按市场检查历史行数与最新交易日，缺失市场自动全量初始化 ~250 天，此后每日增量 5 天 UPSERT） | A/港 08:30、美股 21:30 每天 | TickFlow | daily_prices |
 | 技术指标（本地计算，tracked 100 只） | 09:00 / 22:00 每天 | —（读 daily_prices） | technical_indicators |
 | 实时报价 | 每 30 分钟 | yfinance/akshare | quote_snapshots |
 | 指数历史（^GSPC ^IXIC ^DJI ^HSI ^HSCEI 000001.SS 399001.SZ 399006.SZ ^N225 ^STOXX50E ^VIX + GC=F CL=F SI=F HG=F BTC-USD，共 16 个符号） | 17:00 每天 | yfinance | index_prices |
@@ -276,8 +276,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 > 已分析定案、待实施的事项；做完一项删一行。
 
 - [ ] **A 股报价兜底（纯数据层）**：`realtime_quotes` akshare 失败时从 `daily_prices` 最近两根日K 回填 `quote_snapshots`（延迟一天，东财实时优先）。恢复 CN 涨跌榜（预定义列表排序版）/换手榜/涨跌平 donut/个股报价。
-- [ ] **A 股全市场涨跌榜（数据层 + 前端 1 处）**：`movers.py` 加 CN 分支，`daily_prices` 全市场算涨跌幅/成交量 top 20 写 `movers_cache`（`snapshot_date` = K线日，兼容 `?date=` 回看）；前端 `movers-board.tsx` CN 分支从「预定义列表 + quotes 排序」切到 `/api/movers?market=CN`。
-  - 子项：`daily_prices` 加 `amount`（成交额）列（tickflow_source 字段映射 + init.sql），活跃榜按成交额排。
 - [ ] **板块热度/资金流的东财替代**（CVM 部署后实测 `stock_zh_a_spot_em`；被封则：降速/改 UA 自写慢分页 → 代理出口 → 接受缺失）。
 - [ ] **CN 指数迁 TickFlow（可选 P3）**：`000001.SH`/`399006.SZ` 等（免费档实测可用），减少 yfinance 依赖；存量 `.SS` 数据处理需先决策。
 - [ ] **个股页市值货币符号**：`fmtBigNumber` 硬编码 `$`，CNY/HKD 资产应按 currency 显示（cosmetic）。

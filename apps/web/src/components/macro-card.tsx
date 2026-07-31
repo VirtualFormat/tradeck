@@ -70,7 +70,10 @@ export function MacroCard({ label, value, change, date, href, hist }: MacroCardP
     <Link href={href} className="block">
       <Card className="@container/card gap-0 bg-linear-to-t from-primary/5 to-card shadow-xs transition-colors hover:ring-accent/50 dark:bg-card">
         <CardHeader className="pb-1">
-          <CardDescription>{label}</CardDescription>
+          <CardDescription>
+            {label}
+            {date ? ` · ${date}` : ""}
+          </CardDescription>
           <CardTitle
             className={`text-base font-semibold tabular-nums ${trendColor}`}
           >

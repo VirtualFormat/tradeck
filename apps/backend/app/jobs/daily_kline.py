@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from app.datasource import tickflow_source
 from app.db import get_pool
@@ -51,8 +52,18 @@ _UNIVERSES = [
 _INCREMENTAL_COUNT = 5  # 每日增量天数（UPSERT 覆盖周末/节假日缺口）
 _FULL_COUNT = 250  # 全量初始化天数（约一年）
 
-# 全量初始化判定：daily_prices 低于此行数视为未初始化
-FULL_KLINE_MIN_ROWS = 1_000_000
+# 全量初始化判定：不仅看总行数，还要求三市各自有足够历史行和近期交易日覆盖，
+# 避免历史行数足够但增量任务长期漏跑时被旧数据掩盖。
+FULL_KLINE_MIN_ROWS = {
+    "CN": 850_000,
+    "HK": 500_000,
+    "US": 1_500_000,
+}
+FULL_KLINE_MAX_AGE_DAYS = {
+    "CN": 2,
+    "HK": 2,
+    "US": 3,
+}
 
 # UPSERT 单批行数上限（全量初始化单个 universe 可达百万行，分批写）
 _UPSERT_BATCH = 50_000
@@ -78,7 +89,7 @@ async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
                 continue
             rows.append(
                 (symbol, market, r["date"], r["open"], r["high"],
-                 r["low"], r["close"], r["volume"])
+                 r["low"], r["close"], r["volume"], r.get("amount"))
             )
     if not rows:
         return 0
@@ -87,12 +98,14 @@ async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
         for i in range(0, len(rows), _UPSERT_BATCH):
             await conn.executemany(
                 """
-                INSERT INTO daily_prices (symbol, market, date, open, high, low, close, volume)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO daily_prices
+                    (symbol, market, date, open, high, low, close, volume, amount)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (symbol, date) DO UPDATE SET
                     open = EXCLUDED.open, high = EXCLUDED.high,
                     low = EXCLUDED.low, close = EXCLUDED.close,
-                    volume = EXCLUDED.volume
+                    volume = EXCLUDED.volume,
+                    amount = EXCLUDED.amount
                 """,
                 rows[i : i + _UPSERT_BATCH],
             )
@@ -196,8 +209,29 @@ async def run_daily_kline_job(
 
 
 async def needs_full_init() -> bool:
-    """daily_prices 数据量低于阈值 → 需要全量初始化（启动时调用）。"""
+    """任一市场历史量不足或最新 K 过旧 → 需要全量初始化。"""
+    return bool(await markets_needing_full_init())
+
+
+async def markets_needing_full_init() -> tuple[str, ...]:
+    """返回历史行数不足或最新 K 过旧、需要全量补齐的市场。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        n = await conn.fetchval("SELECT count(*) FROM daily_prices")
-    return (n or 0) < FULL_KLINE_MIN_ROWS
+        rows = await conn.fetch(
+            """
+            SELECT market, count(*) AS rows, max(date) AS latest_date
+            FROM daily_prices
+            GROUP BY market
+            """
+        )
+    stats = {
+        r["market"]: (int(r["rows"]), r["latest_date"])
+        for r in rows
+    }
+    return tuple(
+        market
+        for market, minimum in FULL_KLINE_MIN_ROWS.items()
+        if stats.get(market, (0, None))[0] < minimum
+        or stats.get(market, (0, None))[1] is None
+        or (date.today() - stats[market][1]).days > FULL_KLINE_MAX_AGE_DAYS[market]
+    )

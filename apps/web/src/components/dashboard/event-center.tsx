@@ -3,6 +3,7 @@ import type {
   EventCenterItem,
   EventImportance,
 } from "@/components/dashboard/event-center-tabs";
+import { EventDetailDialog } from "@/components/dashboard/event-detail-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -92,6 +93,17 @@ function economicItem(
     title: eventTitle(event),
     importance: importance.label,
     importanceLevel: importance.level,
+    kind: "economic",
+    date: event.event_date,
+    time: event.event_time,
+    country: event.country,
+    actual: event.actual,
+    forecast: event.forecast,
+    previous: event.previous,
+    source: event.source,
+    symbol: null,
+    epsEstimate: null,
+    session: null,
   };
 }
 
@@ -109,6 +121,17 @@ function earningsItem(
     title: `${earning.symbol} 财报`,
     importance: "财报",
     importanceLevel: "earnings",
+    kind: "earnings",
+    date: earning.report_date,
+    time: null,
+    country: null,
+    actual: null,
+    forecast: null,
+    previous: null,
+    source: earning.source,
+    symbol: earning.symbol,
+    epsEstimate: earning.eps_estimate,
+    session,
   };
 }
 
@@ -148,30 +171,37 @@ function WeeklyHighlights({ events }: { events: EconomicCalendarItem[] }) {
         {highlights.length > 0 ? (
           <div className="flex flex-col">
             {highlights.map((event, index) => {
-              const importance = normalizeImportance(event.importance);
+              const item = economicItem(
+                event,
+                index,
+                shortDate(event.event_date)
+              );
               return (
-                <div
+                <EventDetailDialog
                   key={`${event.event_date}-${event.event_name}-${index}`}
-                  className="flex min-h-7 items-center gap-2 border-b border-border/60 py-1 last:border-b-0"
+                  item={item}
+                  triggerClassName="min-h-7 border-b border-border/60 last:border-b-0"
                 >
-                  <Badge
-                    variant="secondary"
-                    className="h-4 shrink-0 rounded-sm px-1.5 py-0 font-mono text-[10px] font-medium tabular-nums"
-                  >
-                    {shortDate(event.event_date)}
-                  </Badge>
-                  <span className="min-w-0 flex-1 truncate text-xs text-foreground">
-                    {eventTitle(event)}
+                  <span className="flex w-full min-w-0 items-center gap-2">
+                    <Badge
+                      variant="secondary"
+                      className="h-4 shrink-0 rounded-sm px-1.5 py-0 font-mono text-[10px] font-medium tabular-nums"
+                    >
+                      {shortDate(event.event_date)}
+                    </Badge>
+                    <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+                      {eventTitle(event)}
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 text-[11px] font-medium",
+                        highlightImportanceClass(item.importanceLevel)
+                      )}
+                    >
+                      {item.importance}
+                    </span>
                   </span>
-                  <span
-                    className={cn(
-                      "shrink-0 text-[11px] font-medium",
-                      highlightImportanceClass(importance.level)
-                    )}
-                  >
-                    {importance.label}
-                  </span>
-                </div>
+                </EventDetailDialog>
               );
             })}
           </div>

@@ -33,7 +33,7 @@ const TYPES: { value: MoversType; label: string }[] = [
 ];
 
 function isCurrentData(type: MoversType, market: MoversMarket): boolean {
-  return type === "turnover" || market !== "us";
+  return type === "turnover" || market === "hk";
 }
 
 function shortDate(value: string | null | undefined): string | null {
@@ -54,6 +54,33 @@ function shortTime(value: string | null | undefined): string | null {
   }).format(date);
 }
 
+function fullDateTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(date);
+}
+
+function isStaleCurrentData(
+  values: Array<string | null | undefined>,
+  market: MoversMarket,
+  type: MoversType
+): boolean {
+  const timestamps = values
+    .map((value) => (value ? new Date(value).getTime() : Number.NaN))
+    .filter((timestamp) => !Number.isNaN(timestamp));
+  if (timestamps.length === 0) return false;
+  const maxAgeHours = market === "us" && type === "turnover" ? 36 : 18;
+  return Date.now() - Math.min(...timestamps) > maxAgeHours * 60 * 60 * 1000;
+}
+
 function getDataLabel(
   type: MoversType,
   market: MoversMarket,
@@ -62,8 +89,16 @@ function getDataLabel(
 ): string {
   const first = data[type][0];
 
-  // 换手榜全部来自当前报价；CN/HK 三榜也是跟踪标的当前报价。
+  // 换手榜来自报价；港股三榜也是跟踪标的报价。
   if (isCurrentData(type, market)) {
+    const updatedValues = data[type].map((item) => item.updated_at);
+    if (isStaleCurrentData(updatedValues, market, type)) {
+      const oldest = updatedValues
+        .filter((value): value is string => Boolean(value))
+        .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+      const dateTime = fullDateTime(oldest);
+      return dateTime ? `数据延迟 · ${dateTime}` : "数据延迟";
+    }
     const time = shortTime(first?.updated_at);
     return time ? `当前 · ${time}` : "当前";
   }
@@ -88,7 +123,7 @@ export function MoversTabs({
     [activeType, market, date, data]
   );
   const scopeLabel =
-    market === "us" && activeType !== "turnover"
+    market !== "hk" && activeType !== "turnover"
       ? "全市场"
       : activeType === "turnover"
         ? "报价覆盖"

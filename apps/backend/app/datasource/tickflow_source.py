@@ -77,7 +77,7 @@ def _row_date(v: Any) -> date | None:
 
 
 def _df_to_rows(df: Any) -> list[dict]:
-    """TickFlow DataFrame → [{date, open, high, low, close, volume}]。"""
+    """TickFlow DataFrame → [{date, open, high, low, close, volume, amount}]。"""
     if df is None or df.empty:
         return []
     rows: list[dict] = []
@@ -94,6 +94,7 @@ def _df_to_rows(df: Any) -> list[dict]:
                 "low": getattr(r, "low", None),
                 "close": close,
                 "volume": getattr(r, "volume", None),
+                "amount": getattr(r, "amount", None),
             }
         )
     return rows

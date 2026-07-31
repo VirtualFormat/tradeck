@@ -11,8 +11,13 @@ import { CaretRightIcon } from "@phosphor-icons/react";
 import { EmptyState } from "@/components/empty-state";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-const WATCHLIST_KEY = "tradeck-watchlist";
+import {
+  fetchValidQuotes,
+  parseWatchlist,
+  reconcileWatchlist,
+  validateWatchlistSymbols,
+  WATCHLIST_KEY,
+} from "@/lib/watchlist";
 
 interface QuoteItem {
   symbol: string;
@@ -33,26 +38,26 @@ export function WatchlistStrip() {
     const saved = localStorage.getItem(WATCHLIST_KEY);
     if (!saved) return;
 
-    try {
-      const list: unknown = JSON.parse(saved);
-      // localStorage 只能在挂载后读取，避免服务端与客户端首屏不一致。
-      if (Array.isArray(list)) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setWatchlist(list.filter((item) => typeof item === "string"));
-      }
-    } catch {
-      // 损坏的本地数据按空自选降级。
-    }
+    const list = parseWatchlist(saved);
+    // localStorage 只能在挂载后读取，避免服务端与客户端首屏不一致。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWatchlist(list);
   }, []);
 
   useEffect(() => {
     if (watchlist.length === 0) return;
 
     let cancelled = false;
-    fetch(`/api/quotes?symbols=${watchlist.join(",")}&_t=${Date.now()}`)
-      .then((response) => response.json())
-      .then((data: QuoteItem[]) => {
-        if (cancelled || !Array.isArray(data)) return;
+    validateWatchlistSymbols(watchlist)
+      .then(async (validSymbols) => {
+        if (cancelled) return;
+        const cleaned = reconcileWatchlist(watchlist, validSymbols);
+        if (cleaned.length !== watchlist.length) {
+          localStorage.setItem(WATCHLIST_KEY, JSON.stringify(cleaned));
+          setWatchlist(cleaned);
+        }
+        const data = await fetchValidQuotes<QuoteItem>(cleaned);
+        if (cancelled) return;
         const map: Record<string, number | null> = {};
         for (const item of data) {
           if (item?.symbol) map[item.symbol] = item.change_percent ?? null;
