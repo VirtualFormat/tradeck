@@ -11,6 +11,8 @@ const TITLES: Record<string, string> = {
   "/heatmap": "热力图",
   "/news": "新闻流",
   "/macro": "宏观数据",
+  "/global": "全球宏观",
+  "/data": "数据中心",
 }
 
 function titleFromPath(pathname: string): string {

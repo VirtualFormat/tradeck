@@ -1,7 +1,6 @@
 /**
- * 任务进度 API 路由
+ * 数据任务状态 API 代理
  * GET /api/system/jobs
- * 代理 tradeck backend（内存进度注册表）
  */
 import { NextResponse } from "next/server";
 
@@ -15,12 +14,11 @@ export async function GET() {
       cache: "no-store",
     });
     if (!res.ok) {
-      return NextResponse.json([]);
+      return NextResponse.json([], { status: res.status });
     }
-    const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(await res.json());
   } catch (err) {
-    console.error("system/jobs proxy failed:", err);
-    return NextResponse.json([]);
+    console.error("system jobs proxy failed:", err);
+    return NextResponse.json([], { status: 502 });
   }
 }

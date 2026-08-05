@@ -843,6 +843,7 @@ export async function fetchMarketInternals(
 export interface JobProgress {
   job: string;
   label: string;
+  trigger: "schedule" | "startup" | "manual";
   status: "running" | "done" | "error";
   processed: number;
   total: number;
@@ -850,4 +851,43 @@ export interface JobProgress {
   note: string;
   started_at: string;
   finished_at: string | null;
+}
+
+export interface DataJob {
+  id: string;
+  label: string;
+  description: string;
+  source: string;
+  schedule: string;
+  tables: string[];
+  allow_manual: boolean;
+  status: "idle" | "running" | "done" | "error";
+  last_run: JobProgress | null;
+  next_run_at: string | null;
+}
+
+export interface DataTableStat {
+  name: string;
+  row_count: number;
+  total_bytes: number;
+}
+
+export interface DailyMarketStat {
+  market: "CN" | "HK" | "US";
+  row_count: number;
+  latest_date: string | null;
+}
+
+export interface DataSystemSnapshot {
+  jobs: DataJob[];
+  tables: DataTableStat[];
+  daily_markets: DailyMarketStat[];
+  summary: {
+    job_count: number;
+    running_count: number;
+    error_count: number;
+    table_count: number;
+    total_rows: number;
+    total_bytes: number;
+  };
 }

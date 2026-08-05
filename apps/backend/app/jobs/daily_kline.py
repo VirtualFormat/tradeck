@@ -150,7 +150,9 @@ async def _backfill_names(tf_symbols: list[str], market: str) -> int:
 
 
 async def run_daily_kline_job(
-    full: bool = False, markets: tuple[str, ...] | None = None
+    full: bool = False,
+    markets: tuple[str, ...] | None = None,
+    trigger: str = "schedule",
 ) -> int:
     """日K job：TickFlow universe 全市场批量拉取。
 
@@ -165,30 +167,35 @@ async def run_daily_kline_job(
         logger.info(f"=== {label} already running, skip ===")
         return 0
     logger.info(f"=== {label} start (count={count}) ===")
-
-    todo = [(u, m) for u, m in _UNIVERSES if markets is None or m in markets]
-    universe_symbols: list[tuple[str, str, list[str]]] = []
-    total = 0
-    for universe_id, market in todo:
-        syms = await tickflow_source.get_universe_symbols(universe_id)
-        if not syms:
-            logger.warning(f"universe {universe_id} empty, skipped")
-            continue
-        universe_symbols.append((universe_id, market, syms))
-        total += len(syms)
-    if not total:
-        logger.warning(f"=== {label}: no symbols, abort ===")
-        return 0
-
-    progress.job_start(job_id, label, total)
+    run_started_at = progress.job_start(job_id, label, 0, trigger=trigger)
     processed = 0
     written = 0
     try:
+        todo = [
+            (universe, market)
+            for universe, market in _UNIVERSES
+            if markets is None or market in markets
+        ]
+        universe_symbols: list[tuple[str, str, list[str]]] = []
+        total = 0
+        for universe_id, market in todo:
+            syms = await tickflow_source.get_universe_symbols(universe_id)
+            if not syms:
+                logger.warning(f"universe {universe_id} empty, skipped")
+                continue
+            universe_symbols.append((universe_id, market, syms))
+            total += len(syms)
+        if not total:
+            logger.warning(f"=== {label}: no symbols, abort ===")
+            progress.job_done(job_id, "未获取到可用标的", run_started_at)
+            return 0
+
+        progress.job_set_total(job_id, total, run_started_at)
         for universe_id, market, syms in universe_symbols:
             base = processed
 
             def on_chunk(done: int, _total: int, _base: int = base) -> None:
-                progress.job_update(job_id, _base + done)
+                progress.job_update(job_id, _base + done, run_started_at)
 
             klines = await tickflow_source.get_daily_klines_batch(
                 syms, count=count, on_chunk=on_chunk
@@ -196,14 +203,14 @@ async def run_daily_kline_job(
             written += await _upsert_klines(klines, market)
             await _backfill_names(syms, market)
             processed += len(syms)
-            progress.job_update(job_id, processed)
+            progress.job_update(job_id, processed, run_started_at)
             logger.info(
                 f"{label}: {universe_id} done ({len(syms)} symbols, {len(klines)} with data)"
             )
-        progress.job_done(job_id, f"写入 {written} 行")
+        progress.job_done(job_id, f"写入 {written} 行", run_started_at)
         logger.info(f"=== {label} done: {written} rows ===")
     except Exception as e:  # noqa: BLE001
-        progress.job_error(job_id, str(e)[:200])
+        progress.job_error(job_id, str(e)[:200], run_started_at)
         raise
     return written
 

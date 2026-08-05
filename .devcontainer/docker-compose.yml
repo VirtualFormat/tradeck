@@ -63,6 +63,7 @@ services:
       # 海外节点（可选）：为空则海外源回落国内 openbb
       OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
+      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
       # dev 启动自动灌假数据（默认开；可用环境变量 DEV_SEED= 临时关）
       DEV_SEED: "${DEV_SEED-1}"
     volumes:
@@ -101,6 +102,8 @@ services:
       retries: 3
     networks:
       - dev-net
+    # dev 仅启 1 个 worker，避免本地 OpenBB 占用约 1.3 GiB；prod Dockerfile 仍保留 4 workers
+    command: ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "1"]
 
 volumes:
   dev-node-modules:

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -135,9 +135,12 @@ export function EventDetailDialog({
             </div>
             {item.symbol ? (
               <DialogFooter>
-                <Button render={<Link href={`/stocks/${item.symbol}`} />}>
+                <Link
+                  href={`/stocks/${item.symbol}`}
+                  className={buttonVariants()}
+                >
                   查看个股详情
-                </Button>
+                </Link>
               </DialogFooter>
             ) : null}
           </>

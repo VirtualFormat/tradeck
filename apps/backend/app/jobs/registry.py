@@ -1,0 +1,436 @@
+"""数据任务目录与统一运行入口。
+
+所有手动同步必须通过白名单目录触发；统一负责防重入、进度记录与异常收口。
+日 K 自带按标的进度上报，其他任务按一次运行记为 0 → 100%。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import Awaitable, Callable
+
+from app.jobs import progress
+from app.jobs.akshare_news import run_akshare_news_job
+from app.jobs.analyst_consensus import run_analyst_consensus_job
+from app.jobs.announcements import run_announcements_job
+from app.jobs.board_heat import run_board_heat_job
+from app.jobs.board_map import run_board_map_job
+from app.jobs.board_sentiment import run_board_sentiment_job
+from app.jobs.cleanup import run_cleanup_job
+from app.jobs.daily_kline import run_daily_kline_job
+from app.jobs.earnings_calendar import run_earnings_calendar_job
+from app.jobs.economic_calendar import run_economic_calendar_job
+from app.jobs.fund_flow import run_fund_flow_job
+from app.jobs.fundamentals import run_fundamentals_job
+from app.jobs.indices import run_indices_job
+from app.jobs.macro import run_macro_job
+from app.jobs.macro_assets import run_macro_assets_job
+from app.jobs.market_breadth import run_market_breadth_job
+from app.jobs.market_breadth_global import run_market_breadth_global_job
+from app.jobs.movers import fetch_and_store_cn_movers, run_movers_job
+from app.jobs.news import run_news_job
+from app.jobs.news_score import run_news_score_job
+from app.jobs.realtime_quotes import run_realtime_quotes_job
+from app.jobs.research_reports import run_research_reports_job
+from app.jobs.technical_indicators import run_technical_indicators_job
+
+logger = logging.getLogger(__name__)
+
+JobCallable = Callable[[], Awaitable[object]]
+
+
+@dataclass(frozen=True)
+class JobDefinition:
+    id: str
+    label: str
+    description: str
+    source: str
+    schedule: str
+    tables: tuple[str, ...]
+    runner: JobCallable
+    managed_progress: bool = False
+    allow_manual: bool = True
+    concurrency_group: str | None = None
+
+
+async def _movers_cn() -> int:
+    return await fetch_and_store_cn_movers()
+
+
+JOB_DEFINITIONS = (
+    JobDefinition(
+        "daily_kline",
+        "日 K 每日更新",
+        "TickFlow 全市场近 5 个交易日增量 UPSERT",
+        "TickFlow",
+        "A/港 08:30；美股 21:30 UTC",
+        ("daily_prices", "equity_profiles"),
+        run_daily_kline_job,
+        managed_progress=True,
+        concurrency_group="daily_kline",
+    ),
+    JobDefinition(
+        "daily_kline_full",
+        "日 K 全量初始化",
+        "TickFlow 全市场近 250 个交易日全量补齐，耗时较长",
+        "TickFlow",
+        "启动时按市场缺口自动触发",
+        ("daily_prices", "equity_profiles"),
+        run_daily_kline_job,
+        managed_progress=True,
+        concurrency_group="daily_kline",
+    ),
+    JobDefinition(
+        "realtime_quotes",
+        "实时报价",
+        "跟踪标的最新报价快照",
+        "akshare / yfinance",
+        "每 30 分钟",
+        ("quote_snapshots",),
+        run_realtime_quotes_job,
+    ),
+    JobDefinition(
+        "indices",
+        "指数与商品历史",
+        "全球指数、波动率与商品历史行情",
+        "yfinance",
+        "每天 17:00 UTC",
+        ("index_prices",),
+        run_indices_job,
+    ),
+    JobDefinition(
+        "movers",
+        "美股涨跌榜",
+        "美股涨幅、跌幅与活跃榜快照",
+        "yfinance",
+        "每 5 分钟",
+        ("movers_cache",),
+        run_movers_job,
+    ),
+    JobDefinition(
+        "movers_cn",
+        "A 股涨跌榜",
+        "基于日 K 全市场数据生成 A 股榜单",
+        "本地计算",
+        "每天 09:10 UTC",
+        ("movers_cache",),
+        _movers_cn,
+    ),
+    JobDefinition(
+        "news",
+        "海外新闻",
+        "跟踪标的海外新闻聚合",
+        "yfinance",
+        "每 30 分钟",
+        ("news_articles",),
+        run_news_job,
+    ),
+    JobDefinition(
+        "akshare_news",
+        "A 股新闻",
+        "跟踪 A 股的东方财富新闻",
+        "akshare",
+        "每 30 分钟",
+        ("news_articles",),
+        run_akshare_news_job,
+    ),
+    JobDefinition(
+        "news_score",
+        "新闻情绪打分",
+        "对新增新闻进行本地关键词情绪评分",
+        "本地规则",
+        "每 30 分钟",
+        ("news_articles",),
+        run_news_score_job,
+    ),
+    JobDefinition(
+        "macro",
+        "宏观指标",
+        "CPI、GDP、失业率与基准利率",
+        "OECD / Federal Reserve",
+        "每天 06:00 UTC",
+        ("macro_indicators",),
+        run_macro_job,
+    ),
+    JobDefinition(
+        "economic_calendar",
+        "宏观数据日历",
+        "未来宏观数据发布事件",
+        "FRED / akshare",
+        "每天 06:30 UTC",
+        ("economic_calendar",),
+        run_economic_calendar_job,
+    ),
+    JobDefinition(
+        "earnings_calendar",
+        "财报日历",
+        "跟踪美股与港股的未来财报日期",
+        "yfinance",
+        "每天 12:00 UTC",
+        ("earnings_calendar",),
+        run_earnings_calendar_job,
+    ),
+    JobDefinition(
+        "fundamentals",
+        "公司与财务数据",
+        "公司资料、指标、利润表、资产负债表与现金流量表",
+        "SEC / yfinance",
+        "每周一 07:00 UTC",
+        (
+            "equity_profiles",
+            "fundamental_metrics",
+            "income_statements",
+            "balance_sheets",
+            "cash_flow_statements",
+        ),
+        run_fundamentals_job,
+    ),
+    JobDefinition(
+        "analyst_consensus",
+        "分析师共识",
+        "评级、分析师数量与目标价快照",
+        "yfinance",
+        "每天 21:00 UTC",
+        ("analyst_consensus",),
+        run_analyst_consensus_job,
+    ),
+    JobDefinition(
+        "board_heat",
+        "板块行情热度",
+        "A 股概念与行业板块行情",
+        "akshare",
+        "每 30 分钟",
+        ("board_heat",),
+        run_board_heat_job,
+    ),
+    JobDefinition(
+        "board_map",
+        "板块归属映射",
+        "从板块成分股反解股票归属",
+        "akshare",
+        "每周一 08:00 UTC",
+        ("symbol_board_map",),
+        run_board_map_job,
+    ),
+    JobDefinition(
+        "board_sentiment",
+        "板块舆情聚合",
+        "按板块聚合新闻数量与情绪热度",
+        "本地计算",
+        "每 30 分钟",
+        ("board_sentiment",),
+        run_board_sentiment_job,
+    ),
+    JobDefinition(
+        "fund_flow",
+        "个股资金流向",
+        "A 股主力资金流即时榜",
+        "akshare",
+        "每 5 分钟",
+        ("fund_flow",),
+        run_fund_flow_job,
+    ),
+    JobDefinition(
+        "technical_indicators",
+        "技术指标",
+        "从日 K 本地计算均线、MACD、RSI 与布林带",
+        "本地计算",
+        "每天 09:00 / 22:00 UTC",
+        ("technical_indicators",),
+        run_technical_indicators_job,
+    ),
+    JobDefinition(
+        "announcements",
+        "A 股公告",
+        "跟踪 A 股的全市场公告过滤结果",
+        "akshare",
+        "每天 10:30 UTC",
+        ("announcements",),
+        run_announcements_job,
+    ),
+    JobDefinition(
+        "research_reports",
+        "A 股券商研报",
+        "跟踪 A 股近 90 天券商研报",
+        "akshare",
+        "每周一 09:00 UTC",
+        ("research_reports",),
+        run_research_reports_job,
+    ),
+    JobDefinition(
+        "market_breadth",
+        "A 股市场宽度",
+        "涨跌家数、涨跌停与活跃度",
+        "akshare",
+        "每 30 分钟",
+        ("market_breadth",),
+        run_market_breadth_job,
+    ),
+    JobDefinition(
+        "market_breadth_global",
+        "美港市场宽度",
+        "从全市场日 K 计算美股与港股涨跌家数",
+        "本地计算",
+        "每天 09:05 / 22:05 UTC",
+        ("market_breadth",),
+        run_market_breadth_global_job,
+    ),
+    JobDefinition(
+        "macro_assets",
+        "宏观资产与收益率曲线",
+        "美元、离岸人民币、ETF 与美国国债收益率",
+        "yfinance / Federal Reserve",
+        "每天 21:30 UTC",
+        ("macro_asset_prices", "yield_curve_rates"),
+        run_macro_assets_job,
+    ),
+    JobDefinition(
+        "cleanup",
+        "过期数据清理",
+        "按 TTL 清理快照与历史缓存",
+        "本地维护",
+        "每天 03:00 UTC",
+        (
+            "movers_cache",
+            "board_heat",
+            "board_sentiment",
+            "fund_flow",
+            "news_articles",
+        ),
+        run_cleanup_job,
+        allow_manual=False,
+    ),
+)
+
+_JOB_MAP = {job.id: job for job in JOB_DEFINITIONS}
+_active_jobs: set[str] = set()
+_active_groups: set[str] = set()
+
+
+def _group_key(job: JobDefinition) -> str:
+    return job.concurrency_group or job.id
+
+
+def _reserve_job(job: JobDefinition) -> bool:
+    group = _group_key(job)
+    if (
+        job.id in _active_jobs
+        or group in _active_groups
+        or progress.is_running(job.id)
+    ):
+        return False
+    _active_jobs.add(job.id)
+    _active_groups.add(group)
+    return True
+
+
+def _release_job(job: JobDefinition) -> None:
+    _active_jobs.discard(job.id)
+    _active_groups.discard(_group_key(job))
+
+
+def get_job_definition(job_id: str) -> JobDefinition | None:
+    return _JOB_MAP.get(job_id)
+
+
+def job_catalog() -> list[dict]:
+    """返回前端展示所需的任务元数据。"""
+    return [
+        {
+            "id": job.id,
+            "label": job.label,
+            "description": job.description,
+            "source": job.source,
+            "schedule": job.schedule,
+            "tables": list(job.tables),
+            "allow_manual": job.allow_manual,
+        }
+        for job in JOB_DEFINITIONS
+    ]
+
+
+def _result_note(result: object) -> str:
+    if isinstance(result, bool):
+        return "同步完成"
+    if isinstance(result, int):
+        return f"处理 {result:,} 行"
+    if isinstance(result, dict):
+        numeric = [int(value) for value in result.values() if isinstance(value, int)]
+        if numeric:
+            return f"处理 {sum(numeric):,} 行"
+    return "同步完成"
+
+
+async def run_registered_job(
+    job_id: str,
+    trigger: str = "schedule",
+    markets: tuple[str, ...] | None = None,
+) -> object:
+    """执行白名单任务，并统一写入进度注册表。"""
+    job = get_job_definition(job_id)
+    if job is None:
+        raise KeyError(job_id)
+    if not _reserve_job(job):
+        logger.info("job %s already running, skipped", job_id)
+        return 0
+    run_started_at: str | None = None
+    try:
+        if not job.managed_progress:
+            run_started_at = progress.job_start(
+                job.id, job.label, 1, trigger=trigger
+            )
+        if job.id == "daily_kline":
+            result = await run_daily_kline_job(markets=markets, trigger=trigger)
+        elif job.id == "daily_kline_full":
+            result = await run_daily_kline_job(
+                full=True, markets=markets, trigger=trigger
+            )
+        else:
+            result = await job.runner()
+        if not job.managed_progress:
+            progress.job_done(job.id, _result_note(result), run_started_at)
+        return result
+    except Exception as exc:  # noqa: BLE001
+        if not job.managed_progress:
+            progress.job_error(job.id, str(exc)[:200], run_started_at)
+        logger.exception("job %s failed", job.id)
+        raise
+    finally:
+        _release_job(job)
+
+
+def is_job_active(job_id: str) -> bool:
+    return job_id in _active_jobs or progress.is_running(job_id)
+
+
+def launch_registered_job(job_id: str) -> bool:
+    """后台触发一次手动同步。返回 False 表示任务不存在/不可手动执行/正在运行。"""
+    job = get_job_definition(job_id)
+    if job is None or not job.allow_manual or not _reserve_job(job):
+        return False
+
+    async def run_reserved() -> None:
+        run_started_at: str | None = None
+        try:
+            if not job.managed_progress:
+                run_started_at = progress.job_start(
+                    job.id, job.label, 1, trigger="manual"
+                )
+            if job.id == "daily_kline":
+                result = await run_daily_kline_job(trigger="manual")
+            elif job.id == "daily_kline_full":
+                result = await run_daily_kline_job(full=True, trigger="manual")
+            else:
+                result = await job.runner()
+            if not job.managed_progress:
+                progress.job_done(job.id, _result_note(result), run_started_at)
+        except Exception as exc:  # noqa: BLE001
+            if not job.managed_progress:
+                progress.job_error(job.id, str(exc)[:200], run_started_at)
+            logger.exception("manual job %s failed", job.id)
+        finally:
+            _release_job(job)
+
+    asyncio.create_task(run_reserved())
+    return True

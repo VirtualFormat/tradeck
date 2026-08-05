@@ -21,6 +21,7 @@ import {
   FlagIcon,
   BankIcon,
   CityIcon,
+  DatabaseIcon,
   GlobeIcon,
 } from "@phosphor-icons/react"
 
@@ -39,6 +40,7 @@ const navMain: NavItem[] = [
   { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
   { title: "全球宏观", url: "/global", icon: <GlobeIcon /> },
   { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
+  { title: "数据中心", url: "/data", icon: <DatabaseIcon /> },
 ]
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {

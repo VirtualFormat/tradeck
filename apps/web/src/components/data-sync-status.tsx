@@ -85,14 +85,15 @@ export function DataSyncStatus({ className }: { className?: string } = {}) {
     };
   }, []);
 
-  const running = jobs.find((j) => j.status === "running");
-  const latestDone = jobs.find(
+  const klineJobs = jobs.filter((job) => job.job.startsWith("daily_kline"));
+  const running = klineJobs.find((j) => j.status === "running");
+  const latestDone = klineJobs.find(
     (j) =>
       j.status === "done" &&
       j.finished_at &&
       now - new Date(j.finished_at).getTime() < RECENT_DONE_MS
   );
-  const latestError = jobs.find((j) => j.status === "error");
+  const latestError = klineJobs.find((j) => j.status === "error");
 
   if (!running && !latestDone && !latestError) return null;
 
