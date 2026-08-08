@@ -23,7 +23,11 @@ export interface EquityQuote {
   low: number | null;
   prev_close: number | null;
   exchange: string | null;
-  /** 报价快照更新时间（quote_snapshots.updated_at，ISO 字符串） */
+  /** Provider 行情对应时间；缺失时不得用于新鲜度或提醒判断。 */
+  data_as_of: string | null;
+  /** 本次写入 quote_snapshots 的抓取时间，不代表行情时间。 */
+  fetched_at: string | null;
+  /** @deprecated 仅兼容未迁移的旧组件；新代码使用 data_as_of。 */
   updated_at?: string | null;
 }
 
@@ -192,7 +196,7 @@ function quoteToMoversItem(quote: EquityQuote): MoversItem {
     amount,
     turnover: null,
     snapshot_date: null,
-    updated_at: quote.updated_at ?? null,
+    updated_at: quote.data_as_of ?? null,
   };
 }
 
@@ -749,6 +753,10 @@ export async function fetchMarketBreadth(
 export interface MarketSummary {
   market: string;
   date: string | null;
+  /** 数据源原始标识：CN 通常为 legu，US/HK 为 daily_kline */
+  source: string | null;
+  /** 当前宽度快照写入数据库的时间（ISO 8601） */
+  fetched_at: string | null;
   up: number;
   down: number;
   flat: number;
@@ -756,6 +764,12 @@ export interface MarketSummary {
   limit_up: number | null;
   limit_down: number | null;
   total: number;
+  /** 实际参与宽度计算的标的数；等于 up + down + flat */
+  coverage_count: number;
+  /** US/HK 的最低有效覆盖门槛；CN 无门槛时为 null */
+  coverage_min: number | null;
+  /** 当前快照是否达到覆盖门槛 */
+  coverage_sufficient: boolean;
   /** 上涨占比 = up / (up + down)，平盘不计入分母；分母为 0 时 null */
   up_ratio: number | null;
 }
@@ -844,7 +858,7 @@ export interface JobProgress {
   job: string;
   label: string;
   trigger: "schedule" | "startup" | "manual";
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "empty" | "partial" | "error";
   processed: number;
   total: number;
   percent: number;
@@ -861,15 +875,50 @@ export interface DataJob {
   schedule: string;
   tables: string[];
   allow_manual: boolean;
-  status: "idle" | "running" | "done" | "error";
+  status:
+    | "idle"
+    | "running"
+    | "done"
+    | "partial"
+    | "empty"
+    | "stale"
+    | "error";
   last_run: JobProgress | null;
   next_run_at: string | null;
+  data_health: DataHealth;
+}
+
+export type DataHealthStatus =
+  | "fresh"
+  | "partial"
+  | "empty"
+  | "stale"
+  | "unknown";
+
+export interface DataHealthTable {
+  name: string;
+  status: DataHealthStatus;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  note: string | null;
+}
+
+export interface DataHealth {
+  status: DataHealthStatus;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  note: string | null;
+  tables: DataHealthTable[];
 }
 
 export interface DataTableStat {
   name: string;
   row_count: number;
   total_bytes: number;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  freshness: DataHealthStatus;
+  freshness_note: string | null;
 }
 
 export interface DailyMarketStat {
@@ -886,6 +935,9 @@ export interface DataSystemSnapshot {
     job_count: number;
     running_count: number;
     error_count: number;
+    empty_count: number;
+    partial_count: number;
+    stale_count: number;
     table_count: number;
     total_rows: number;
     total_bytes: number;

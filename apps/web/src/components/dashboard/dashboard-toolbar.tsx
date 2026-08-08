@@ -4,7 +4,6 @@ import { DatePicker } from "@/components/date-picker";
 import { MarketStatusBar } from "@/components/market-status-bar";
 import { RefreshButton } from "@/components/refresh-button";
 import { StockSearch } from "@/components/stock-search";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -24,7 +23,6 @@ export function DashboardToolbar({ date }: { date?: string }) {
         <div className="flex shrink-0 flex-wrap items-center gap-1">
           <DatePicker />
           <RefreshButton />
-          <ThemeToggle />
         </div>
       </div>
 

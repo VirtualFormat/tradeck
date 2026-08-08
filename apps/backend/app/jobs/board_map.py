@@ -53,7 +53,7 @@ async def _fetch_cons(board_type: str, board_name: str) -> list[str]:
     return symbols
 
 
-async def run_board_map_job() -> None:
+async def run_board_map_job() -> int:
     """定时任务：重建 symbol_board_map 映射"""
     logger.info("=== board map job start ===")
     pool = await get_pool()
@@ -72,7 +72,7 @@ async def run_board_map_job() -> None:
         )
     if not boards:
         logger.warning("board_heat 为空，跳过 board map job")
-        return
+        return 0
 
     # 逐板块拉成分股，组装映射行
     map_rows: list[tuple[str, str, str, str | None]] = []
@@ -84,7 +84,7 @@ async def run_board_map_job() -> None:
 
     if not map_rows:
         logger.warning("=== board map job done: 0 rows（akshare 全部失败） ===")
-        return
+        return 0
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -98,3 +98,4 @@ async def run_board_map_job() -> None:
                 map_rows,
             )
     logger.info(f"=== board map job done: {len(map_rows)} rows ===")
+    return len(map_rows)

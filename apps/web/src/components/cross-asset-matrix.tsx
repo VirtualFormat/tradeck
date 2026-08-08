@@ -18,7 +18,11 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
-import { fetchCrossAssets, type CrossAssetItem } from "@/lib/openbb";
+import {
+  fetchCrossAssets,
+  fetchYieldCurve,
+  type CrossAssetItem,
+} from "@/lib/openbb";
 import { cn } from "@/lib/utils";
 
 // 分组小标题（category 固定顺序）
@@ -52,6 +56,14 @@ function fmtClose(v: number | null): string {
   });
 }
 
+function sourceForItem(item: CrossAssetItem): string {
+  return item.category === "bond" ? "Federal Reserve" : "yfinance";
+}
+
+function fmtLatestDate(value: string | null | undefined): string {
+  return value?.slice(0, 10) || "—";
+}
+
 /** 涨跌着色：正红负绿（A 股习惯），null 置灰 */
 function ChangeCell({
   value,
@@ -81,7 +93,11 @@ function ChangeCell({
 }
 
 export async function CrossAssetMatrix() {
-  const items = await fetchCrossAssets();
+  const [items, curve] = await Promise.all([
+    fetchCrossAssets(),
+    fetchYieldCurve(),
+  ]);
+  const yieldDate = curve.find((point) => point.latest_date)?.latest_date;
 
   return (
     <Card
@@ -108,6 +124,7 @@ export async function CrossAssetMatrix() {
                 <TableHead className="text-right">3M</TableHead>
                 <TableHead className="text-right">1Y</TableHead>
                 <TableHead className="text-right">距MA200</TableHead>
+                <TableHead className="text-right">来源 / 截止</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -118,7 +135,7 @@ export async function CrossAssetMatrix() {
                   // 分组跨列小标题行
                   <TableRow key={`group-${cat}`} className="hover:bg-transparent">
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className="bg-muted/30 py-1 text-xs font-medium text-fg-dim"
                     >
                       {CATEGORY_LABELS[cat]}
@@ -162,6 +179,12 @@ export async function CrossAssetMatrix() {
                           </>
                         )}
                         <ChangeCell value={item.dist_ma200} />
+                        <TableCell className="text-right text-[11px] whitespace-nowrap text-muted-foreground">
+                          {sourceForItem(item)} · {fmtLatestDate(
+                            item.latest_date ??
+                              (item.category === "bond" ? yieldDate : null)
+                          )}
+                        </TableCell>
                       </TableRow>
                     );
                   }),

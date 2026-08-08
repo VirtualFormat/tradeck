@@ -1,7 +1,7 @@
 /**
  * 首页看板（Phase B —— 三市均衡投研首页）
  * 信息架构（§3 目标 IA）：
- *   命令栏: DashboardToolbar（搜索 · 日期 · 刷新 · 主题 · 市场状态 · 快照Badge）
+ *   命令栏: DashboardToolbar（搜索 · 日期 · 刷新 · 市场状态 · 快照Badge）
  *   DataSyncStatus
  *   Band1 市场情绪总览: MarketSentimentBoard（三卡 CN/US/HK）
  *   Band1.5 自选股条: WatchlistStrip（client）

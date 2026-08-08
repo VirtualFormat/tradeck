@@ -1,7 +1,7 @@
 /**
  * 三市对比总览卡（首页用，服务端组件）
  * 一行三卡（CN / US / HK），数据来自 backend /api/market-summary（market_breadth 最新行）：
- * - 标题行：市场名 Badge + 日期与来源（CN 显「乐咕」实时口径，US/HK 显「日K」全市场口径）——时间口径差异可见
+ * - 标题行：市场名 Badge + 日期、来源和实际覆盖数量
  * - 宽度条：复用 advance-decline-chart 的涨/跌/平半环
  * - 涨跌停行：仅 CN（limit_up/limit_down 非 null 才显）
  * - 上涨占比行：up_ratio × 100 + ui/progress
@@ -26,23 +26,27 @@ import { fmtDataDate } from "@/lib/format";
 const MARKET_DEFS: Array<{
   market: string;
   label: string;
-  source: string; // 数据来源口径标注
 }> = [
-  { market: "CN", label: "A股", source: "乐咕" },
-  { market: "US", label: "美股", source: "日K" },
-  { market: "HK", label: "港股", source: "日K" },
+  { market: "CN", label: "A股" },
+  { market: "US", label: "美股" },
+  { market: "HK", label: "港股" },
 ];
+
+function breadthSourceLabel(source: string | null | undefined): string {
+  if (source === "legu") return "乐咕";
+  if (source === "daily_kline") return "TickFlow 日K";
+  return source || "来源未知";
+}
 
 function CompareCard({
   label,
-  source,
   data,
 }: {
   label: string;
-  source: string;
   data: MarketSummary | undefined;
 }) {
   const dateLabel = fmtDataDate(data?.date ?? null);
+  const sourceLabel = breadthSourceLabel(data?.source);
   const hasData =
     data != null && (data.up > 0 || data.down > 0 || data.flat > 0);
   const upPct =
@@ -59,8 +63,12 @@ function CompareCard({
         <CardTitle className="text-base font-medium text-fg-dim">
           <Badge variant="outline">{label}</Badge>
         </CardTitle>
-        <CardAction className="text-xs text-muted-foreground">
-          {dateLabel ? `${dateLabel} · ${source}` : source}
+        <CardAction className="max-w-[75%] text-right text-[11px] leading-4 text-muted-foreground tabular-nums">
+          {sourceLabel}
+          {dateLabel ? ` · 截至 ${dateLabel}` : ""}
+          {data
+            ? ` · 覆盖 ${data.coverage_count.toLocaleString("zh-CN")} 只`
+            : ""}
         </CardAction>
       </CardHeader>
       <CardContent>
@@ -110,7 +118,6 @@ export async function MarketCompareCards({ date }: { date?: string }) {
           <CompareCard
             key={def.market}
             label={def.label}
-            source={def.source}
             data={byMarket.get(def.market)}
           />
         ))}

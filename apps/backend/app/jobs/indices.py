@@ -46,7 +46,8 @@ TRACKED_COMMODITIES = [
 
 async def fetch_and_store_index(symbol: str, market: str) -> int:
     """拉单只指数历史，写入 DB。返回写入条数。"""
-    end = date.today().isoformat()
+    # yfinance 的 end_date 为开区间，传明天才能包含刚收盘的当日 K 线。
+    end = (date.today() + timedelta(days=1)).isoformat()
     start = (date.today() - timedelta(days=365)).isoformat()
 
     data = await fetch_openbb(
@@ -79,15 +80,25 @@ async def fetch_and_store_index(symbol: str, market: str) -> int:
             """,
             rows,
         )
-    logger.info(f"fetched {len(results)} index prices for {symbol}")
-    return len(results)
+    logger.info(f"fetched {len(rows)} index prices for {symbol}")
+    return len(rows)
 
 
-async def run_indices_job() -> None:
-    """定时任务：拉所有指数历史"""
-    logger.info("=== indices job start ===")
-    total = 0
-    for idx in TRACKED_INDICES + TRACKED_COMMODITIES:
+async def run_indices_job(
+    markets: tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    """定时任务：按市场拉指数历史；markets=None 时全量执行。"""
+    targets = [
+        item
+        for item in TRACKED_INDICES + TRACKED_COMMODITIES
+        if markets is None or item["market"] in markets
+    ]
+    market_label = ",".join(markets) if markets else "ALL"
+    logger.info(f"=== indices job start (markets={market_label}) ===")
+    results: dict[str, int] = {}
+    for idx in targets:
         count = await fetch_and_store_index(idx["symbol"], idx["market"])
-        total += count
-    logger.info(f"=== indices job done: {total} rows ===")
+        results[f"{idx['market']}:{idx['symbol']}"] = count
+    total = sum(results.values())
+    logger.info(f"=== indices job done (markets={market_label}): {total} rows ===")
+    return results

@@ -3,16 +3,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.jobs.daily_kline import markets_needing_full_init, needs_full_init
+from app.jobs.daily_kline import markets_needing_full_init
 from app.jobs.registry import run_registered_job
 
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
+
+_KLINE_MARKETS = ("CN", "HK", "US")
+_DAILY_MARKET_JOB_OPTIONS = {
+    "coalesce": True,
+    "max_instances": 1,
+    # 主机短暂休眠或事件循环受阻时仍补跑盘后任务，避免直接等到下一交易日。
+    "misfire_grace_time": 6 * 60 * 60,
+}
 
 
 # cron 错峰包装（APScheduler 只识别 coroutine function，lambda 返回协程不会被 await，必须用 async def）
@@ -33,8 +42,20 @@ async def _realtime_quotes() -> None:
     await run_registered_job("realtime_quotes")
 
 
-async def _indices() -> None:
-    await run_registered_job("indices")
+async def _indices_cn() -> None:
+    await run_registered_job("indices", markets=("CN",))
+
+
+async def _indices_hk_asia() -> None:
+    await run_registered_job("indices", markets=("HK", "JP"))
+
+
+async def _indices_eu() -> None:
+    await run_registered_job("indices", markets=("EU",))
+
+
+async def _indices_us() -> None:
+    await run_registered_job("indices", markets=("US", "VOL"))
 
 
 async def _movers() -> None:
@@ -125,18 +146,20 @@ async def start_scheduler() -> None:
 
     _scheduler = AsyncIOScheduler()
 
-    # 日 K 线（TickFlow universe 全市场批量）：A 股/港股 08:30 UTC、美股 21:30 UTC（各自收盘后）
+    # 日 K 线（TickFlow universe 全市场批量）：A 股/港股 08:30 UTC、美股 21:30 UTC。
     _scheduler.add_job(
         _daily_kline_cn_hk,
         CronTrigger(hour=8, minute=30, timezone="UTC"),
         id="daily_kline_cn_hk",
         replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
     )
     _scheduler.add_job(
         _daily_kline_us,
         CronTrigger(hour=21, minute=30, timezone="UTC"),
         id="daily_kline_us",
         replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
     )
 
     # 实时报价：每 30 分钟（错峰 0,30，避开其他 akshare job）
@@ -147,12 +170,35 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 指数历史：每天 17:00 UTC
+    # 指数历史按当地收盘拆分，避免 A/港股等到北京时间次日才更新。
+    # JP 与 HK 同批；VIX、商品和 BTC 跟随 US 批次。纽约时区会自动处理夏令时。
     _scheduler.add_job(
-        _indices,
-        CronTrigger(hour=17, minute=0, timezone="UTC"),
-        id="indices",
+        _indices_cn,
+        CronTrigger(hour=8, minute=0, timezone="UTC"),
+        id="indices_cn",
         replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
+    )
+    _scheduler.add_job(
+        _indices_hk_asia,
+        CronTrigger(hour=8, minute=45, timezone="UTC"),
+        id="indices_hk_asia",
+        replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
+    )
+    _scheduler.add_job(
+        _indices_eu,
+        CronTrigger(hour=18, minute=0, timezone="UTC"),
+        id="indices_eu",
+        replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
+    )
+    _scheduler.add_job(
+        _indices_us,
+        CronTrigger(hour=17, minute=30, timezone="America/New_York"),
+        id="indices_us",
+        replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
     )
 
     # 涨跌榜：每 5 分钟
@@ -343,14 +389,12 @@ async def start_scheduler() -> None:
 async def _initial_fetch() -> None:
     """启动后后台跑一轮所有 job（首启不用等 cron）"""
     logger.info("=== initial fetch ===")
-    # 日K：未初始化（daily_prices < 100 万行）则全量拉一次——放最前，与其余预热并行（~30-60 分钟）
+    # 日K 放后台串行预热：健康市场先增量，缺口市场再全量，避免任一市场
+    # 需要全量时把其他市场的启动增量一起跳过。
     full_markets = await markets_needing_full_init()
-    if full_markets:
-        asyncio.create_task(
-            run_registered_job(
-                "daily_kline_full", trigger="startup", markets=full_markets
-            )
-        )
+    daily_kline_task = asyncio.create_task(
+        _initial_daily_kline_fetch(full_markets)
+    )
     await run_registered_job("indices", trigger="startup")
     await run_registered_job("realtime_quotes", trigger="startup")
     await run_registered_job("movers", trigger="startup")
@@ -366,17 +410,37 @@ async def _initial_fetch() -> None:
     await run_registered_job("board_sentiment", trigger="startup")
     await run_registered_job("fundamentals", trigger="startup")
     await run_registered_job("analyst_consensus", trigger="startup")
-    if not await needs_full_init():
-        await run_registered_job("daily_kline", trigger="startup")
-    await run_registered_job("technical_indicators", trigger="startup")
     await run_registered_job("announcements", trigger="startup")
     await run_registered_job("research_reports", trigger="startup")
     await run_registered_job("market_breadth", trigger="startup")
-    await run_registered_job("market_breadth_global", trigger="startup")
-    await run_registered_job("movers_cn", trigger="startup")
     await run_registered_job("macro_assets", trigger="startup")
     await run_registered_job("cleanup", trigger="startup")
+
+    try:
+        await daily_kline_task
+    except Exception:  # noqa: BLE001 — 日K失败不阻断其余预热，依赖任务本轮跳过
+        logger.exception("initial daily kline fetch failed; dependent jobs skipped")
+    else:
+        # 这三项都读取 daily_prices，必须在启动日K写库完成后执行。
+        await run_registered_job("technical_indicators", trigger="startup")
+        await run_registered_job("market_breadth_global", trigger="startup")
+        await run_registered_job("movers_cn", trigger="startup")
     logger.info("=== initial fetch done ===")
+
+
+async def _initial_daily_kline_fetch(full_markets: tuple[str, ...]) -> None:
+    """启动预热：健康市场增量与缺口市场全量均不遗漏。"""
+    incremental_markets = tuple(
+        market for market in _KLINE_MARKETS if market not in full_markets
+    )
+    if incremental_markets:
+        await run_registered_job(
+            "daily_kline", trigger="startup", markets=incremental_markets
+        )
+    if full_markets:
+        await run_registered_job(
+            "daily_kline_full", trigger="startup", markets=full_markets
+        )
 
 
 def scheduler_jobs_snapshot() -> dict[str, dict]:
@@ -387,31 +451,38 @@ def scheduler_jobs_snapshot() -> dict[str, dict]:
     aliases = {
         "daily_kline_cn_hk": "daily_kline",
         "daily_kline_us": "daily_kline",
+        "indices_cn": "indices",
+        "indices_hk_asia": "indices",
+        "indices_eu": "indices",
+        "indices_us": "indices",
         "technical_indicators_cn": "technical_indicators",
         "technical_indicators_us": "technical_indicators",
         "market_breadth_global_cn_hk": "market_breadth_global",
         "market_breadth_global_us": "market_breadth_global",
     }
-    result: dict[str, dict] = {}
+    selected: dict[str, tuple[str, datetime | None]] = {}
     for scheduled in _scheduler.get_jobs():
         business_id = aliases.get(scheduled.id, scheduled.id)
         next_run = scheduled.next_run_time
-        current = result.get(business_id)
+        current = selected.get(business_id)
         if (
             current is None
             or (
                 next_run is not None
                 and (
-                    current["next_run_at"] is None
-                    or next_run.isoformat() < current["next_run_at"]
+                    current[1] is None
+                    or next_run < current[1]
                 )
             )
         ):
-            result[business_id] = {
-                "scheduler_id": scheduled.id,
-                "next_run_at": next_run.isoformat() if next_run else None,
-            }
-    return result
+            selected[business_id] = (scheduled.id, next_run)
+    return {
+        business_id: {
+            "scheduler_id": scheduler_id,
+            "next_run_at": next_run.isoformat() if next_run else None,
+        }
+        for business_id, (scheduler_id, next_run) in selected.items()
+    }
 
 
 async def stop_scheduler() -> None:

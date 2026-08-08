@@ -11,9 +11,11 @@ import {
   PulseIcon,
   RowsIcon,
   WarningCircleIcon,
+  WarningIcon,
 } from "@phosphor-icons/react";
 
 import {
+  type DataHealthStatus,
   type DataJob,
   type DataSystemSnapshot,
   type JobProgress,
@@ -52,6 +54,9 @@ const EMPTY_SNAPSHOT: DataSystemSnapshot = {
     job_count: 0,
     running_count: 0,
     error_count: 0,
+    empty_count: 0,
+    partial_count: 0,
+    stale_count: 0,
     table_count: 0,
     total_rows: 0,
     total_bytes: 0,
@@ -69,27 +74,47 @@ function formatBytes(value: number): string {
   return `${(value / 1024 ** unit).toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
 }
 
-function formatDateTime(value: string | null): string {
+function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
-  }).format(new Date(value));
+  }).format(date);
 }
 
-function formatCompactDateTime(value: string | null): string {
+function formatDataCutoff(
+  dateValue: string | null | undefined,
+  dateTimeValue: string | null | undefined
+): string {
+  if (dateValue) return formatDate(dateValue);
+  return formatDateTime(dateTimeValue);
+}
+
+function formatCompactDateTime(value: string | null | undefined): string {
   if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function formatDuration(run: JobProgress | null): string {
@@ -111,6 +136,49 @@ function triggerLabel(trigger: JobProgress["trigger"] | undefined): string {
   return "定时";
 }
 
+function DataHealthBadge({
+  status,
+}: {
+  status: DataHealthStatus | null | undefined;
+}) {
+  if (status === "fresh") {
+    return (
+      <Badge variant="outline">
+        <CheckCircleIcon data-icon="inline-start" className="text-down" />
+        正常
+      </Badge>
+    );
+  }
+  if (status === "partial") {
+    return (
+      <Badge variant="outline" className="border-warn/40 text-warn">
+        <WarningIcon data-icon="inline-start" />
+        部分数据
+      </Badge>
+    );
+  }
+  if (status === "empty") {
+    return (
+      <Badge variant="outline" className="border-warn/40 text-warn">
+        <DatabaseIcon data-icon="inline-start" />
+        空结果
+      </Badge>
+    );
+  }
+  if (status === "stale") {
+    return (
+      <Badge variant="outline" className="border-warn/40 text-warn">
+        <ClockCountdownIcon data-icon="inline-start" />
+        陈旧
+      </Badge>
+    );
+  }
+  if (status === "unknown") {
+    return <Badge variant="outline">待判断</Badge>;
+  }
+  return <Badge variant="outline">待判断</Badge>;
+}
+
 function JobStatusBadge({ job }: { job: DataJob }) {
   if (job.status === "running") {
     return (
@@ -120,6 +188,20 @@ function JobStatusBadge({ job }: { job: DataJob }) {
       </Badge>
     );
   }
+  if (job.status === "done") {
+    if (job.data_health.status === "fresh") {
+      return <DataHealthBadge status="fresh" />;
+    }
+    if (job.data_health.status === "unknown") {
+      return (
+        <Badge variant="outline">
+          <CheckCircleIcon data-icon="inline-start" />
+          已完成
+        </Badge>
+      );
+    }
+    return <DataHealthBadge status={job.data_health.status} />;
+  }
   if (job.status === "error") {
     return (
       <Badge variant="destructive">
@@ -128,15 +210,10 @@ function JobStatusBadge({ job }: { job: DataJob }) {
       </Badge>
     );
   }
-  if (job.status === "done") {
-    return (
-      <Badge variant="outline">
-        <CheckCircleIcon data-icon="inline-start" className="text-down" />
-        已完成
-      </Badge>
-    );
+  if (job.status === "idle") {
+    return <Badge variant="outline">等待运行</Badge>;
   }
-  return <Badge variant="outline">等待运行</Badge>;
+  return <DataHealthBadge status={job.status} />;
 }
 
 function SummaryCard({
@@ -165,43 +242,53 @@ function SummaryCard({
 }
 
 function MarketCoverage({ snapshot }: { snapshot: DataSystemSnapshot }) {
-  const names: Record<string, string> = {
+  const names: Record<"CN" | "HK" | "US", string> = {
     CN: "A 股",
     HK: "港股",
     US: "美股",
   };
+  const dailyTable = snapshot.tables.find(
+    (item) => item.name === "daily_prices"
+  );
 
   return (
-    <div className="grid gap-3 md:grid-cols-3">
-      {["CN", "HK", "US"].map((market) => {
-        const stat = snapshot.daily_markets.find(
-          (item) => item.market === market
-        );
-        return (
-          <Card key={market} size="sm">
-            <CardHeader>
-              <CardTitle>{names[market]}</CardTitle>
-              <CardAction>
-                <Badge variant="secondary">TickFlow</Badge>
-              </CardAction>
-              <CardDescription>
-                最新交易日 {stat?.latest_date ?? "尚无数据"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex items-end justify-between gap-3">
-              <div>
-                <div className="font-mono text-xl font-semibold tabular-nums">
-                  {formatNumber(stat?.row_count ?? 0)}
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>daily_prices 全表状态</span>
+        <DataHealthBadge status={dailyTable?.freshness} />
+        {dailyTable?.freshness_note && <span>{dailyTable.freshness_note}</span>}
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {(["CN", "HK", "US"] as const).map((market) => {
+          const stat = snapshot.daily_markets.find(
+            (item) => item.market === market
+          );
+          return (
+            <Card key={market} size="sm">
+              <CardHeader>
+                <CardTitle>{names[market]}</CardTitle>
+                <CardAction>
+                  <Badge variant="secondary">TickFlow</Badge>
+                </CardAction>
+                <CardDescription>
+                  最新交易日 {formatDate(stat?.latest_date)}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex items-end justify-between gap-3">
+                <div>
+                  <div className="font-mono text-xl font-semibold tabular-nums">
+                    {formatNumber(stat?.row_count ?? 0)}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    daily_prices 行数
+                  </div>
                 </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  daily_prices 行数
-                </div>
-              </div>
-              <DatabaseIcon className="size-8 text-muted-foreground/50" />
-            </CardContent>
-          </Card>
-        );
-      })}
+                <DatabaseIcon className="size-8 text-muted-foreground/50" />
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -406,7 +493,7 @@ export function DataPageClient() {
         <SummaryCard
           label="数据任务"
           value={formatNumber(snapshot.summary.job_count)}
-          description={`${snapshot.summary.running_count} 个运行中 · ${snapshot.summary.error_count} 个异常`}
+          description={`${snapshot.summary.running_count} 运行中 · ${snapshot.summary.error_count} 异常 · ${snapshot.summary.partial_count ?? 0} 部分 · ${snapshot.summary.empty_count ?? 0} 空结果 · ${snapshot.summary.stale_count ?? 0} 陈旧`}
           icon={<PulseIcon className="size-5" />}
         />
         <SummaryCard
@@ -464,12 +551,13 @@ export function DataPageClient() {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
-              <Table>
+              <Table className="min-w-[980px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="pl-4">任务</TableHead>
                     <TableHead>数据源</TableHead>
                     <TableHead>状态</TableHead>
+                    <TableHead>数据截止</TableHead>
                     <TableHead>最近运行</TableHead>
                     <TableHead>下次调度</TableHead>
                     <TableHead className="text-right pr-4">操作</TableHead>
@@ -478,7 +566,7 @@ export function DataPageClient() {
                 <TableBody>
                   {snapshot.jobs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6}>
+                      <TableCell colSpan={7}>
                         <EmptyState compact title="暂无任务状态" />
                       </TableCell>
                     </TableRow>
@@ -501,6 +589,28 @@ export function DataPageClient() {
                         </TableCell>
                         <TableCell>
                           <JobStatusBadge job={job} />
+                        </TableCell>
+                        <TableCell className="max-w-60 whitespace-normal">
+                          <div className="text-xs">
+                            {formatDataCutoff(
+                              job.data_health?.latest_data_date,
+                              job.data_health?.latest_data_at
+                            )}
+                          </div>
+                          {job.data_health?.note && (
+                            <div
+                              className={cn(
+                                "mt-1 text-[11px] leading-4",
+                                job.data_health?.status === "stale" ||
+                                  job.data_health?.status === "partial" ||
+                                  job.data_health?.status === "empty"
+                                  ? "text-warn"
+                                  : "text-muted-foreground"
+                              )}
+                            >
+                              {job.data_health.note}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell>
                           <div className="text-xs">
@@ -558,18 +668,20 @@ export function DataPageClient() {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
-              <Table>
+              <Table className="min-w-[760px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="pl-4">表名</TableHead>
                     <TableHead className="text-right">估算行数</TableHead>
+                    <TableHead>最新数据</TableHead>
+                    <TableHead>健康状态</TableHead>
                     <TableHead className="pr-4 text-right">占用空间</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {snapshot.tables.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={3}>
+                      <TableCell colSpan={5}>
                         <EmptyState compact title="暂无数据表统计" />
                       </TableCell>
                     </TableRow>
@@ -581,6 +693,29 @@ export function DataPageClient() {
                       </TableCell>
                       <TableCell className="text-right font-mono tabular-nums">
                         {formatNumber(table.row_count)}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {formatDataCutoff(
+                          table.latest_data_date,
+                          table.latest_data_at
+                        )}
+                      </TableCell>
+                      <TableCell className="max-w-64 whitespace-normal">
+                        <DataHealthBadge status={table.freshness} />
+                        {table.freshness_note && (
+                          <div
+                            className={cn(
+                              "mt-1 text-[11px] leading-4",
+                              table.freshness === "stale" ||
+                                table.freshness === "partial" ||
+                                table.freshness === "empty"
+                                ? "text-warn"
+                                : "text-muted-foreground"
+                            )}
+                          >
+                            {table.freshness_note}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="pr-4 text-right font-mono tabular-nums text-muted-foreground">
                         {formatBytes(table.total_bytes)}

@@ -6,6 +6,10 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+from typing import Literal
+
+JobStatus = Literal["running", "done", "empty", "partial", "error"]
+_FINISHED_STATUSES = {"done", "empty", "partial", "error"}
 
 _lock = threading.Lock()
 _runs: list[dict] = []
@@ -79,8 +83,38 @@ def job_done(job: str, note: str = "", started_at: str | None = None) -> None:
     _finish(job, "done", note, started_at)
 
 
+def job_empty(job: str, note: str = "", started_at: str | None = None) -> None:
+    _finish(job, "empty", note or "处理 0 行，未获取到新数据", started_at)
+
+
+def job_partial(job: str, note: str = "", started_at: str | None = None) -> None:
+    _finish(job, "partial", note or "仅获取到部分数据", started_at)
+
+
 def job_error(job: str, note: str, started_at: str | None = None) -> None:
     _finish(job, "error", note, started_at)
+
+
+def job_reclassify(
+    job: str,
+    status: JobStatus,
+    note: str = "",
+    started_at: str | None = None,
+) -> None:
+    """重分类最近一次已结束记录，供自带进度上报的任务补充结果语义。"""
+    if status == "running":
+        return
+    with _lock:
+        for run in _runs:
+            if (
+                run["job"] == job
+                and run["status"] in _FINISHED_STATUSES
+                and (started_at is None or run["started_at"] == started_at)
+            ):
+                run["status"] = status
+                if note:
+                    run["note"] = note
+                return
 
 
 def is_running(job: str) -> bool:
@@ -89,8 +123,10 @@ def is_running(job: str) -> bool:
 
 
 def _finish(
-    job: str, status: str, note: str, started_at: str | None = None
+    job: str, status: JobStatus, note: str, started_at: str | None = None
 ) -> None:
+    if status == "running":
+        raise ValueError("running 不是任务终态")
     with _lock:
         for r in _runs:
             if (
@@ -104,6 +140,9 @@ def _finish(
                     if not r["total"]:
                         r["total"] = 1
                     r["processed"] = r["total"]
+                    r["percent"] = 100.0
+                elif status in {"empty", "partial"}:
+                    # 任务已结束，100% 表示执行过程完成，不代表写入量达标。
                     r["percent"] = 100.0
                 if note:
                     r["note"] = note

@@ -48,12 +48,12 @@ tradeck/
 │   └── backend/                 ← FastAPI 后端（数据管道 + API 服务）
 │       ├── app/api/             ← 18 个路由模块（quotes/historical/indices/movers/news/macro/profile/fundamentals/analyst/boards/fundflow/calendar/technicals/cn_extras/cross_asset/system/market_summary/search）
 │       ├── app/jobs/            ← 22 个定时任务（daily_kline/realtime_quotes/indices/movers/news/macro/fundamentals/analyst_consensus/earnings_calendar/economic_calendar/announcements/research_reports/market_breadth/macro_assets/cleanup 等）
-│       ├── app/main.py          ← FastAPI 入口 + lifespan（连 DB、起调度器）
+│       ├── app/main.py          ← FastAPI 入口 + lifespan（live 调度器 / mock 种子互斥）
 │       ├── app/scheduler.py     ← APScheduler 任务注册
 │       ├── app/db.py            ← asyncpg 连接池（min 2 / max 10）
 │       ├── app/openbb_client.py ← OpenBB HTTP 客户端（失败降级返回空 results）
 │       ├── app/markets.py       ← pick_provider / pick_market（按 symbol 后缀）+ to_yahoo_symbol（yfinance 出向映射）
-│       ├── app/config.py        ← 环境变量（DATABASE_URL / OPENBB_API_URL / OVERSEAS 分流 / TICKFLOW_API_KEY / DEV_SEED）
+│       ├── app/config.py        ← 环境变量（DATA_MODE / DATABASE_URL / OPENBB_API_URL / OVERSEAS 分流 / TICKFLOW_API_KEY）
 │       ├── app/datasource/      ← 数据层薄门面（call_akshare 限流闸 / fetch_openbb / tickflow_source）
 │       └── init.sql             ← 24 张表 DDL（postgres 容器首次启动自动执行）
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
@@ -108,17 +108,33 @@ pnpm lint       # ESLint（eslint-config-next core-web-vitals + typescript）
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-启动时 lifespan 会连 DB、起调度器，并**后台触发全部 job 跑一遍**（不阻塞 API 就绪，数据随后补齐，页面优雅降级）。
+默认 `DATA_MODE=live`：启动时 lifespan 会连 DB、起调度器，并**后台触发全部 job 跑一遍**（不阻塞 API 就绪，数据随后补齐，页面优雅降级）。
 
-### 假数据种子（dev 专用）
+### 数据运行模式（live / mock 互斥）
 
-dev 环境启动时自动灌假数据看页面效果（dev compose 里为 `${DEV_SEED-1}`，默认开；shell 置 `DEV_SEED=`（空值）可临时关，便于 dev 看真实数据）；也可手动：
+dev 与 prod 均默认 `DATA_MODE=live`。live 模式只启动 scheduler 和真实数据 job，绝不执行 mock seed。数据库内有持久化 mode marker，backend 会在任何 seed/scheduler 前校验；marker 与 `DATA_MODE` 不一致时直接拒绝启动。需要纯模拟页面时，显式以 mock 模式重建 dev、postgres、backend：
+
+```bash
+DATA_MODE=mock DEV_POSTGRES_VOLUME=tradeck-dev-postgres-mock-data \
+  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres backend
+```
+
+mock 模式会自动 seed，同时关闭 scheduler、手动同步与读 API 的按需回源。live 沿用现有 dev 数据卷；mock 命令显式指定独立 PostgreSQL volume，两个模式不会共享存量数据。不能只修改 `DATA_MODE` 或卷名来绕过绑定：mock 连接 live 卷、live 连接 mock 卷都会 fail fast。切回 live 时也显式指定兼容旧环境的卷名，并同步重建三个服务：
+
+```bash
+DATA_MODE=live DEV_POSTGRES_VOLUME=tradeck_devcontainer_dev-postgres-data \
+  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres backend
+```
+
+空数据库会绑定为当前 mode；已有业务数据但尚无 marker 的历史库只允许以 live 启动，并自动写入 live marker，因此升级不会丢失或改写现有数据。
+
+仅在已运行的 mock backend 中可手动重灌：
 
 ```bash
 docker exec tradeck-dev-backend python -m app.seed_mock
 ```
 
-`app/seed_mock.py` 覆盖全部 24 张表（UPSERT，可重复执行）；真数据到达后会被正常 job 覆盖。prod 根 compose 不置 `DEV_SEED`，**不会**自动灌。
+`app.seed_mock` 在 `DATA_MODE!=mock` 时会直接拒绝执行。`DATA_MODE` 只接受 `live` / `mock`，其他值会令 backend 启动失败；prod 根 compose 未传该变量，按配置默认值保持 live。
 
 ### 数据层验证
 
@@ -176,7 +192,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 - job 约定：log 打 `=== xxx job start/done: N rows ===`，返回写入条数。
 - `markets.py` 的市场/provider 判定规则：symbol 以 `.SH/.SS/.SZ/.BJ` 结尾 → akshare + CN 市场（`.SH` 为沪市个股新标准；`.SS` 仅 yfinance 指数用）；`.HK` 结尾 → HK；其余 → yfinance + US。
 - **symbol 规范与出向映射**：规范格式采中国数据商阵营（`.SH/.SZ/.BJ` + 港股 5 位补零 + 美股裸码，指数例外保留 `.SS`）；凡调 yfinance 必须经 `markets.to_yahoo_symbol()` 出向映射（`.SH`→`.SS`、港股 5 位→4 位），响应 symbol 映射回规范格式再写库。完整规则见 `docs/DATA-LAYER.md`「symbol 规范」；前端用户输入由 `lib/utils.ts` 的 `normalizeSymbol()` 归一（裸码补后缀/港股补零）。
-- 配置只从环境变量读（`app/config.py`）：`DATABASE_URL`、`OPENBB_API_URL`、`OPENBB_OVERSEAS_API_URL`、`OPENBB_OVERSEAS_TOKEN`、`TICKFLOW_API_KEY`、`DEV_SEED`。
+- 配置只从环境变量读（`app/config.py`）：`DATA_MODE`（仅 `live` / `mock`）、`DATABASE_URL`、`OPENBB_API_URL`、`OPENBB_OVERSEAS_API_URL`、`OPENBB_OVERSEAS_TOKEN`、`TICKFLOW_API_KEY`。
 
 定时任务（全部 UTC）：
 
@@ -185,7 +201,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 | 日 K 线（TickFlow universe 全市场 ~2 万只：CN 5528 + HK 2841 + US 11645；100 只/片批量并发，分片失败隔离；首启按市场检查历史行数与最新交易日，缺失市场自动全量初始化 ~250 天，此后每日增量 5 天 UPSERT） | A/港 08:30、美股 21:30 每天 | TickFlow | daily_prices |
 | 技术指标（本地计算，tracked 100 只） | 09:00 / 22:00 每天 | —（读 daily_prices） | technical_indicators |
 | 实时报价 | 每 30 分钟 | yfinance/akshare | quote_snapshots |
-| 指数历史（^GSPC ^IXIC ^DJI ^HSI ^HSCEI 000001.SS 399001.SZ 399006.SZ ^N225 ^STOXX50E ^VIX + GC=F CL=F SI=F HG=F BTC-USD，共 16 个符号） | 17:00 每天 | yfinance | index_prices |
+| 指数历史（^GSPC ^IXIC ^DJI ^HSI ^HSCEI 000001.SS 399001.SZ 399006.SZ ^N225 ^STOXX50E ^VIX + GC=F CL=F SI=F HG=F BTC-USD，共 16 个符号） | 分市场盘后：CN 08:00、HK/JP 08:45、EU 18:00 UTC；US/VIX/商品纽约 17:30 | yfinance | index_prices |
 | 宏观资产/收益率曲线（美元指数/离岸人民币/7 只 ETF + treasury_rates 11 期限） | 21:30 每天 | yfinance/federal_reserve | macro_asset_prices/yield_curve_rates |
 | 涨跌榜 | 每 5 分钟 | yfinance | movers_cache |
 | 新闻 | 每 30 分钟 | yfinance | news_articles |
@@ -283,6 +299,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 ## 相关文档
 
 - `CODEBUDDY.md` — 开发规范（devcontainer 强制、prod compose 用途）
-- `docs/PIPELINE.md` — 数据管道架构（拓扑、24 表存储、定时任务、API 端点、dev 假数据）
+- `docs/PIPELINE.md` — 数据管道架构（拓扑、24 表存储、定时任务、API 端点、live/mock 模式）
 - `docs/DATA-LAYER.md` — 数据层特性（三源分工、薄门面限流降级、symbol 规范、调度错峰）
 - `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）

@@ -1,6 +1,8 @@
 # devcontainer 的 docker-compose — 开发环境
 # 与项目根的 docker-compose.yml（prod）独立
 # 架构：dev（开发容器）+ postgres + backend + openbb
+name: tradeck_devcontainer
+
 services:
   dev:
     image: mcr.microsoft.com/devcontainers/python:3.12
@@ -16,6 +18,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: sleep infinity
     environment:
+      - DATA_MODE=${DATA_MODE:-live}
       - OPENBB_API_URL=http://openbb:6900
       - BACKEND_API_URL=http://backend:8080
       - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
@@ -58,14 +61,13 @@ services:
     build: ../apps/backend
     container_name: tradeck-dev-backend
     environment:
+      DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
       # 海外节点（可选）：为空则海外源回落国内 openbb
       OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
-      # dev 启动自动灌假数据（默认开；可用环境变量 DEV_SEED= 临时关）
-      DEV_SEED: "${DEV_SEED-1}"
     volumes:
       - ../apps/backend:/app
     ports:
@@ -110,6 +112,9 @@ volumes:
   dev-venv:
   dev-openbb-config:
   dev-postgres-data:
+    # DATA_MODE 与数据库 marker 在 backend 启动时强校验；错误卷组合会拒绝启动。
+    # live 默认沿用旧卷；mock 命令必须显式指定独立卷。
+    name: ${DEV_POSTGRES_VOLUME:-tradeck_devcontainer_dev-postgres-data}
 
 networks:
   dev-net:

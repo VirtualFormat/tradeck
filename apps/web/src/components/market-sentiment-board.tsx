@@ -24,34 +24,37 @@ const MARKET_DEFS: Array<{
   label: string;
   indexSymbol: string;
   indexName: string;
-  sourceLabel: string;
 }> = [
   {
     market: "CN",
     label: "A股",
     indexSymbol: "000001.SS",
     indexName: "上证",
-    sourceLabel: "乐咕",
   },
   {
     market: "US",
     label: "美股",
     indexSymbol: "^GSPC",
     indexName: "标普",
-    sourceLabel: "日K",
   },
   {
     market: "HK",
     label: "港股",
     indexSymbol: "^HSI",
     indexName: "恒指",
-    sourceLabel: "日K",
   },
 ];
 
 interface IndexQuote {
   price: number | null;
   changePct: number | null;
+  date: string | null;
+}
+
+function breadthSourceLabel(source: string | null | undefined): string {
+  if (source === "legu") return "乐咕";
+  if (source === "daily_kline") return "TickFlow 日K";
+  return source || "来源未知";
 }
 
 async function fetchIndexQuote(symbol: string): Promise<IndexQuote> {
@@ -61,7 +64,9 @@ async function fetchIndexQuote(symbol: string): Promise<IndexQuote> {
 
   try {
     const hist = await getIndexHistorical(symbol, fmt(start), fmt(end));
-    if (hist.length === 0) return { price: null, changePct: null };
+    if (hist.length === 0) {
+      return { price: null, changePct: null, date: null };
+    }
 
     const last = hist[hist.length - 1];
     const prev = hist.length > 1 ? hist[hist.length - 2] : last;
@@ -69,10 +74,11 @@ async function fetchIndexQuote(symbol: string): Promise<IndexQuote> {
       price: last.close,
       changePct:
         prev.close > 0 ? (last.close - prev.close) / prev.close : 0,
+      date: last.date,
     };
   } catch (err) {
     console.error(`MarketSentimentBoard index ${symbol} failed:`, err);
-    return { price: null, changePct: null };
+    return { price: null, changePct: null, date: null };
   }
 }
 
@@ -90,17 +96,17 @@ function sentiment(
 function SentimentCard({
   label,
   indexName,
-  sourceLabel,
   data,
   quote,
 }: {
   label: string;
   indexName: string;
-  sourceLabel: string;
   data: MarketSummary | undefined;
   quote: IndexQuote;
 }) {
-  const dateLabel = fmtDataDate(data?.date ?? null);
+  const breadthDateLabel = fmtDataDate(data?.date ?? null);
+  const indexDateLabel = fmtDataDate(quote.date);
+  const sourceLabel = breadthSourceLabel(data?.source);
   const hasData =
     data != null && (data.up > 0 || data.down > 0 || data.flat > 0);
   const upPct =
@@ -146,6 +152,10 @@ function SentimentCard({
             {fmtPct(quote.changePct)}
           </span>
         </div>
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          代表指数 · Yahoo Finance
+          {indexDateLabel ? ` · 截至 ${indexDateLabel}` : " · 等待日期"}
+        </span>
 
         {hasData ? (
           <>
@@ -168,15 +178,17 @@ function SentimentCard({
               ) : null}
             </div>
 
-            <div className="mt-auto flex items-center justify-between gap-3 text-[11px]">
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px]">
               <span className="text-muted-foreground">
                 上涨占比{" "}
                 <span className="text-fg-dim tabular-nums">
                   {upPct != null ? `${upPct}%` : "—"}
                 </span>
               </span>
-              <span className="shrink-0 font-medium text-fg-dim tabular-nums">
-                {dateLabel ? `${dateLabel} · ${sourceLabel}` : sourceLabel}
+              <span className="font-medium text-fg-dim tabular-nums">
+                {sourceLabel}
+                {breadthDateLabel ? ` · 截至 ${breadthDateLabel}` : ""}
+                {` · 覆盖 ${data.coverage_count.toLocaleString("zh-CN")} 只`}
               </span>
             </div>
           </>
@@ -206,24 +218,12 @@ export async function MarketSentimentBoard({ date }: { date?: string }) {
   const anyData = summary.some(
     (item) => item.up > 0 || item.down > 0 || item.flat > 0
   );
-  const latestSummaryDate = summary
-    .map((item) => item.date)
-    .filter((value): value is string => Boolean(value))
-    .sort()
-    .pop();
-  const summaryDateLabel = fmtDataDate(latestSummaryDate);
-
   return (
     <section>
       <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-medium text-fg-dim">
-          市场情绪总览
-          {summaryDateLabel
-            ? ` · ${date ? "快照" : "截至"} ${summaryDateLabel}`
-            : ""}
-        </h2>
+        <h2 className="text-sm font-medium text-fg-dim">市场情绪总览</h2>
         <span className="text-[11px] text-muted-foreground">
-          代表指数 · 最新
+          {date ? "市场宽度历史快照" : "各数据按自身截止日展示"}
         </span>
       </div>
 
@@ -234,7 +234,6 @@ export async function MarketSentimentBoard({ date }: { date?: string }) {
               key={def.market}
               label={def.label}
               indexName={def.indexName}
-              sourceLabel={def.sourceLabel}
               data={byMarket.get(def.market)}
               quote={quotes[index]}
             />

@@ -37,6 +37,18 @@ interface RatePressureProps {
 }
 
 const CROSS_ASSET_SYMBOLS = ["DX-Y.NYB", "^VIX", "USDCNH", "GC=F"];
+const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
+
+function shanghaiToday(): string {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 
 function signedPercent(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -59,12 +71,19 @@ function spreadValue(value: number | null | undefined): string {
 
 function MarketBreadthCard({ summary }: { summary: MarketSummary | null }) {
   const ratio = summary?.up_ratio == null ? null : summary.up_ratio * 100;
-  const hasData = Boolean(summary?.date && summary.total > 0);
+  const hasData = Boolean(
+    summary?.date &&
+      summary.coverage_sufficient &&
+      summary.coverage_count > 0
+  );
+  const coverageLabel = summary
+    ? `覆盖 ${summary.coverage_count.toLocaleString("zh-CN")} 只`
+    : "至少 5,000 只";
 
   return (
     <MarketSummaryCard
       title="市场宽度"
-      description="日 K 全市场"
+      description={`日 K · ${coverageLabel}`}
       action={
         <Badge variant="secondary" className="text-[10px] tabular-nums">
           {fmtDataDate(summary?.date) ?? "等待快照"}
@@ -115,7 +134,7 @@ function MarketBreadthCard({ summary }: { summary: MarketSummary | null }) {
         <EmptyState
           compact
           title="暂无美股市场宽度"
-          description="日 K 全市场快照恢复后自动更新"
+          description="未找到覆盖至少 5,000 只标的的有效日 K 快照"
           className="min-h-28 justify-center"
         />
       )}
@@ -241,6 +260,7 @@ function CrossAssetPanel({ items }: { items: CrossAssetItem[] }) {
 }
 
 export async function UsMarketV3({ date }: UsMarketV3Props) {
+  const today = shanghaiToday();
   const [
     summaries,
     internals,
@@ -266,7 +286,9 @@ export async function UsMarketV3({ date }: UsMarketV3Props) {
   const movers = <MoversPanel market="us" date={date} />;
   const sectors = <SectorRotation items={crossAssets} />;
   const crossAsset = <CrossAssetPanel items={crossAssets} />;
-  const events = <UsMarketContext earnings={earnings} economic={economic} />;
+  const events = (
+    <UsMarketContext earnings={earnings} economic={economic} today={today} />
+  );
 
   return (
     <div className="flex min-w-0 flex-col gap-4 md:gap-5 xl:gap-6">

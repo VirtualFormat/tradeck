@@ -33,24 +33,21 @@ const TABS: { value: UsMarketTab; label: string }[] = [
   { value: "events", label: "事件" },
 ];
 
-const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
-
-function shanghaiToday(): string {
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: SHANGHAI_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 function sessionLabel(value: string | null): string {
   const session = value?.trim().toUpperCase();
   if (session === "BMO") return "盘前";
   if (session === "AMC") return "盘后";
   return "待定";
+}
+
+function sessionCode(value: string | null): string {
+  return value?.trim().toUpperCase() || "TBD";
+}
+
+function compareAscii(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 function importanceRank(value: string | null): number {
@@ -75,20 +72,25 @@ function shortDate(value: string | null): string {
 function UsEventsCard({
   earnings,
   economic,
+  today,
 }: {
   earnings: EarningsCalendarItem[];
   economic: EconomicCalendarItem[];
+  today: string;
 }) {
-  const today = shanghaiToday();
   const rows = [
     ...earnings
       .filter((item) => item.report_date && item.report_date >= today)
       .sort((a, b) =>
-        (a.report_date ?? "").localeCompare(b.report_date ?? "")
+        compareAscii(
+          `${a.report_date ?? ""}|${sessionCode(a.session)}|${a.symbol}`,
+          `${b.report_date ?? ""}|${sessionCode(b.session)}|${b.symbol}`
+        )
       )
       .slice(0, 4)
       .map((item) => ({
-        key: `earning-${item.report_date}-${item.symbol}`,
+        key: `earning-${item.report_date}-${sessionCode(item.session)}-${item.symbol}`,
+        sortKey: `${item.report_date ?? ""}|0|${sessionCode(item.session)}|${item.symbol}`,
         badge: `${shortDate(item.report_date)} ${sessionLabel(item.session)}`,
         title: `${item.symbol} 财报`,
         tone: "text-up",
@@ -102,19 +104,24 @@ function UsEventsCard({
           importanceRank(item.importance) <= 1
       )
       .sort((a, b) => {
-        const importance = importanceRank(a.importance) - importanceRank(b.importance);
+        const importance =
+          importanceRank(a.importance) - importanceRank(b.importance);
         if (importance !== 0) return importance;
-        return (a.event_date ?? "").localeCompare(b.event_date ?? "");
+        return compareAscii(
+          `${a.event_date ?? ""}|${a.event_time?.trim() ?? ""}`,
+          `${b.event_date ?? ""}|${b.event_time?.trim() ?? ""}`
+        );
       })
       .slice(0, 4)
       .map((item, index) => ({
         key: `economic-${item.event_date}-${item.event_name}-${index}`,
+        sortKey: `${item.event_date ?? ""}|1|${item.event_time?.trim() ?? ""}|${importanceRank(item.importance)}`,
         badge: `${shortDate(item.event_date)} ${item.event_time?.trim() || "全天"}`,
         title: item.event_name?.trim() ?? "",
         tone: importanceRank(item.importance) === 0 ? "text-warn" : "text-fg-dim",
       })),
   ]
-    .sort((a, b) => a.badge.localeCompare(b.badge))
+    .sort((a, b) => compareAscii(a.sortKey, b.sortKey))
     .slice(0, 6);
 
   return (
@@ -179,13 +186,15 @@ function UsNewsCoverageCard() {
 export function UsMarketContext({
   earnings,
   economic,
+  today,
 }: {
   earnings: EarningsCalendarItem[];
   economic: EconomicCalendarItem[];
+  today: string;
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-3.5">
-      <UsEventsCard earnings={earnings} economic={economic} />
+      <UsEventsCard earnings={earnings} economic={economic} today={today} />
       <UsNewsCoverageCard />
     </div>
   );

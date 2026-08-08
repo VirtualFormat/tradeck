@@ -111,30 +111,27 @@ export async function IndicesByMarket() {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {groups.map((group) => {
-        const latestDate = group.quotes
-          .map((quote) => quote.date)
-          .filter((value): value is string => Boolean(value))
-          .sort()
-          .pop();
-        const dateLabel = fmtDataDate(latestDate);
-        const distinctDates = new Set(
-          group.quotes
-            .map((quote) => quote.date)
-            .filter((value): value is string => Boolean(value))
+        const dates = group.quotes.map((quote) => quote.date);
+        const completeDates = dates.filter(
+          (value): value is string => Boolean(value)
         );
-        const datePrefix = distinctDates.size > 1 ? "截至 " : "";
-
+        const datesAreConsistent =
+          completeDates.length === dates.length &&
+          new Set(completeDates).size === 1;
+        const groupDateLabel = datesAreConsistent
+          ? fmtDataDate(completeDates[0])
+          : null;
         return (
           <section key={group.key} className="min-w-0">
             <div className="mb-2 flex items-baseline justify-between gap-2">
               <h3 className="text-xs font-medium text-fg-dim">{group.label}</h3>
-              {dateLabel ? (
+              {groupDateLabel ? (
                 <span className="text-[11px] text-muted-foreground tabular-nums">
-                  最新 · {datePrefix}{dateLabel}
+                  Yahoo Finance · 截至 {groupDateLabel}
                 </span>
               ) : (
                 <span className="text-[11px] text-muted-foreground">
-                  等待数据
+                  Yahoo Finance · 截止日不一致
                 </span>
               )}
             </div>
@@ -153,6 +150,7 @@ export async function IndicesByMarket() {
                   name={quote.name}
                   price={quote.price}
                   changePct={quote.changePct}
+                  date={quote.date}
                 />
               ))}
             </div>

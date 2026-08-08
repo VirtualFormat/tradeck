@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS quote_snapshots (
     change_percent DECIMAL(8,6),
     volume BIGINT,
     market CHAR(2),
+    data_as_of TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -46,8 +47,8 @@ CREATE TABLE IF NOT EXISTS movers_cache (
     id BIGSERIAL PRIMARY KEY,
     type VARCHAR(20) NOT NULL,          -- gainers / losers / active
     market CHAR(2) NOT NULL,
-    rank INT,
-    symbol VARCHAR(20),
+    rank INT NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
     name VARCHAR(100),
     price DECIMAL(12,4),
     percent_change DECIMAL(8,6),
@@ -58,6 +59,8 @@ CREATE TABLE IF NOT EXISTS movers_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_movers_type_market ON movers_cache(type, market);
 CREATE INDEX IF NOT EXISTS idx_movers_date ON movers_cache(snapshot_date, type, market);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_movers_cache_business_key
+    ON movers_cache(type, market, rank, symbol, snapshot_date);
 
 -- 新闻
 CREATE TABLE IF NOT EXISTS news_articles (

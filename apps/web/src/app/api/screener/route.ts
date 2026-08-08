@@ -18,6 +18,26 @@ const VALID_TYPES = [
   "aggressive_small_caps",
 ];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeMover(item: Record<string, unknown>) {
+  return {
+    symbol: typeof item.symbol === "string" ? item.symbol : "",
+    name: typeof item.name === "string" ? item.name : null,
+    price: nullableNumber(item.price),
+    change: nullableNumber(item.change),
+    change_percent: nullableNumber(item.percent_change),
+    volume: nullableNumber(item.volume),
+    exchange: typeof item.exchange === "string" ? item.exchange : null,
+  };
+}
+
 export async function GET(request: NextRequest) {
   const type = request.nextUrl.searchParams.get("type") ?? "gainers";
 
@@ -39,8 +59,16 @@ export async function GET(request: NextRequest) {
     if (!res.ok) {
       return NextResponse.json([]);
     }
-    const data = await res.json();
-    return NextResponse.json(data);
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) {
+      return NextResponse.json([]);
+    }
+    return NextResponse.json(
+      data
+        .filter(isRecord)
+        .map(normalizeMover)
+        .filter((item) => item.symbol)
+    );
   } catch (err) {
     console.error(`Screener ${type} failed:`, err);
     return NextResponse.json([]);

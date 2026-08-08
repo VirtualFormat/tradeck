@@ -13,9 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { HkCoverageCard } from "./hk-coverage-card";
-import {
-  HkMarketTabs,
-} from "./hk-market-tabs";
+import { HkMarketTabs, type HkQuoteFreshness } from "./hk-market-tabs";
 import { MarketSummaryCard } from "./market-summary-card";
 
 const HK_SYMBOLS = [
@@ -63,16 +61,89 @@ function crossAssetChangeClass(value: number | null): string {
   return value > 0 ? "text-up" : "text-down";
 }
 
-function formatShanghaiTime(value: string | null | undefined): string | null {
+const WEEKDAY_STALE_MS = 36 * 60 * 60 * 1000;
+const WEEKEND_STALE_MS = 72 * 60 * 60 * 1000;
+
+function hongKongDateParts(value: Date): {
+  date: string;
+  time: string;
+  weekday: string;
+} {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hour12: false,
+    timeZone: "Asia/Hong_Kong",
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+
+  return {
+    date: `${part("year")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}`,
+    weekday: part("weekday"),
+  };
+}
+
+function validQuoteDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(parsed);
+  return parsed;
+}
+
+function formatQuoteRange(
+  oldest: Date | null,
+  latest: Date | null,
+  fallback: string
+): string {
+  if (!oldest || !latest) return fallback;
+  const start = hongKongDateParts(oldest);
+  const end = hongKongDateParts(latest);
+  if (oldest.getTime() === latest.getTime()) {
+    return `${start.date} ${start.time}`;
+  }
+  if (start.date === end.date) {
+    return `${start.date} ${start.time}–${end.time}`;
+  }
+  return `${start.date} ${start.time}–${end.date} ${end.time}`;
+}
+
+function quoteFreshness(
+  symbol: string,
+  dataAsOf: string | null | undefined,
+  fetchedAt: string | null | undefined,
+  now: Date
+): HkQuoteFreshness {
+  const parsed = validQuoteDate(dataAsOf);
+  const fetched = validQuoteDate(fetchedAt);
+  const fetchedLabel = fetched
+    ? `${hongKongDateParts(fetched).date} ${hongKongDateParts(fetched).time}`
+    : null;
+  if (!parsed) {
+    return { symbol, isStale: true, cutoffLabel: null, fetchedLabel };
+  }
+
+  const currentLocal = hongKongDateParts(now);
+  const quoteLocal = hongKongDateParts(parsed);
+  const isWeekend =
+    currentLocal.weekday === "Sat" || currentLocal.weekday === "Sun";
+  const staleAfterMs = isWeekend ? WEEKEND_STALE_MS : WEEKDAY_STALE_MS;
+  const ageMs = now.getTime() - parsed.getTime();
+
+  return {
+    symbol,
+    isStale:
+      ageMs < -5 * 60 * 1000 ||
+      ageMs > staleAfterMs ||
+      quoteLocal.date > currentLocal.date,
+    cutoffLabel: `${quoteLocal.date} ${quoteLocal.time}`,
+    fetchedLabel,
+  };
 }
 
 function SnapshotTile({
@@ -106,11 +177,17 @@ function SnapshotTile({
 
 function HkBreadthCard({ summary }: { summary: MarketSummary | undefined }) {
   const upRatio = summary?.up_ratio ?? null;
+  const hasData = Boolean(
+    summary?.coverage_sufficient && summary.coverage_count > 0
+  );
+  const coverageLabel = summary
+    ? `${summary.coverage_count.toLocaleString("zh-CN")} 只`
+    : "至少 1,000 只";
 
   return (
     <MarketSummaryCard
-      title="市场宽度 · 日 K 全市场"
-      description={`快照 ${shortSummaryDate(summary?.date ?? null)} · 平盘计入总数但不计上涨占比`}
+      title="市场宽度 · 日 K"
+      description={`快照 ${shortSummaryDate(summary?.date ?? null)} · 实际覆盖 ${coverageLabel}`}
       className="h-full"
       action={
         <Badge variant="secondary" className="text-[10px]">
@@ -118,7 +195,7 @@ function HkBreadthCard({ summary }: { summary: MarketSummary | undefined }) {
         </Badge>
       }
     >
-      {summary ? (
+      {hasData && summary ? (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-2">
             <SnapshotTile
@@ -170,7 +247,7 @@ function HkBreadthCard({ summary }: { summary: MarketSummary | undefined }) {
         <EmptyState
           compact
           title="暂无港股市场宽度"
-          description="日 K 全市场计算完成后自动更新"
+          description="未找到覆盖至少 1,000 只标的的有效日 K 快照"
           className="min-h-36 justify-center"
         />
       )}
@@ -181,18 +258,22 @@ function HkBreadthCard({ summary }: { summary: MarketSummary | undefined }) {
 function HkSnapshotCard({
   summary,
   usdcnh,
-  quoteTime,
+  quoteRange,
+  quoteFetchRange,
+  quoteCoverage,
 }: {
   summary: MarketSummary | undefined;
   usdcnh: CrossAssetItem | undefined;
-  quoteTime: string | null;
+  quoteRange: string;
+  quoteFetchRange: string;
+  quoteCoverage: number;
 }) {
   const upRatio = summary?.up_ratio ?? null;
 
   return (
     <MarketSummaryCard
       title="港股快照"
-      description={`报价 ${quoteTime ?? "等待更新"} · 宽度 ${shortSummaryDate(summary?.date ?? null)}`}
+      description={`行情截止 ${quoteRange} · 覆盖 ${quoteCoverage}/${HK_SYMBOLS.length} · 抓取 ${quoteFetchRange} · 宽度 ${shortSummaryDate(summary?.date ?? null)}`}
       contentClassName="grid grid-cols-2 gap-2 sm:grid-cols-4"
     >
       <SnapshotTile
@@ -274,10 +355,39 @@ export async function HkMarketV3({ date }: { date?: string }) {
 
   const summary = summaries.find((item) => item.market === "HK");
   const usdcnh = crossAssets.find((item) => item.symbol === "USDCNH");
-  const quoteTime =
-    formatShanghaiTime(
-      quotes.find((quote) => quote.updated_at)?.updated_at
-    ) ?? null;
+  const now = new Date();
+  const pricedQuotes = quotes.filter((quote) => quote.last_price != null);
+  const quoteDates = pricedQuotes
+    .map((quote) => validQuoteDate(quote.data_as_of))
+    .filter((value): value is Date => value !== null)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const fetchedDates = pricedQuotes
+    .map((quote) => validQuoteDate(quote.fetched_at))
+    .filter((value): value is Date => value !== null)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const oldestQuote = quoteDates[0] ?? null;
+  const latestQuote = quoteDates.at(-1) ?? null;
+  const oldestFetch = fetchedDates[0] ?? null;
+  const latestFetch = fetchedDates.at(-1) ?? null;
+  const quoteRange = formatQuoteRange(
+    oldestQuote,
+    latestQuote,
+    "行情时间未知"
+  );
+  const quoteFetchRange = formatQuoteRange(
+    oldestFetch,
+    latestFetch,
+    "抓取时间未知"
+  );
+  const quoteCoverage = pricedQuotes.length;
+  const quoteFreshnessRows = quotes.map((quote) =>
+    quoteFreshness(
+      quote.symbol,
+      quote.data_as_of,
+      quote.fetched_at,
+      now
+    )
+  );
   const validNews = news
     .filter((article) => article.title?.trim() && article.url?.trim())
     .filter(
@@ -289,7 +399,9 @@ export async function HkMarketV3({ date }: { date?: string }) {
     <HkSnapshotCard
       summary={summary}
       usdcnh={usdcnh}
-      quoteTime={quoteTime}
+      quoteRange={quoteRange}
+      quoteFetchRange={quoteFetchRange}
+      quoteCoverage={quoteCoverage}
     />
   );
   const coverage = <HkCoverageCard />;
@@ -313,6 +425,10 @@ export async function HkMarketV3({ date }: { date?: string }) {
 
       <HkMarketTabs
         quotes={quotes}
+        quoteRange={quoteRange}
+        quoteFetchRange={quoteFetchRange}
+        quoteCoverage={quoteCoverage}
+        quoteFreshness={quoteFreshnessRows}
         earnings={earnings}
         news={validNews}
         snapshot={snapshot}

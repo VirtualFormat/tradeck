@@ -44,32 +44,34 @@ async def fetch_and_store_macro(name: str, path: str, params: dict, value_field:
     return len(results)
 
 
-async def run_macro_job() -> None:
+async def run_macro_job() -> dict[str, int]:
     """定时任务：拉所有宏观数据"""
     logger.info("=== macro job start ===")
-    total = 0
+    counts: dict[str, int] = {}
 
     # CPI
-    total += await fetch_and_store_macro(
+    counts["CPI"] = await fetch_and_store_macro(
         "CPI", "/economy/cpi", {"provider": "oecd", "limit": 12}
     )
     # 失业率
-    total += await fetch_and_store_macro(
+    counts["Unemployment"] = await fetch_and_store_macro(
         "Unemployment", "/economy/unemployment", {"provider": "oecd", "limit": 12}
     )
     # GDP
-    total += await fetch_and_store_macro(
+    counts["GDP_Nominal"] = await fetch_and_store_macro(
         "GDP_Nominal", "/economy/gdp/nominal", {"provider": "oecd", "limit": 20}
     )
     # EFFR
-    total += await fetch_and_store_macro(
+    counts["EFFR"] = await fetch_and_store_macro(
         "EFFR", "/fixedincome/rate/effr", {"provider": "federal_reserve", "limit": 12},
         value_field="rate",
     )
     # SOFR
-    total += await fetch_and_store_macro(
+    counts["SOFR"] = await fetch_and_store_macro(
         "SOFR", "/fixedincome/rate/sofr", {"provider": "federal_reserve", "limit": 12},
         value_field="rate",
     )
 
+    total = sum(counts.values())
     logger.info(f"=== macro job done: {total} data points ===")
+    return counts

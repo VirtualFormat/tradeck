@@ -61,7 +61,7 @@ async def fetch_and_store_news(symbol: str, limit: int = 10) -> int:
     return len(results)
 
 
-async def run_news_job() -> None:
+async def run_news_job() -> int:
     """定时任务：拉所有新闻"""
     logger.info("=== news job start ===")
     total = 0
@@ -69,3 +69,4 @@ async def run_news_job() -> None:
         count = await fetch_and_store_news(symbol, 10)
         total += count
     logger.info(f"=== news job done: {total} articles ===")
+    return total

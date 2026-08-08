@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import date, datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
@@ -10,6 +13,26 @@ from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.markets import pick_market, pick_provider, to_yahoo_symbol
 
 logger = logging.getLogger(__name__)
+
+_QUOTE_TIME_FIELDS = (
+    "date",
+    "last_price_time",
+    "regular_market_time",
+    "regularMarketTime",
+    "updated_at",
+    "timestamp",
+)
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MARKET_TIME_ZONES = {
+    "CN": ZoneInfo("Asia/Shanghai"),
+    "HK": ZoneInfo("Asia/Hong_Kong"),
+    "US": ZoneInfo("America/New_York"),
+}
+_MARKET_CLOSE_TIMES = {
+    "CN": time(15, 0),
+    "HK": time(16, 0),
+    "US": time(16, 0),
+}
 
 
 def _f(v: Any) -> float | None:
@@ -26,6 +49,81 @@ def _i(v: Any) -> int | None:
         return int(float(v)) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _market_close(value: date, market: str) -> datetime:
+    """将仅含交易日的 provider 值映射到市场本地常规收盘时刻。"""
+    zone = _MARKET_TIME_ZONES.get(market, timezone.utc)
+    close_time = _MARKET_CLOSE_TIMES.get(market, time(0, 0))
+    return datetime.combine(value, close_time, tzinfo=zone).astimezone(timezone.utc)
+
+
+def _parse_quote_time(value: Any, market: str) -> tuple[datetime | None, bool]:
+    """解析 provider 时间，返回 (UTC 时间, 是否仅含日期)。"""
+    if value is None or isinstance(value, bool):
+        return None, False
+
+    if isinstance(value, datetime):
+        parsed = value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_MARKET_TIME_ZONES.get(market, timezone.utc))
+        return parsed.astimezone(timezone.utc), False
+
+    if isinstance(value, date):
+        return _market_close(value, market), True
+
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric != numeric or numeric <= 0:
+            return None, False
+        # 同时兼容 Unix 秒和毫秒时间戳。
+        if numeric >= 100_000_000_000:
+            numeric /= 1000
+        try:
+            return datetime.fromtimestamp(numeric, tz=timezone.utc), False
+        except (OverflowError, OSError, ValueError):
+            return None, False
+
+    if not isinstance(value, str):
+        return None, False
+
+    text = value.strip()
+    if not text:
+        return None, False
+    if _DATE_ONLY_RE.fullmatch(text):
+        try:
+            return _market_close(date.fromisoformat(text), market), True
+        except ValueError:
+            return None, False
+    try:
+        numeric = float(text)
+    except ValueError:
+        numeric = None
+    if numeric is not None:
+        return _parse_quote_time(numeric, market)
+
+    normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None, False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_MARKET_TIME_ZONES.get(market, timezone.utc))
+    return parsed.astimezone(timezone.utc), False
+
+
+def _extract_data_as_of(quote: dict[str, Any], market: str) -> datetime | None:
+    """从 provider 报价中提取真实行情时间；无法证明时返回 None。"""
+    date_only_fallback: datetime | None = None
+    for field in _QUOTE_TIME_FIELDS:
+        parsed, is_date_only = _parse_quote_time(quote.get(field), market)
+        if parsed is None:
+            continue
+        if is_date_only:
+            date_only_fallback = date_only_fallback or parsed
+            continue
+        return parsed
+    return date_only_fallback
 
 
 async def _fetch_akshare_quotes(symbols: list[str]) -> list[dict]:
@@ -115,6 +213,7 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
                 q.get("change_percent"),
                 q.get("volume"),
                 pick_market(q.get("symbol", "")),
+                _extract_data_as_of(q, pick_market(q.get("symbol", ""))),
             )
             for q in all_quotes
             if q.get("symbol")
@@ -122,8 +221,9 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
         await conn.executemany(
             """
             INSERT INTO quote_snapshots
-                (symbol, name, last_price, change, change_percent, volume, market, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                (symbol, name, last_price, change, change_percent, volume,
+                 market, data_as_of, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (symbol) DO UPDATE SET
                 name = EXCLUDED.name,
                 last_price = EXCLUDED.last_price,
@@ -132,6 +232,7 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
                 change_percent = COALESCE(EXCLUDED.change_percent, quote_snapshots.change_percent),
                 volume = EXCLUDED.volume,
                 market = EXCLUDED.market,
+                data_as_of = EXCLUDED.data_as_of,
                 updated_at = NOW()
             """,
             rows,
@@ -155,7 +256,7 @@ async def fetch_and_store_quotes(symbols: list[str]) -> int:
     return sum(counts.values())
 
 
-async def run_realtime_quotes_job() -> None:
+async def run_realtime_quotes_job() -> dict[str, int]:
     """定时任务：轮询所有跟踪股票报价"""
     logger.info("=== realtime quotes job start ===")
     counts = await fetch_and_store_quotes_by_market(TRACKED_SYMBOLS)
@@ -166,3 +267,4 @@ async def run_realtime_quotes_job() -> None:
         )
         + " ==="
     )
+    return {market: counts.get(market, 0) for market in ("CN", "HK", "US")}

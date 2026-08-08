@@ -15,7 +15,8 @@ async def _fetch_rows(pool, sym_list: list[str]):
         # 用 ANY($1::text[]) 匹配多个 symbol
         return await conn.fetch(
             """
-            SELECT symbol, name, last_price, change, change_percent, volume, market, updated_at
+            SELECT symbol, name, last_price, change, change_percent, volume,
+                   market, data_as_of, updated_at
             FROM quote_snapshots
             WHERE symbol = ANY($1::text[])
             """,
@@ -59,9 +60,9 @@ async def get_quotes(symbols: str = Query(..., description="逗号分隔的股�
         {
             "symbol": r["symbol"],
             "name": r["name"],
-            "last_price": float(r["last_price"]) if r["last_price"] else None,
-            "change": float(r["change"]) if r["change"] else None,
-            "change_percent": float(r["change_percent"]) if r["change_percent"] else None,
+            "last_price": float(r["last_price"]) if r["last_price"] is not None else None,
+            "change": float(r["change"]) if r["change"] is not None else None,
+            "change_percent": float(r["change_percent"]) if r["change_percent"] is not None else None,
             "volume": r["volume"],
             "exchange": None,  # 兼容前端 EquityQuote 接口
             "currency": None,
@@ -69,7 +70,8 @@ async def get_quotes(symbols: str = Query(..., description="逗号分隔的股�
             "high": None,
             "low": None,
             "prev_close": None,
-            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            "data_as_of": r["data_as_of"].isoformat() if r["data_as_of"] else None,
+            "fetched_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]

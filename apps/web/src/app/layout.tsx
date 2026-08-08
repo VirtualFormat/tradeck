@@ -37,7 +37,7 @@ export default function RootLayout({
       lang="zh-CN"
       suppressHydrationWarning
       className={cn(
-        "h-full antialiased",
+        "dark h-full antialiased",
         geistSans.variable,
         geistMono.variable,
         robotoSlab.variable,
@@ -48,7 +48,8 @@ export default function RootLayout({
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
-          enableSystem
+          forcedTheme="dark"
+          enableSystem={false}
           disableTransitionOnChange
         >
           <TooltipProvider>

@@ -1,14 +1,13 @@
-"""dev 用假数据种子（填充 DB，方便本地看页面效果）
+"""mock 模式数据种子（填充独立 DB，方便本地检查页面效果）。
 
 生效方式：
-- **dev 自动**：backend 启动时若 DEV_SEED=1（仅 .devcontainer 置），
-  main.py lifespan 在起调度器前调用 run_seed() 灌入假数据。
-- **手动兜底**：docker exec tradeck-dev-backend python -m app.seed_mock
+- **自动**：backend 以 DATA_MODE=mock 启动时调用 run_seed()。
+- **手动重灌**：mock backend 内运行 python -m app.seed_mock。
 
 说明：
-- 覆盖 20 张表，全部 UPSERT，可重复执行
-- 真数据到达后会被正常 job 覆盖（jobs 拉取失败返回 0 行，不会清掉假数据）
-- 不要在 prod 跑（prod docker-compose.yml 不置 DEV_SEED）
+- 覆盖看板业务表，全部 UPSERT，可重复执行
+- mock 模式不启动 scheduler、手动同步或按需回源，不会写入真实数据
+- DATA_MODE 不是 mock 时，本模块拒绝执行
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ import random
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.config import settings
 from app.db import close_pool, get_pool
 from app.jobs.daily_kline import TRACKED_SYMBOLS
 from app.jobs.indices import TRACKED_COMMODITIES, TRACKED_INDICES
@@ -27,6 +27,14 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 rng = random.Random(42)
+
+
+def _require_mock_mode() -> None:
+    if settings.DATA_MODE != "mock":
+        raise RuntimeError(
+            "Mock seed refused: set DATA_MODE=mock and use the isolated mock database"
+        )
+
 
 # ── 名称映射（A 股/港股给中文名，美股用代码兜底）──
 NAMES: dict[str, str] = {
@@ -259,12 +267,11 @@ async def seed_index_prices(conn) -> int:
 
 
 async def seed_movers(conn, quotes: dict[str, tuple[float, float]]) -> int:
-    """美股涨跌榜（gainers/losers/active 各 10 条，全量覆盖式刷新）。"""
+    """美股涨跌榜（gainers/losers/active 各 10 条）。"""
     us = [(s, price, pct) for s, (price, pct) in quotes.items() if pick_market(s) == "US"]
     gainers = sorted(us, key=lambda x: x[2], reverse=True)[:10]
     losers = sorted(us, key=lambda x: x[2])[:10]
     active = sorted(us, key=lambda x: abs(x[2]), reverse=True)[:10]
-    await conn.execute("DELETE FROM movers_cache WHERE market = 'US'")
     rows = []
     for mtype, group in (("gainers", gainers), ("losers", losers), ("active", active)):
         for rank, (sym, price, pct) in enumerate(group, 1):
@@ -288,6 +295,13 @@ async def seed_movers(conn, quotes: dict[str, tuple[float, float]]) -> int:
             (type, market, rank, symbol, name, price, percent_change,
              volume, amount, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        ON CONFLICT (type, market, rank, symbol, snapshot_date) DO UPDATE SET
+            name = EXCLUDED.name,
+            price = EXCLUDED.price,
+            percent_change = EXCLUDED.percent_change,
+            volume = EXCLUDED.volume,
+            amount = EXCLUDED.amount,
+            updated_at = NOW()
         """,
         rows,
     )
@@ -420,7 +434,7 @@ async def seed_fundamentals(conn, quotes: dict[str, tuple[float, float]]) -> int
 
 
 async def seed_boards(conn) -> int:
-    """板块行情热度 mock（board_heat，全量覆盖式）。"""
+    """板块行情热度 mock（board_heat，按业务键 UPSERT）。"""
     cn_names = [s for s in TRACKED_SYMBOLS if pick_market(s) == "CN"]
     rows = []
     for btype, boards in (("concept", CONCEPT_BOARDS), ("industry", INDUSTRY_BOARDS)):
@@ -434,13 +448,20 @@ async def seed_boards(conn) -> int:
                 NAMES.get(leader_sym, leader_sym),
                 round(max(-10.0, min(10.0, rng.gauss(0, 3.0))), 2),
             ))
-    await conn.execute("DELETE FROM board_heat")
     await conn.executemany(
         """
         INSERT INTO board_heat
             (board_type, name, code, change_percent, market_cap,
              turnover_rate, leader_stock, leader_change, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        ON CONFLICT (board_type, name, snapshot_date) DO UPDATE SET
+            code = EXCLUDED.code,
+            change_percent = EXCLUDED.change_percent,
+            market_cap = EXCLUDED.market_cap,
+            turnover_rate = EXCLUDED.turnover_rate,
+            leader_stock = EXCLUDED.leader_stock,
+            leader_change = EXCLUDED.leader_change,
+            updated_at = NOW()
         """,
         rows,
     )
@@ -916,34 +937,89 @@ async def seed_market_breadth(conn) -> int:
 async def run_seed(conn) -> dict[str, int]:
     """在给定连接上灌入全部假数据（单事务），返回各表写入行数。
 
-    供 dev 启动自动 seed（main.py lifespan）与手动入口复用。
+    供 mock 模式启动自动 seed（main.py lifespan）与手动入口复用。
     """
-    async with conn.transaction():
-        quotes = await seed_quotes(conn)
-        counts = {
-            "quote_snapshots": len(quotes),
-            "daily_prices": await seed_daily_prices(conn, quotes),
-            "index_prices": await seed_index_prices(conn),
-            "movers_cache": await seed_movers(conn, quotes),
-            "news_articles": await seed_news(conn),
-            "macro_indicators": await seed_macro(conn),
-            "fundamentals(3表)": await seed_fundamentals(conn, quotes),
-            "analyst_consensus": await seed_analyst_consensus(conn, quotes),
-            "balance+cash(2表)": await seed_balance_cash(conn, quotes),
-            "board_heat": await seed_boards(conn),
-            "earnings_calendar": await seed_earnings_calendar(conn),
-            "economic_calendar": await seed_economic_calendar(conn),
-            "announcements": await seed_announcements(conn),
-            "research_reports": await seed_research_reports(conn),
-            "market_breadth": await seed_market_breadth(conn),
-            "macro_asset_prices": await seed_macro_asset_prices(conn),
-            "yield_curve_rates": await seed_yield_curve_rates(conn),
-        }
-    return counts
+    _require_mock_mode()
+    # 局部导入避免模块初始化时形成循环依赖。
+    from app.mock_data import (
+        SeedRecordingConnection,
+        begin_seed_run,
+        complete_seed_run,
+        fail_seed_run,
+    )
+
+    run = await begin_seed_run(conn)
+    try:
+        async with conn.transaction():
+            # 仅 mock 模式可到达此处。兼容已有 mock 卷：先清理旧版重复/空键，
+            # 再补齐业务唯一约束；live backend 永远不会执行此运行时迁移。
+            await conn.execute(
+                "DELETE FROM movers_cache WHERE rank IS NULL OR symbol IS NULL"
+            )
+            await conn.execute(
+                """
+                DELETE FROM movers_cache AS duplicate
+                USING (
+                    SELECT id
+                    FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY type, market, rank, symbol, snapshot_date
+                                   ORDER BY updated_at DESC NULLS LAST, id DESC
+                               ) AS row_number
+                        FROM movers_cache
+                    ) AS ranked
+                    WHERE row_number > 1
+                ) AS stale
+                WHERE duplicate.id = stale.id
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE movers_cache
+                    ALTER COLUMN rank SET NOT NULL,
+                    ALTER COLUMN symbol SET NOT NULL
+                """
+            )
+            await conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_movers_cache_business_key
+                ON movers_cache(type, market, rank, symbol, snapshot_date)
+                """
+            )
+            current_date = await conn.fetchval("SELECT CURRENT_DATE")
+            recorded = SeedRecordingConnection(conn, current_date)
+            quotes = await seed_quotes(recorded)
+            counts = {
+                "quote_snapshots": len(quotes),
+                "daily_prices": await seed_daily_prices(recorded, quotes),
+                "index_prices": await seed_index_prices(recorded),
+                "movers_cache": await seed_movers(recorded, quotes),
+                "news_articles": await seed_news(recorded),
+                "macro_indicators": await seed_macro(recorded),
+                "fundamentals(3表)": await seed_fundamentals(recorded, quotes),
+                "analyst_consensus": await seed_analyst_consensus(recorded, quotes),
+                "balance+cash(2表)": await seed_balance_cash(recorded, quotes),
+                "board_heat": await seed_boards(recorded),
+                "earnings_calendar": await seed_earnings_calendar(recorded),
+                "economic_calendar": await seed_economic_calendar(recorded),
+                "announcements": await seed_announcements(recorded),
+                "research_reports": await seed_research_reports(recorded),
+                "market_breadth": await seed_market_breadth(recorded),
+                "macro_asset_prices": await seed_macro_asset_prices(recorded),
+                "yield_curve_rates": await seed_yield_curve_rates(recorded),
+            }
+            await complete_seed_run(conn, run, recorded, counts)
+        return counts
+    except Exception as exc:
+        # seed 数据与完成态 manifest 在同一事务中，异常会一起回滚。
+        await fail_seed_run(conn, run, exc)
+        raise
 
 
 async def main() -> None:
     """手动入口：自建连接跑一遍 seed。"""
+    _require_mock_mode()
     logger.info("=== seed mock data start ===")
     pool = await get_pool()
     async with pool.acquire() as conn:

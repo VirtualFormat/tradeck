@@ -36,10 +36,21 @@ const HK_PAGE_TABS: { value: HkPageTab; label: string }[] = [
 
 interface HkMarketTabsProps {
   quotes: EquityQuote[];
+  quoteRange: string;
+  quoteFetchRange: string;
+  quoteCoverage: number;
+  quoteFreshness: HkQuoteFreshness[];
   earnings: EarningsCalendarItem[];
   news: NewsArticle[];
   snapshot: ReactNode;
   coverage: ReactNode;
+}
+
+export interface HkQuoteFreshness {
+  symbol: string;
+  isStale: boolean;
+  cutoffLabel: string | null;
+  fetchedLabel: string | null;
 }
 
 function formatPrice(value: number | null): string {
@@ -84,9 +95,24 @@ function sortQuotes(quotes: EquityQuote[], type: QuoteTab): EquityQuote[] {
   });
 }
 
-function RepresentativeQuotes({ quotes }: { quotes: EquityQuote[] }) {
+function RepresentativeQuotes({
+  quotes,
+  quoteRange,
+  quoteFetchRange,
+  quoteCoverage,
+  quoteFreshness,
+}: {
+  quotes: EquityQuote[];
+  quoteRange: string;
+  quoteFetchRange: string;
+  quoteCoverage: number;
+  quoteFreshness: HkQuoteFreshness[];
+}) {
   const [type, setType] = useState<QuoteTab>("gainers");
   const rows = sortQuotes(quotes, type).slice(0, 8);
+  const freshnessBySymbol = new Map(
+    quoteFreshness.map((item) => [item.symbol, item])
+  );
 
   return (
     <Card size="sm" className="gap-3 py-3.5">
@@ -94,7 +120,7 @@ function RepresentativeQuotes({ quotes }: { quotes: EquityQuote[] }) {
         <div>
           <CardTitle>代表标的 · 当前报价快照</CardTitle>
           <CardDescription className="text-[11px]">
-            12 只代表标的，非港股全市场榜单；不随历史日期回看
+            行情截止 {quoteRange} · 覆盖 {quoteCoverage}/12 · 抓取 {quoteFetchRange}；非全市场榜单
           </CardDescription>
         </div>
         <div className="flex gap-1">
@@ -115,54 +141,74 @@ function RepresentativeQuotes({ quotes }: { quotes: EquityQuote[] }) {
       <CardContent className="px-3.5 md:px-4">
         {rows.length ? (
           <div className="divide-y divide-border/60">
-            {rows.map((quote) => (
-              <StockPreviewTrigger
-                key={quote.symbol}
-                symbol={quote.symbol}
-                name={quote.name}
-                renderTrigger={(triggerProps) => (
-                  <div
-                    onClick={triggerProps.onClick}
-                    className="flex min-w-0 cursor-pointer items-center gap-2 py-2"
-                  >
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        triggerProps.onClick(event);
-                      }}
-                      className="-ml-2 h-auto min-w-0 flex-1 justify-start px-2 py-1"
+            {rows.map((quote) => {
+              const freshness = freshnessBySymbol.get(quote.symbol);
+              const isStale = freshness?.isStale ?? true;
+              const cutoff = freshness?.cutoffLabel ?? null;
+              const fetched = freshness?.fetchedLabel ?? null;
+
+              return (
+                <StockPreviewTrigger
+                  key={quote.symbol}
+                  symbol={quote.symbol}
+                  name={quote.name}
+                  renderTrigger={(triggerProps) => (
+                    <div
+                      onClick={triggerProps.onClick}
+                      className="flex min-w-0 cursor-pointer items-center gap-2 py-2"
                     >
-                      <span className="min-w-0 truncate text-left text-xs">
-                        <span className="font-medium tabular-nums">
-                          {quote.symbol.replace(".HK", "")}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          triggerProps.onClick(event);
+                        }}
+                        className="-ml-2 h-auto min-w-0 flex-1 justify-start px-2 py-1"
+                      >
+                        <span className="min-w-0 truncate text-left text-xs">
+                          <span className="font-medium tabular-nums">
+                            {quote.symbol.replace(".HK", "")}
+                          </span>
+                          <span className="ml-2 text-muted-foreground">
+                            {quote.name || quote.symbol}
+                          </span>
                         </span>
-                        <span className="ml-2 text-muted-foreground">
-                          {quote.name || quote.symbol}
-                        </span>
+                      </Button>
+                      <span className="w-16 shrink-0 text-right text-xs tabular-nums">
+                        {formatPrice(quote.last_price)}
                       </span>
-                    </Button>
-                    <span className="w-16 shrink-0 text-right text-xs tabular-nums">
-                      {formatPrice(quote.last_price)}
-                    </span>
-                    <span
-                      className={cn(
-                        "w-[4.5rem] shrink-0 text-right text-xs font-medium tabular-nums",
-                        changeClass(quote.change_percent)
-                      )}
-                    >
-                      {formatPercent(quote.change_percent)}
-                      {type === "active" && (
-                        <span className="block text-[9px] font-normal text-muted-foreground">
-                          估算 {formatAmount(quote)}
+                      <span
+                        className={cn(
+                          "w-28 shrink-0 text-right text-xs font-medium tabular-nums",
+                          changeClass(quote.change_percent)
+                        )}
+                      >
+                        {formatPercent(quote.change_percent)}
+                        <span
+                          className={cn(
+                            "block text-[9px] font-normal",
+                            isStale ? "text-warn" : "text-muted-foreground"
+                          )}
+                        >
+                          {cutoff
+                            ? `${isStale ? "陈旧 · " : ""}行情截止 ${cutoff}`
+                            : "行情时间未知"}
                         </span>
-                      )}
-                    </span>
-                  </div>
-                )}
-              />
-            ))}
+                        <span className="block text-[9px] font-normal text-muted-foreground">
+                          {fetched ? `抓取 ${fetched}` : "抓取时间未知"}
+                        </span>
+                        {type === "active" && (
+                          <span className="block text-[9px] font-normal text-muted-foreground">
+                            估算 {formatAmount(quote)}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  )}
+                />
+              );
+            })}
           </div>
         ) : (
           <EmptyState compact title="暂无代表标的报价" className="min-h-40" />
@@ -238,6 +284,10 @@ function ListCard({
 /** 港股 V3：单 DOM 在移动 Tabs 与桌面主列/侧栏之间响应式重排。 */
 export function HkMarketTabs({
   quotes,
+  quoteRange,
+  quoteFetchRange,
+  quoteCoverage,
+  quoteFreshness,
   earnings,
   news,
   snapshot,
@@ -304,7 +354,13 @@ export function HkMarketTabs({
           aria-labelledby="hk-market-tab-quotes"
           className={cn(panelClass("quotes"), "xl:col-start-1 xl:row-start-1")}
         >
-          <RepresentativeQuotes quotes={quotes} />
+          <RepresentativeQuotes
+            quotes={quotes}
+            quoteRange={quoteRange}
+            quoteFetchRange={quoteFetchRange}
+            quoteCoverage={quoteCoverage}
+            quoteFreshness={quoteFreshness}
+          />
         </section>
         <section
           id="hk-market-panel-snapshot"

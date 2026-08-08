@@ -29,7 +29,7 @@ def _i(v: Any) -> int | None:
         return None
 
 
-async def run_fund_flow_job() -> None:
+async def run_fund_flow_job() -> int:
     """定时任务：拉个股主力资金流向即时榜（每 5 分钟）"""
     logger.info("=== fund flow job start ===")
     import akshare as ak
@@ -41,10 +41,10 @@ async def run_fund_flow_job() -> None:
         df = await call_akshare(fetch)
     except Exception as e:
         logger.warning(f"akshare fund flow failed: {e}")
-        return
+        return 0
     if df is None or df.empty:
         logger.warning("fund flow 为空（非交易时段或接口受限），保留旧快照")
-        return
+        return 0
 
     rows = []
     for _, r in df.iterrows():
@@ -63,7 +63,7 @@ async def run_fund_flow_job() -> None:
             _i(r.get("成交额")),
         ))
     if not rows:
-        return
+        return 0
 
     # 非交易时段东财只返回个位数有效净额——此时不写库，保留最近交易日快照
     valid_count = sum(1 for r in rows if r[7] is not None)
@@ -71,7 +71,7 @@ async def run_fund_flow_job() -> None:
         logger.warning(
             f"fund flow 有效净额仅 {valid_count} 行（非交易时段），保留旧快照"
         )
-        return
+        return 0
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -90,3 +90,4 @@ async def run_fund_flow_job() -> None:
                 rows,
             )
     logger.info(f"=== fund flow job done: {len(rows)} rows ===")
+    return len(rows)

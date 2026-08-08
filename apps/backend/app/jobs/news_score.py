@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 500
 
 
-async def run_news_score_job() -> None:
+async def run_news_score_job() -> int:
     """定时任务：给 sentiment IS NULL 的新闻打分"""
     logger.info("=== news score job start ===")
     pool = await get_pool()
@@ -27,7 +27,7 @@ async def run_news_score_job() -> None:
         )
         if not rows:
             logger.info("=== news score job done: 0 rows ===")
-            return
+            return 0
         await conn.executemany(
             """
             UPDATE news_articles
@@ -37,3 +37,4 @@ async def run_news_score_job() -> None:
             [(r["id"], score_news(r["title"], r["summary"])) for r in rows],
         )
     logger.info(f"=== news score job done: {len(rows)} rows ===")
+    return len(rows)

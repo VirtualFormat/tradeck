@@ -4,7 +4,6 @@ import { DatePicker } from "@/components/date-picker";
 import { MarketStatusBar } from "@/components/market-status-bar";
 import { RefreshButton } from "@/components/refresh-button";
 import { StockSearch } from "@/components/stock-search";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -57,7 +56,6 @@ export function MarketPageToolbar({
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           <DatePicker />
           <RefreshButton />
-          <ThemeToggle />
         </div>
 
         <div className="min-w-0 basis-full border-t border-border/60 pt-2 sm:basis-auto sm:border-0 sm:pt-0">

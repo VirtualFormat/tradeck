@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 NEWS_COUNT_NORM = 20
 
 
-async def run_board_sentiment_job() -> None:
+async def run_board_sentiment_job() -> int:
     """定时任务：聚合板块舆情热度"""
     logger.info("=== board sentiment job start ===")
     pool = await get_pool()
@@ -34,7 +34,7 @@ async def run_board_sentiment_job() -> None:
         )
         if not rows:
             logger.info("=== board sentiment job done: 0 rows ===")
-            return
+            return 0
 
         # 关联行情热度
         heat_rows = await conn.fetch(
@@ -73,3 +73,4 @@ async def run_board_sentiment_job() -> None:
             out,
         )
     logger.info(f"=== board sentiment job done: {len(out)} rows ===")
+    return len(out)

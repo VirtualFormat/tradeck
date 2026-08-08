@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from numbers import Real
+from typing import Awaitable, Callable, Literal
 
 from app.jobs import progress
 from app.jobs.akshare_news import run_akshare_news_job
@@ -41,6 +42,19 @@ JobCallable = Callable[[], Awaitable[object]]
 
 
 @dataclass(frozen=True)
+class JobHealthQuery:
+    """任务专属数据切片；字段全部由代码白名单定义，不接收请求输入。"""
+
+    name: str
+    table: str
+    where: str = "TRUE"
+    latest_column: str | None = None
+    latest_kind: Literal["date", "datetime"] | None = None
+    max_age_hours: int | None = None
+    label: str | None = None
+
+
+@dataclass(frozen=True)
 class JobDefinition:
     id: str
     label: str
@@ -52,6 +66,9 @@ class JobDefinition:
     managed_progress: bool = False
     allow_manual: bool = True
     concurrency_group: str | None = None
+    classify_result: bool = True
+    maintenance: bool = False
+    health_queries: tuple[JobHealthQuery, ...] = ()
 
 
 async def _movers_cn() -> int:
@@ -89,13 +106,18 @@ JOB_DEFINITIONS = (
         "每 30 分钟",
         ("quote_snapshots",),
         run_realtime_quotes_job,
+        health_queries=(
+            JobHealthQuery("A 股报价", "quote_snapshots", "market = 'CN'"),
+            JobHealthQuery("港股报价", "quote_snapshots", "market = 'HK'"),
+            JobHealthQuery("美股报价", "quote_snapshots", "market = 'US'"),
+        ),
     ),
     JobDefinition(
         "indices",
         "指数与商品历史",
         "全球指数、波动率与商品历史行情",
         "yfinance",
-        "每天 17:00 UTC",
+        "各市场收盘后分批更新",
         ("index_prices",),
         run_indices_job,
     ),
@@ -107,6 +129,9 @@ JOB_DEFINITIONS = (
         "每 5 分钟",
         ("movers_cache",),
         run_movers_job,
+        health_queries=(
+            JobHealthQuery("美股榜单", "movers_cache", "market = 'US'"),
+        ),
     ),
     JobDefinition(
         "movers_cn",
@@ -116,6 +141,9 @@ JOB_DEFINITIONS = (
         "每天 09:10 UTC",
         ("movers_cache",),
         _movers_cn,
+        health_queries=(
+            JobHealthQuery("A 股榜单", "movers_cache", "market = 'CN'"),
+        ),
     ),
     JobDefinition(
         "news",
@@ -125,6 +153,13 @@ JOB_DEFINITIONS = (
         "每 30 分钟",
         ("news_articles",),
         run_news_job,
+        health_queries=(
+            JobHealthQuery(
+                "海外新闻",
+                "news_articles",
+                "symbol IS NOT NULL AND symbol !~ '[.](SH|SS|SZ|BJ)$'",
+            ),
+        ),
     ),
     JobDefinition(
         "akshare_news",
@@ -134,6 +169,13 @@ JOB_DEFINITIONS = (
         "每 30 分钟",
         ("news_articles",),
         run_akshare_news_job,
+        health_queries=(
+            JobHealthQuery(
+                "A 股新闻",
+                "news_articles",
+                "symbol ~ '[.](SH|SS|SZ|BJ)$'",
+            ),
+        ),
     ),
     JobDefinition(
         "news_score",
@@ -143,6 +185,17 @@ JOB_DEFINITIONS = (
         "每 30 分钟",
         ("news_articles",),
         run_news_score_job,
+        health_queries=(
+            JobHealthQuery(
+                "已打分新闻",
+                "news_articles",
+                "scored_at IS NOT NULL",
+                latest_column="scored_at",
+                latest_kind="datetime",
+                max_age_hours=36,
+                label="最近打分时间",
+            ),
+        ),
     ),
     JobDefinition(
         "macro",
@@ -266,6 +319,13 @@ JOB_DEFINITIONS = (
         "每 30 分钟",
         ("market_breadth",),
         run_market_breadth_job,
+        health_queries=(
+            JobHealthQuery(
+                "A 股宽度",
+                "market_breadth",
+                "market = 'CN' AND source = 'legu'",
+            ),
+        ),
     ),
     JobDefinition(
         "market_breadth_global",
@@ -275,6 +335,18 @@ JOB_DEFINITIONS = (
         "每天 09:05 / 22:05 UTC",
         ("market_breadth",),
         run_market_breadth_global_job,
+        health_queries=(
+            JobHealthQuery(
+                "美股宽度",
+                "market_breadth",
+                "market = 'US' AND source = 'daily_kline'",
+            ),
+            JobHealthQuery(
+                "港股宽度",
+                "market_breadth",
+                "market = 'HK' AND source = 'daily_kline'",
+            ),
+        ),
     ),
     JobDefinition(
         "macro_assets",
@@ -300,6 +372,8 @@ JOB_DEFINITIONS = (
         ),
         run_cleanup_job,
         allow_manual=False,
+        classify_result=False,
+        maintenance=True,
     ),
 )
 
@@ -345,21 +419,86 @@ def job_catalog() -> list[dict]:
             "schedule": job.schedule,
             "tables": list(job.tables),
             "allow_manual": job.allow_manual,
+            "maintenance": job.maintenance,
+            "health_queries": [
+                {
+                    "name": query.name,
+                    "table": query.table,
+                    "where": query.where,
+                    "latest_column": query.latest_column,
+                    "latest_kind": query.latest_kind,
+                    "max_age_hours": query.max_age_hours,
+                    "label": query.label,
+                }
+                for query in job.health_queries
+            ],
         }
         for job in JOB_DEFINITIONS
     ]
 
 
-def _result_note(result: object) -> str:
+def _numeric_result_items(result: object) -> list[tuple[str, float]]:
+    if not isinstance(result, dict):
+        return []
+    return [
+        (str(key), float(value))
+        for key, value in result.items()
+        if isinstance(value, Real) and not isinstance(value, bool)
+    ]
+
+
+def _format_count(value: float) -> str:
+    return f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
+
+
+def _result_outcome(job: JobDefinition, result: object) -> tuple[str, str]:
+    """将 runner 的显式写入量转换为任务结果。"""
     if isinstance(result, bool):
-        return "同步完成"
+        return "done", "同步完成"
     if isinstance(result, int):
-        return f"处理 {result:,} 行"
-    if isinstance(result, dict):
-        numeric = [int(value) for value in result.values() if isinstance(value, int)]
-        if numeric:
-            return f"处理 {sum(numeric):,} 行"
-    return "同步完成"
+        if job.classify_result and result == 0:
+            return "empty", "处理 0 行，未获取到新数据"
+        return "done", f"处理 {result:,} 行"
+
+    numeric = _numeric_result_items(result)
+    if numeric:
+        total = sum(value for _, value in numeric)
+        if not job.classify_result:
+            return "done", f"处理 {_format_count(total)} 行"
+        zero_items = [name for name, value in numeric if value == 0]
+        positive_items = [name for name, value in numeric if value > 0]
+        negative_items = [name for name, value in numeric if value < 0]
+        if all(value == 0 for _, value in numeric):
+            return "empty", "处理 0 行，所有数据分项均为空"
+        if (positive_items and (zero_items or negative_items)) or negative_items:
+            missing = zero_items + negative_items
+            detail = "、".join(missing[:4])
+            suffix = f"；无数据分项：{detail}" if detail else ""
+            return "partial", f"部分数据完成，合计处理 {_format_count(total)} 行{suffix}"
+        if total == 0:
+            return "empty", "处理 0 行，未获取到新数据"
+        return "done", f"处理 {_format_count(total)} 行"
+    if result is None and job.classify_result:
+        return "empty", "任务未返回处理数量，按空结果处理"
+    return "done", "同步完成"
+
+
+def _record_outcome(
+    job: JobDefinition,
+    result: object,
+    started_at: str | None,
+) -> None:
+    status, note = _result_outcome(job, result)
+    if job.managed_progress:
+        if status != "done":
+            progress.job_reclassify(job.id, status, note)
+        return
+    if status == "empty":
+        progress.job_empty(job.id, note, started_at)
+    elif status == "partial":
+        progress.job_partial(job.id, note, started_at)
+    else:
+        progress.job_done(job.id, note, started_at)
 
 
 async def run_registered_job(
@@ -386,10 +525,14 @@ async def run_registered_job(
             result = await run_daily_kline_job(
                 full=True, markets=markets, trigger=trigger
             )
+        elif job.id == "indices":
+            result = await run_indices_job(markets=markets)
         else:
             result = await job.runner()
-        if not job.managed_progress:
-            progress.job_done(job.id, _result_note(result), run_started_at)
+        if not job.managed_progress or not (
+            isinstance(result, int) and result == 0 and progress.is_running(job.id)
+        ):
+            _record_outcome(job, result, run_started_at)
         return result
     except Exception as exc:  # noqa: BLE001
         if not job.managed_progress:
@@ -423,8 +566,10 @@ def launch_registered_job(job_id: str) -> bool:
                 result = await run_daily_kline_job(full=True, trigger="manual")
             else:
                 result = await job.runner()
-            if not job.managed_progress:
-                progress.job_done(job.id, _result_note(result), run_started_at)
+            if not job.managed_progress or not (
+                isinstance(result, int) and result == 0 and progress.is_running(job.id)
+            ):
+                _record_outcome(job, result, run_started_at)
         except Exception as exc:  # noqa: BLE001
             if not job.managed_progress:
                 progress.job_error(job.id, str(exc)[:200], run_started_at)

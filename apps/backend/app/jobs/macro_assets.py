@@ -134,21 +134,23 @@ async def fetch_and_store_yield_curve() -> int:
     return len(rows)
 
 
-async def run_macro_assets_job() -> int:
+async def run_macro_assets_job() -> dict[str, int]:
     """定时任务：拉宏观资产历史 + 美债收益率曲线（每天一次）"""
     logger.info("=== macro assets job start ===")
-    total = 0
+    results = {asset["symbol"]: 0 for asset in MACRO_ASSETS}
+    results["yield_curve"] = 0
     for asset in MACRO_ASSETS:
         try:
-            total += await fetch_and_store_macro_asset(
+            results[asset["symbol"]] = await fetch_and_store_macro_asset(
                 asset["symbol"], asset["name"], asset["category"], asset["path"]
             )
         except Exception as e:
             # 单资产失败跳过，job 正常结束
             logger.warning(f"macro asset {asset['symbol']} failed: {e}")
     try:
-        total += await fetch_and_store_yield_curve()
+        results["yield_curve"] = await fetch_and_store_yield_curve()
     except Exception as e:
         logger.warning(f"yield curve fetch failed: {e}")
+    total = sum(results.values())
     logger.info(f"=== macro assets job done: {total} rows ===")
-    return total
+    return results

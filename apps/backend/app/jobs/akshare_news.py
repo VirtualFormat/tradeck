@@ -82,7 +82,7 @@ async def fetch_and_store_akshare_news(symbol: str) -> int:
     return len(rows)
 
 
-async def run_akshare_news_job() -> None:
+async def run_akshare_news_job() -> int:
     """定时任务：拉 30 只 A 股跟踪标的的东财新闻（限流交给数据层门面）"""
     logger.info("=== akshare news job start ===")
     total = 0
@@ -91,3 +91,4 @@ async def run_akshare_news_job() -> None:
             continue
         total += await fetch_and_store_akshare_news(symbol)
     logger.info(f"=== akshare news job done: {total} rows ===")
+    return total

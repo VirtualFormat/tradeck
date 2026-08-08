@@ -267,14 +267,22 @@ async def fetch_and_store_cash(symbol: str) -> int:
     return len(rows)
 
 
-async def run_fundamentals_job() -> None:
+async def run_fundamentals_job() -> dict[str, int]:
     """定时任务：拉所有跟踪股票的公司信息 + 指标 + 财报 + 资产负债表 + 现金流量表"""
     logger.info("=== fundamentals job start ===")
-    total = 0
+    counts = {
+        "equity_profiles": 0,
+        "fundamental_metrics": 0,
+        "income_statements": 0,
+        "balance_sheets": 0,
+        "cash_flow_statements": 0,
+    }
     for symbol in TRACKED_SYMBOLS:
-        total += await fetch_and_store_profile(symbol)
-        total += await fetch_and_store_metrics(symbol)
-        total += await fetch_and_store_income(symbol)
-        total += await fetch_and_store_balance(symbol)
-        total += await fetch_and_store_cash(symbol)
+        counts["equity_profiles"] += await fetch_and_store_profile(symbol)
+        counts["fundamental_metrics"] += await fetch_and_store_metrics(symbol)
+        counts["income_statements"] += await fetch_and_store_income(symbol)
+        counts["balance_sheets"] += await fetch_and_store_balance(symbol)
+        counts["cash_flow_statements"] += await fetch_and_store_cash(symbol)
+    total = sum(counts.values())
     logger.info(f"=== fundamentals job done: {total} records ===")
+    return counts

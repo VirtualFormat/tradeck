@@ -19,6 +19,7 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  useSidebar,
 } from "@/components/ui/sidebar"
 
 export type NavItem = {
@@ -40,6 +41,11 @@ export function NavMain({
   label?: string
 }) {
   const pathname = usePathname()
+  const { isMobile, setOpenMobile } = useSidebar()
+  const closeMobileSidebar = () => {
+    if (isMobile) setOpenMobile(false)
+  }
+
   return (
     <SidebarGroup>
       {label && <SidebarGroupLabel>{label}</SidebarGroupLabel>}
@@ -58,17 +64,20 @@ export function NavMain({
                   className="group/collapsible"
                   render={<SidebarMenuItem />}
                 >
-                  <CollapsibleTrigger
-                    render={
-                      <SidebarMenuButton
-                        tooltip={item.title}
-                        isActive={selfActive}
-                      />
-                    }
+                  <SidebarMenuButton
+                    tooltip={item.title}
+                    isActive={selfActive}
+                    render={<Link href={item.url} />}
+                    onClick={closeMobileSidebar}
                   >
                     {item.icon}
                     <span>{item.title}</span>
-                    <CaretRightIcon className="ml-auto transition-transform duration-200 group-data-open/collapsible:rotate-90" />
+                  </SidebarMenuButton>
+                  <CollapsibleTrigger
+                    aria-label={`展开${item.title}子菜单`}
+                    className="absolute top-1 right-1 flex size-6 items-center justify-center rounded-md text-sidebar-foreground outline-hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  >
+                    <CaretRightIcon className="transition-transform duration-200 group-data-open/collapsible:rotate-90" />
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <SidebarMenuSub>
@@ -77,6 +86,7 @@ export function NavMain({
                           <SidebarMenuSubButton
                             isActive={isUrlActive(pathname, sub.url)}
                             render={<Link href={sub.url} />}
+                            onClick={closeMobileSidebar}
                           >
                             {sub.icon}
                             <span>{sub.title}</span>
@@ -95,6 +105,7 @@ export function NavMain({
                   tooltip={item.title}
                   isActive={isUrlActive(pathname, item.url)}
                   render={<Link href={item.url} />}
+                  onClick={closeMobileSidebar}
                 >
                   {item.icon}
                   <span>{item.title}</span>

@@ -1,40 +1,52 @@
 "use client";
 
-import { useTheme } from "next-themes";
-import { MoonIcon, SunIcon } from "@phosphor-icons/react";
+import { GearIcon, MoonIcon } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
+} from "@/components/ui/sidebar";
 
 export function ThemeToggle() {
-  const { setTheme } = useTheme();
+  const { isMobile } = useSidebar();
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button variant="ghost" size="icon-sm" aria-label="切换主题">
-            <SunIcon className="hidden dark:block" />
-            <MoonIcon className="block dark:hidden" />
-          </Button>
-        }
-      />
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={() => setTheme("light")}>
-          浅色
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("dark")}>
-          深色
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("system")}>
-          跟随系统
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <SidebarMenuButton
+                tooltip="设置"
+                aria-label="设置主题"
+                className="aria-expanded:bg-sidebar-accent aria-expanded:text-sidebar-accent-foreground"
+              />
+            }
+          >
+            <GearIcon />
+            <span>设置</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="min-w-44"
+            side={isMobile ? "top" : "right"}
+            align="end"
+            sideOffset={4}
+          >
+            <DropdownMenuItem disabled>
+              <MoonIcon />
+              深色主题
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
   );
 }

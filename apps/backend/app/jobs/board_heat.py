@@ -137,9 +137,13 @@ async def fetch_and_store_boards(board_type: str) -> int:
     return len(rows)
 
 
-async def run_board_heat_job() -> None:
+async def run_board_heat_job() -> dict[str, int]:
     """定时任务：拉概念 + 行业板块行情热度"""
     logger.info("=== board heat job start ===")
-    total = await fetch_and_store_boards("concept")
-    total += await fetch_and_store_boards("industry")
+    counts = {
+        "concept": await fetch_and_store_boards("concept"),
+        "industry": await fetch_and_store_boards("industry"),
+    }
+    total = sum(counts.values())
     logger.info(f"=== board heat job done: {total} rows ===")
+    return counts

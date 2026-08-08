@@ -195,115 +195,105 @@ export async function MarketMetricsBand() {
   const spreadDate = spreadSeries.at(-1)?.date ?? yieldDate;
 
   return (
-    <div className="rounded-xl p-3 ring-1 ring-foreground/10">
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
-          <CardHeader className="px-3.5">
-            <CardTitle className="text-xs font-semibold text-fg-dim">
-              宏观速览
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-3 gap-2.5 px-3.5">
-            {macroMetrics.map((metric) => {
-              const change = macroChange(metric.latest, metric.previous);
-              return (
-                <MetricTile
-                  key={metric.label}
-                  label={metric.label}
-                  value={formatMacroValue(metric.latest)}
-                  meta={change?.text ?? null}
-                  metaClassName={change?.className}
-                  detail={formatMacroDate(
-                    metric.latest?.date,
-                    metric.dateMode
-                  )}
-                />
-              );
-            })}
-          </CardContent>
-        </Card>
+    <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+      <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
+        <CardHeader className="px-3.5">
+          <CardTitle className="text-xs font-semibold text-fg-dim">
+            宏观速览
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-3 gap-2.5 px-3.5">
+          {macroMetrics.map((metric) => {
+            const change = macroChange(metric.latest, metric.previous);
+            return (
+              <MetricTile
+                key={metric.label}
+                label={metric.label}
+                value={formatMacroValue(metric.latest)}
+                meta={change?.text ?? null}
+                metaClassName={change?.className}
+                detail={formatMacroDate(metric.latest?.date, metric.dateMode)}
+              />
+            );
+          })}
+        </CardContent>
+      </Card>
 
-        <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
-          <CardHeader className="px-3.5">
-            <CardTitle className="text-xs font-semibold text-fg-dim">
-              跨资产
-            </CardTitle>
-            <CardAction className="text-[10px] text-muted-foreground">
-              {commodityAvailable}/{commodities.length} 可用
+      <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
+        <CardHeader className="px-3.5">
+          <CardTitle className="text-xs font-semibold text-fg-dim">
+            跨资产
+          </CardTitle>
+          <CardAction className="text-[10px] text-muted-foreground">
+            {commodityAvailable}/{commodities.length} 可用
+          </CardAction>
+        </CardHeader>
+        <CardContent className="px-3.5">
+          {hasCommodityData ? (
+            <div className="grid grid-cols-4 gap-2.5">
+              {commodities.map(({ symbol, label, data }) => (
+                <MetricTile
+                  key={symbol}
+                  label={label}
+                  value={formatAssetPrice(data?.close ?? null)}
+                  meta={formatAssetChange(data?.chg_1d ?? null)}
+                  metaClassName={movementClass(data?.chg_1d ?? null)}
+                  detail={data?.latest_date?.slice(5) ?? (data ? null : "缺失")}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              inline
+              title="暂无跨资产数据"
+              className="h-[57px] items-center justify-center rounded-lg bg-secondary/70 text-center"
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
+        <CardHeader className="px-3.5">
+          <CardTitle className="text-xs font-semibold text-fg-dim">
+            国债收益率 · 美债
+          </CardTitle>
+          {yieldDate && (
+            <CardAction className="text-[10px] text-muted-foreground tabular-nums">
+              {yieldDate.slice(5)}
             </CardAction>
-          </CardHeader>
-          <CardContent className="px-3.5">
-            {hasCommodityData ? (
-              <div className="grid grid-cols-4 gap-2.5">
-                {commodities.map(({ symbol, label, data }) => (
-                  <MetricTile
-                    key={symbol}
-                    label={label}
-                    value={formatAssetPrice(data?.close ?? null)}
-                    meta={formatAssetChange(data?.chg_1d ?? null)}
-                    metaClassName={movementClass(data?.chg_1d ?? null)}
-                    detail={
-                      data?.latest_date?.slice(5) ??
-                      (data ? null : "缺失")
-                    }
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState
-                inline
-                title="暂无跨资产数据"
-                className="h-[57px] items-center justify-center rounded-lg bg-secondary/70 text-center"
+          )}
+        </CardHeader>
+        <CardContent className="px-3.5">
+          {hasYieldData ? (
+            <div className="grid grid-cols-4 gap-2.5">
+              <MetricTile label="2年期" value={formatYield(yield2Y)} />
+              <MetricTile label="10年期" value={formatYield(yield10Y)} />
+              <MetricTile label="30年期" value={formatYield(yield30Y)} />
+              <MetricTile
+                label="10Y-2Y"
+                value={formatSpread(spread)}
+                meta={spread == null ? null : inverted ? "倒挂" : "正常"}
+                detail={spreadDate?.slice(5) ?? null}
+                metaClassName={
+                  spread == null
+                    ? undefined
+                    : inverted
+                      ? "text-warn"
+                      : "text-muted-foreground"
+                }
+                className={cn(inverted && "bg-warn/10 ring-1 ring-warn/40")}
+                valueClassName={inverted ? "text-warn" : undefined}
               />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card size="sm" className="gap-2.5 py-3 xl:h-[113px]">
-          <CardHeader className="px-3.5">
-            <CardTitle className="text-xs font-semibold text-fg-dim">
-              国债收益率 · 美债
-            </CardTitle>
-            {yieldDate && (
-              <CardAction className="text-[10px] text-muted-foreground tabular-nums">
-                {yieldDate.slice(5)}
-              </CardAction>
-            )}
-          </CardHeader>
-          <CardContent className="px-3.5">
-            {hasYieldData ? (
-              <div className="grid grid-cols-4 gap-2.5">
-                <MetricTile label="2年期" value={formatYield(yield2Y)} />
-                <MetricTile label="10年期" value={formatYield(yield10Y)} />
-                <MetricTile label="30年期" value={formatYield(yield30Y)} />
-                <MetricTile
-                  label="10Y-2Y"
-                  value={formatSpread(spread)}
-                  meta={spread == null ? null : inverted ? "倒挂" : "正常"}
-                  detail={spreadDate?.slice(5) ?? null}
-                  metaClassName={
-                    spread == null
-                      ? undefined
-                      : inverted
-                        ? "text-warn"
-                        : "text-muted-foreground"
-                  }
-                  className={cn(
-                    inverted && "bg-warn/10 ring-1 ring-warn/40"
-                  )}
-                  valueClassName={inverted ? "text-warn" : undefined}
-                />
-              </div>
-            ) : (
-              <EmptyState
-                inline
-                title="暂无美债收益率数据"
-                className="h-[57px] items-center justify-center rounded-lg bg-secondary/70 text-center"
-              />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+            </div>
+          ) : (
+            <EmptyState
+              inline
+              title="暂无美债收益率数据"
+              className="h-[57px] items-center justify-center rounded-lg bg-secondary/70 text-center"
+            />
+          )}
+        </CardContent>
+      </Card>
+    </section>
   );
 }

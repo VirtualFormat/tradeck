@@ -286,8 +286,9 @@ async def fetch_and_store_movers() -> int:
     return us_count + cn_count
 
 
-async def run_movers_job() -> None:
+async def run_movers_job() -> int:
     """高频任务：刷新美股榜单；A 股榜单由日 K 完成后刷新。"""
     logger.info("=== movers job start ===")
     count = await fetch_and_store_us_movers()
     logger.info(f"=== movers job done: US={count} rows ===")
+    return count
