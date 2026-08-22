@@ -43,3 +43,7 @@ tmp/
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+# 本地 AI agent 技能配置（个人环境，非项目代码）
+.agents/
+skills-lock.json
