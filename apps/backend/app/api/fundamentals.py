@@ -1,6 +1,8 @@
 """GET /api/fundamentals — 从 fundamental_metrics + income_statements 读；无数据时经 collector 按需回源"""
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Query
 
 from app.api._ensure import ensure, valid_symbol
@@ -9,8 +11,33 @@ from app.db import get_pool
 router = APIRouter()
 
 
-async def _fetch_metrics_row(pool, symbol: str):
+def _parse_as_of(as_of: str | None) -> date | None:
+    """解析 as_of 查询参数（YYYY-MM-DD）；格式非法时返回 None，优雅降级为最新值。"""
+    if not as_of:
+        return None
+    try:
+        return date.fromisoformat(as_of)
+    except ValueError:
+        return None
+
+
+async def _fetch_metrics_row(pool, symbol: str, as_of: date | None = None):
     async with pool.acquire() as conn:
+        if as_of is not None:
+            # as-of 近似口径：fundamental_metrics 为覆盖式最新值（PK symbol，单行），
+            # 只能用 updated_at 判断「该时点前是否已写入过」；无法精确还原历史值。
+            return await conn.fetchrow(
+                """
+                SELECT symbol, market_cap, pe_ratio, forward_pe, peg_ratio,
+                    enterprise_to_ebitda, earnings_growth, revenue_growth,
+                    dividend_yield, beta, profit_margins, return_on_equity,
+                    debt_to_equity
+                FROM fundamental_metrics
+                WHERE symbol = $1 AND updated_at::date <= $2
+                """,
+                symbol,
+                as_of,
+            )
         return await conn.fetchrow(
             """
             SELECT symbol, market_cap, pe_ratio, forward_pe, peg_ratio,
@@ -25,12 +52,25 @@ async def _fetch_metrics_row(pool, symbol: str):
 
 
 @router.get("/api/fundamentals/metrics")
-async def get_metrics(symbol: str = Query(...)):
-    """获取基本面指标。DB 无数据时经 collector 按需回源（首访 2-5s，此后读库）。"""
+async def get_metrics(
+    symbol: str = Query(...),
+    as_of: str | None = Query(None),
+):
+    """获取基本面指标。DB 无数据时经 collector 按需回源（首访 2-5s，此后读库）。
+
+    as_of（YYYY-MM-DD）为近似口径：fundamental_metrics 是覆盖式最新值表
+    （PK symbol，updated_at 每次覆盖），只能回答「updated_at <= as_of 时
+    返回当前行，否则返回 null」，无法精确还原历史时点数据；精确的
+    point-in-time 需阶段四快照化。as_of 格式非法时优雅降级为最新值；
+    as_of 路径不触发按需回源（回源拿到的是「现在」的值，对历史时点无意义）。
+    注意：income/balance/cash 为年度/季度报表，按 fiscal_year/fiscal_date
+    天然有序，as_of 语义不同，本阶段不提供 as_of 参数。
+    """
     sym = symbol.upper()
+    as_of_date = _parse_as_of(as_of)
     pool = await get_pool()
-    row = await _fetch_metrics_row(pool, sym)
-    if not row and valid_symbol(sym):
+    row = await _fetch_metrics_row(pool, sym, as_of_date)
+    if not row and as_of_date is None and valid_symbol(sym):
         await ensure("metrics", [sym])
         row = await _fetch_metrics_row(pool, sym)
 
@@ -52,6 +92,8 @@ async def get_metrics(symbol: str = Query(...)):
         "return_on_equity": float(row["return_on_equity"]) if row["return_on_equity"] else None,
         "debt_to_equity": float(row["debt_to_equity"]) if row["debt_to_equity"] else None,
         "current_ratio": None,
+        # 覆盖式最新值表，as_of 为 updated_at 近似的 point-in-time
+        "as_of_exact": False,
     }
 
 

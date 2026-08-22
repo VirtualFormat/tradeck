@@ -52,12 +52,17 @@
 **目标**：量化/回测可接入。
 **关键路径**：3.2（as-of schema）先行，3.1 与之并行，3.3/3.4 收尾。
 
-| 任务 | 内容 | 写范围 |
-|---|---|---|
-| 3.1 批量 bars | `POST /api/bars`（多 symbol + 区间 + 分页/流式），单 symbol N 次调用的替代 | `apps/backend/app/api/bars.py` |
-| 3.2 as-of 快照化 | fundamentals/analyst 加快照表或 as_of 查询；消除回测前视偏差 | `init.sql`（collector）、`apps/backend/app/api/fundamentals.py` |
-| 3.3 service token | data-api 加消费方鉴权占位（沿用 DATA_SYNC_TOKEN 模式），按消费方限流/审计 | `apps/backend/app/config.py`、中间件 |
-| 3.4 消费方约定文档 | 量化侧本地缓存约定、接口契约写入 docs | `docs/DATA-SERVICE.md` 增补 |
+> **范围决策（2026-08-22 定）**：as-of 本阶段只做**查询层最小可行版**，不做 schema 快照化改造。
+> analyst_consensus 本就是日快照表，天然支持 `?as_of=`（该日期前最近快照）；
+> fundamental_metrics 只有最新值，`?as_of=` 用 updated_at 近似（响应标注 `as_of_exact: false` 的局限）。
+> 完整的 point-in-time 快照化（加历史快照表）留待量化项目真正需要时，列入阶段四。
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| 3.1 批量 bars | `POST /api/bars`（多 symbol + 区间 + 分页/流式），单 symbol N 次调用的替代 | `apps/backend/app/api/bars.py` | — |
+| 3.2 as-of 查询层 | analyst_consensus `/api/analyst?as_of=`（日快照表原生支持）；fundamental_metrics `?as_of=` 用 updated_at 近似 + 响应标注局限；不做 schema 改造 | `apps/backend/app/api/analyst.py`、`fundamentals.py` | — |
+| 3.3 service token | data-api 加消费方鉴权占位（`X-Service-Token`，沿用 DATA_SYNC_TOKEN 模式），按消费方区分/审计；公开读接口现阶段可空 token 放行（内网），量化批量接口强制要求 | `apps/backend/app/config.py`、中间件/依赖注入 | — |
+| 3.4 消费方约定文档 | 量化侧本地缓存约定、接口契约（bars/as-of/token）写入 docs | `docs/DATA-SERVICE.md` 增补 | 3.1-3.3 |
 
 **验收标准**：
 - 批量接口单次拉 100 只 × 250 天日K 不超时、内存可控（流式）。
@@ -78,8 +83,33 @@
 |---|---|---|---|---|---|
 | 一 物理拆分 | ✅ 验收通过 | 见下（4 项归阶段二） | 已全部处置 | **实跑全绿** | 2026-08-20 |
 | 二 逻辑收口 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，data-api 彻底纯化** | 2026-08-20 |
-| 三 量化契约 | 未开始 | - | - | - | - |
+| 三 量化契约 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿** | 2026-08-22 |
 | 四 加固 | 未开始 | - | - | - | - |
+
+### 阶段三 review 明细（2026-08-22）
+
+子 agent 协作：3.1 bars 由 Locke（完整交付，含 ASGI 端到端冒烟 + 10 类非法请求自测）、3.2 as-of 由 McClintock（完整交付）；3.3 service token 由主 agent 实现 + 接入 bars；3.4 文档由主 agent 写。
+
+范围决策（2026-08-22 定）：as-of 只做查询层最小可行版，不做 schema 快照化改造（留阶段四）。
+
+已完成验证：
+- 3.1 批量 bars：`POST /api/bars`（pydantic 校验 symbols 1-200 白名单/日期/limit 上限 50 万防 OOM；单条 SQL 走索引；响应 {bars,count,truncated}；优雅降级空 bars）。
+- 3.2 as-of 查询层：analyst `?as_of=`（日快照表，as_of_exact=true）；fundamentals metrics `?as_of=`（updated_at 近似，as_of_exact=false）；as_of 路径均不触发回源；income/balance/cash 不动。
+- 3.3 service token：`_service_auth.py`（service_identity 识别 + quant_access 强制）；config 加 SERVICE_TOKENS；compose（dev/prod）data-api 加 SERVICE_TOKENS 插值；bars 挂 quant_access + 消费方审计日志。
+- 3.4 文档：DATA-SERVICE.md 补「量化契约接口」一节（bars/as-of/token/消费方接入约定）。
+
+实跑验收结果（2026-08-22）——**全部通过**：
+- ✅ bars 合法批量：AAPL+MSFT 2025-08 → 200，count 28，两 symbol，数值正确。
+- ✅ bars 非法：201 只 422、start>end 422、非法 symbol 字符 422。
+- ✅ bars 截断：limit=3 → count 3、truncated=true。
+- ✅ 鉴权（配 SERVICE_TOKENS）：无 token 401、有效 token 200、错误 token 401；普通读接口 quotes 不受影响（200）。
+- ✅ 鉴权（空 SERVICE_TOKENS 内网默认）：bars 无 token 放行 200。
+- ✅ as-of 语义：analyst 无 as_of 取最新快照（exact=true）、as_of=2025-08-01 返回 null（该日前无快照）；fundamentals metrics as_of 同理——point-in-time 语义正确，历史查询拿不到「现在」的值。
+
+Review 发现的问题与处置：
+1. 阶段三初验时 `/api/bars` 404——已知坑 #6（uvicorn --reload bind mount 漏文件变更），`docker restart tradeck-dev-data-api` 解决，非代码问题。
+2. SERVICE_TOKENS 最初经 `VAR=.. docker compose up` 前缀传递未生效（compose environment 块无插值）——已在 dev/prod compose 的 data-api 环境块补 `SERVICE_TOKENS` 插值修复。
+3. bars 为量化契约引入顶层 `bars` 数组结构（与既有扁平数组风格不同）——量化批量接口的刻意新契约，记录在 DATA-SERVICE.md，可接受。
 
 ### 阶段二 review 明细（2026-08-20）
 

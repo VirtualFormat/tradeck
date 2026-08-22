@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import analyst, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, market_summary, movers, news, profile, quotes, search, system, technicals
+from app.api import analyst, bars, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, market_summary, movers, news, profile, quotes, search, system, technicals
 from app.config import settings
 from app.database_mode import ensure_database_mode
 from app.db import close_pool, get_pool
@@ -90,6 +90,7 @@ app.include_router(calendar.router)
 app.include_router(cn_extras.router)
 app.include_router(cross_asset.router)
 app.include_router(market_summary.router)
+app.include_router(bars.router)
 
 
 @app.get("/health")

@@ -80,6 +80,47 @@
 
 消费方约定：量化/回测拿到数据落本地 Parquet 缓存复用，不重复打 API；web 的按需回源（`_ensure`）保留为 data-api 内部端点，量化侧不继承。
 
+## 量化契约接口（阶段三，已落地）
+
+### 批量日K `POST /api/bars`
+
+面向量化/回测的多标的历史行情批量拉取（替代单 symbol N 次调用）：
+
+```json
+// 请求
+{"symbols": ["AAPL", "600519.SH"], "start_date": "2025-01-01", "end_date": "2025-12-31", "limit": 100000}
+// 响应
+{"bars": [{"symbol":"AAPL","date":"2025-01-02","open":..,"high":..,"low":..,"close":..,"volume":..,"amount":..}], "count": 456, "truncated": false}
+```
+
+- symbols 1-200 只白名单（`^[A-Z0-9.\-]{1,20}$`）；limit 默认 10 万、上限 50 万防 OOM。
+- `truncated: true` = 被 limit 截断，消费方应缩小时间窗或分批。
+- 单条 SQL（`symbol = ANY + date BETWEEN`）走 `(symbol, date)` 索引；按 symbol, date 升序。
+- 非法请求体 422；DB 异常优雅降级返回空 bars，不 500。
+
+### as-of 时点查询（最小可行版）
+
+- `GET /api/analyst/consensus?symbol=X&as_of=YYYY-MM-DD`：日快照表（PK symbol+snapshot_date）原生支持，取该日期前最近快照，响应 `as_of_exact: true`。
+- `GET /api/fundamentals/metrics?symbol=X&as_of=YYYY-MM-DD`：覆盖式最新值表（PK symbol），as_of 用 `updated_at::date <= as_of` 近似，响应 `as_of_exact: false`（无法还原历史值，精确 point-in-time 需阶段四快照化）。
+- **as-of 路径均不触发按需回源**（回源拿到的是「现在」的值，对历史时点无意义且违背 point-in-time）。
+- income/balance/cash 报表按 fiscal 期间天然有序，as_of 语义不同，本阶段不提供。
+
+### 消费方鉴权（service token）
+
+data-api 作为唯一数据出口，用 `X-Service-Token` + `X-Service-Name` 区分消费方（限流/审计/未来收紧）：
+
+- 配置 `SERVICE_TOKENS`（JSON：`{"<token>": "<consumer_name>"}`）；空 = 内网放行（默认），仍可经 `X-Service-Name` 自报审计。
+- 公开读接口（quotes/historical/...）：token 可空放行。
+- 量化批量接口（/api/bars）：已配置 SERVICE_TOKENS 时强制有效 token（无/错 → 401）。
+- 实现：`apps/backend/app/api/_service_auth.py`（`service_identity` 识别 + `quant_access` 强制）。
+
+### 消费方接入约定
+
+1. 量化/回测进程经 `POST /api/bars` 批量拉历史，落本地 Parquet 缓存反复用，不重复打 API。
+2. 批量/重操作请求带 `X-Service-Token` + `X-Service-Name`（如 `backtest`）。
+3. point-in-time 敏感的因子计算用 `as_of` 参数，并尊重 `as_of_exact` 标志（false 时知悉为近似）。
+4. 任何消费方不得直连 DB；数据服务唯一入口是 data-api。
+
 ## 关键决策记录
 
 - **不拆库**：24 张表 + 单一写者是一个整体，拆库会拆碎 UPSERT/TTL/跨表 JOIN。

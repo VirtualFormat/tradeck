@@ -100,6 +100,9 @@ services:
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
+      # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
+      # 配置后量化批量接口（/api/bars）强制有效 X-Service-Token。
+      SERVICE_TOKENS: ${SERVICE_TOKENS:-}
     volumes:
       - ../apps/backend:/app
     ports:

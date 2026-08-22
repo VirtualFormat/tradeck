@@ -13,6 +13,7 @@ class Settings:
     COLLECTOR_API_URL: str
     TICKFLOW_API_KEY: str
     DATA_SYNC_TOKEN: str
+    SERVICE_TOKENS: str
     DATA_MODE: DataMode
 
     def __init__(self) -> None:
@@ -41,6 +42,10 @@ class Settings:
         self.DATA_SYNC_TOKEN = (
             os.getenv("DATA_SYNC_TOKEN", "") if self.DATA_MODE == "live" else ""
         )
+        # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。data-api 作为
+        # 唯一数据出口后用于区分消费方（限流/审计/未来收紧）。空 = 未启用，
+        # 全部放行（内网默认）；配置后量化批量接口强制有效 X-Service-Token。
+        self.SERVICE_TOKENS = os.getenv("SERVICE_TOKENS", "")
 
 
 settings = Settings()
