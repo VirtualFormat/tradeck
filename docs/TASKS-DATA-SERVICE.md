@@ -78,8 +78,8 @@
 
 | 任务 | 内容 | 触发条件 |
 |---|---|---|
-| 4.2a-0 分钟K PG 先行（快速项） | PG 建 `minute_bars` 表（schema 同 CH 草案：symbol/market/ts(UTC)/OHLCV/amount）+ collector 每日分钟K job（A股先行，失败重试 + 缺口检测 + 幂等 UPSERT）。不等 CH 落地，先把每日数据攒起来；CH 就位后整体迁移 | 分钟K 数据源确认（D1）后即刻启动 |
-| 4.2a 分钟K 温层 | 分钟K 采集 job + ClickHouse schema（在线窗口 1 年）+ data-api `/api/bars/minute` | 量化需要分钟级回测时 |
+| 4.2a-0 分钟K 冷层先行（快速项） | **不建 PG 表**（评估证伪：分钟K 480 万行/日，PG 写入崩+存储爆，见 DATA-STORAGE-TIERED.md「三层读实现与性能评估」）。改为：collector 每日分钟K job（US/HK 用 yfinance 1m 起步，A股待付费档）→ **直接写 Parquet 落 COS**（`year/market` 分区 + **文件内按 (symbol,ts) 排序**，回测点查靠 row group 裁剪）。失败重试 + 缺口检测（yfinance 1m 仅 7 天窗口，漏采即永久丢失）+ 幂等覆盖同分区 | D1 已确认（2026-08-22），可即刻启动 |
+| 4.2a 分钟K 温层 | 从冷层 Parquet 批量导入 CH（在线窗口 1 年）+ collector 每日增量双写 CH + data-api `/api/bars/minute`（量化策略在线读近期，毫秒级） | 量化需要分钟级在线读/回测时 |
 | 4.2b 冷层归档管道 | CH → Parquet/COS 归档 + DuckDB 消费约定；分钟K 全量永久保留 | CH 逼近 1 年窗口时 |
 | 4.2c tick 直落冷层 | 逐笔采集 → Parquet 直落 COS（year/market/date/symbol 分区），不进任何在线库 | 需要逐笔回测时 |
 | 4.1 全市场技术指标 | 算进 ClickHouse 宽表（列存适合宽表），PG 不动 | 量化需要全市场因子时 |
