@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from app.db import get_pool
 from app.openbb_client import fetch_openbb
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +65,27 @@ async def fetch_and_store_index(symbol: str, market: str) -> int:
         logger.warning(f"No index data for {symbol}")
         return 0
 
+    # 写库前组装 dict 行过质量闸，被拦的行不进 UPSERT
+    dict_rows = [
+        {
+            "symbol": symbol,
+            "market": market,
+            "date": _parse_date(r.get("date")),
+            "close": r.get("close"),
+            "volume": r.get("volume"),
+        }
+        for r in results
+        if r.get("close") is not None  # 跳过当日未收盘的 null close 行，防止覆盖有效值
+    ]
+    accepted = await quality_gate("index_prices", dict_rows)
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = [
-            (symbol, market, _parse_date(r.get("date")), r.get("close"), r.get("volume"))
-            for r in results
-            if r.get("close") is not None  # 跳过当日未收盘的 null close 行，防止覆盖有效值
+            (d["symbol"], d["market"], d["date"], d["close"], d["volume"])
+            for d in accepted
         ]
         await conn.executemany(
             """
@@ -80,8 +96,8 @@ async def fetch_and_store_index(symbol: str, market: str) -> int:
             """,
             rows,
         )
-    logger.info(f"fetched {len(rows)} index prices for {symbol}")
-    return len(rows)
+    logger.info(f"fetched {len(accepted)} index prices for {symbol}")
+    return len(accepted)
 
 
 async def run_indices_job(

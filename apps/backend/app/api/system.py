@@ -694,3 +694,62 @@ async def get_system_data():
             "total_bytes": sum(row["total_bytes"] for row in table_rows),
         },
     }
+
+
+@router.get("/api/system/quality")
+async def get_system_quality(days: int = 7):
+    """数据质量度量：collector 数据质量层（app/quality/）写库，data-api 只读。
+
+    返回近 N 天按表的质量聚合（总数/合格/拦截/修复/质量分）与最近的
+    拦截样本（quarantine）。库异常优雅降级返回空，不 500。
+    """
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            metrics = await conn.fetch(
+                """
+                SELECT table_name, date, total, accepted, rejected, repaired,
+                       quality_score, updated_at
+                FROM data_quality_metrics
+                WHERE date >= CURRENT_DATE - make_interval(days => $1)
+                ORDER BY date DESC, table_name ASC
+                """,
+                days,
+            )
+            rejects = await conn.fetch(
+                """
+                SELECT source_table, symbol, reject_reason, severity, rejected_at
+                FROM data_quality_rejects
+                ORDER BY rejected_at DESC
+                LIMIT 100
+                """
+            )
+    except Exception:  # noqa: BLE001 — 优雅降级
+        logger.exception("/api/system/quality 查询失败")
+        return {"metrics": [], "recent_rejects": []}
+
+    return {
+        "metrics": [
+            {
+                "table_name": r["table_name"],
+                "date": r["date"].isoformat() if r["date"] else None,
+                "total": r["total"],
+                "accepted": r["accepted"],
+                "rejected": r["rejected"],
+                "repaired": r["repaired"],
+                "quality_score": float(r["quality_score"]) if r["quality_score"] is not None else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            }
+            for r in metrics
+        ],
+        "recent_rejects": [
+            {
+                "source_table": r["source_table"],
+                "symbol": r["symbol"],
+                "reject_reason": r["reject_reason"],
+                "severity": r["severity"],
+                "rejected_at": r["rejected_at"].isoformat() if r["rejected_at"] else None,
+            }
+            for r in rejects
+        ],
+    }

@@ -12,6 +12,7 @@ from datetime import date, timedelta
 
 from app.db import get_pool
 from app.openbb_client import fetch_openbb
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +66,27 @@ async def fetch_and_store_macro_asset(symbol: str, name: str, category: str, pat
         logger.warning(f"No macro asset data for {symbol}")
         return 0
 
+    # 写库前组装 dict 行过质量闸，被拦的行不进 UPSERT
+    dict_rows = [
+        {
+            "symbol": symbol,
+            "name": name,
+            "category": category,
+            "date": _parse_date(r.get("date")),
+            "close": r.get("close"),
+        }
+        for r in results
+        if r.get("close") is not None  # 跳过当日未收盘的 null close 行，防止覆盖有效值
+    ]
+    accepted = await quality_gate("macro_asset_prices", dict_rows)
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = [
-            (symbol, name, category, _parse_date(r.get("date")), r.get("close"))
-            for r in results
-            if r.get("close") is not None  # 跳过当日未收盘的 null close 行，防止覆盖有效值
+            (d["symbol"], d["name"], d["category"], d["date"], d["close"])
+            for d in accepted
         ]
         await conn.executemany(
             """
@@ -83,7 +99,7 @@ async def fetch_and_store_macro_asset(symbol: str, name: str, category: str, pat
             rows,
         )
     logger.info(f"fetched {len(results)} macro asset prices for {symbol}")
-    return len(rows)
+    return len(accepted)
 
 
 async def fetch_and_store_yield_curve() -> int:

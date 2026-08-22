@@ -78,11 +78,66 @@
 
 | 任务 | 内容 | 触发条件 |
 |---|---|---|
+| 4.2a-0 分钟K PG 先行（快速项） | PG 建 `minute_bars` 表（schema 同 CH 草案：symbol/market/ts(UTC)/OHLCV/amount）+ collector 每日分钟K job（A股先行，失败重试 + 缺口检测 + 幂等 UPSERT）。不等 CH 落地，先把每日数据攒起来；CH 就位后整体迁移 | 分钟K 数据源确认（D1）后即刻启动 |
 | 4.2a 分钟K 温层 | 分钟K 采集 job + ClickHouse schema（在线窗口 1 年）+ data-api `/api/bars/minute` | 量化需要分钟级回测时 |
 | 4.2b 冷层归档管道 | CH → Parquet/COS 归档 + DuckDB 消费约定；分钟K 全量永久保留 | CH 逼近 1 年窗口时 |
 | 4.2c tick 直落冷层 | 逐笔采集 → Parquet 直落 COS（year/market/date/symbol 分区），不进任何在线库 | 需要逐笔回测时 |
 | 4.1 全市场技术指标 | 算进 ClickHouse 宽表（列存适合宽表），PG 不动 | 量化需要全市场因子时 |
 | 4.3 PG 分区预案 | daily_prices 按 (market, date) 声明式分区 DDL | daily_prices 超 5000 万行时 |
+
+### 阶段三.五：数据质量层（Data Quality Layer，质量架构）
+
+> 背景（2026-08-22 评审发现 + 定案）：collector 的清洗原只有「点状防御」（各 job 字段
+> 解析容错 + fund_flow 有效行数闸），无异常值校验、无一致性、脏数据静默入库。
+> **决策：前置建独立质量层，不做轻量校验函数**——数据管道「写一次读千次、错了污染
+> 下游」，后置重构（改 22 job + 迁移存量脏数据 + 回测作废）成本远高于现在把层建对。
+> 分钟K 上量（4.2 系列）前必须就位，否则缺口放大两个数量级。
+
+**架构定位**：collector 内介于「datasource 拉取」与「写库」之间的独立质量闸（`app/quality/` 子包）。
+
+```
+数据源 → datasource 门面 → ┌─ 数据质量层 app/quality/ ─┐ → 写库（只放合格数据）
+                            ① normalize 标准化（类型/单位/symbol）
+                            ② validate 校验（P0 物理/P1 损坏/P2 可疑）
+                            ③ quarantine 处置（拦截落库留痕）
+                            ④ metrics 度量（质量分/拒绝率）
+```
+
+**核心设计决策**：
+- 独立子包 `app/quality/`（normalize/validate/rules/quarantine/metrics），不散在 services。
+- 规则声明式：每张表一份 `QualityRule`（dataclass），字段级/行级/表级分开，可枚举可测试。
+- 处置三态：`ACCEPT`（写库）/ `REJECT`（拦截 + 落 quarantine 表）/ `REPAIR`（自动修：类型/日期/symbol 归一）。
+- 两张新表（collector 独占写，init.sql + 存量卷 ALTER 迁移）：
+  - `data_quality_rejects`（source_table/symbol/raw_payload jsonb/reject_reason/severity/rejected_at）— 脏数据留痕可审计。
+  - `data_quality_metrics`（table_name/date/total/accepted/rejected/repaired/quality_score）— 质量可观测。
+- job 接入契约：写库前统一 `await quality_gate(table, rows) -> accepted_rows`（一行调用，规则集中在层里演进）。
+- 规则分级（避免误杀真实异动）：P0 物理不可能（REJECT）；P1 明显损坏（REJECT+warn）；P2 可疑（ACCEPT+标记，不拦，供量化侧自决）；REPAIR 自动修。
+- 三条铁律映射：quality_gate 自身异常 → 记日志放行（宁可漏拦不可误停管道）；quarantine/metrics 由 collector 独占写；P2 只标记不拦截。
+
+| 任务 | 内容 | 写范围 | 阶段 |
+|---|---|---|---|
+| Q1 骨架 | `app/quality/` 子包 + QualityRule 声明式框架 + `quality_gate` 统一入口 + quarantine/metrics 两表 DDL（init.sql + main.py 存量 ALTER） | `apps/data-collector/app/quality/`、`init.sql`、`main.py` | 本次 |
+| Q2 日K/报价接入 | 4 个 OHLC job（daily_kline/realtime_quotes/indices/macro_assets）接入 quality_gate + P0/P1 规则 + REPAIR | 上述 4 个 job 文件 | 本次 |
+| Q3 度量与可观测 | data_quality_metrics 聚合写入 + job 日志拒绝率（`=== xxx done: N rows, rejected M ===`）+ data-api `GET /api/system/quality` 只读端点 | quality/metrics.py、各 job、`apps/backend/app/api/system.py` | 本次 |
+| Q4 规则全覆盖 | 榜单/宏观/基本面表规则 + P2 统计标记（Z-score 离群、跳空） | 其余写库 job | 下一迭代 |
+| Q5 分钟K 质量 | 缺口检测/多源对账/复权一致性（分钟K 特有） | quality/rules/ | 随 4.2 系列 |
+
+**验收标准（Q1-Q3）**：
+- 构造含 P0（high<low、负价、缺 close）、P1（涨跌幅越界）、可 REPAIR（字符串数值/小写 symbol）的输入，quality_gate 正确三态处置，valid 行不受影响。
+- 脏行落 `data_quality_rejects`（含 raw_payload/reject_reason/severity），质量聚合落 `data_quality_metrics`。
+- 4 个 OHLC job 接入后正常跑通，日志出现 rejected 计数（正常源下应为 0）；其余 job 行为不变。
+- 优雅降级：quality_gate 自身异常记日志放行，不阻断写库。
+- data-api `GET /api/system/quality` 可读到质量度量（data-api 只读，不写）。
+
+### 分钟K 采集策略（2026-08-22 定）
+
+**「现在开采 + 历史后补」**：分钟K 是时间敏感型资产——当日不采即永久丢失，
+历史数据则可延后采购导入。两路合流由存储设计天然支持（CH 按 symbol+ts 排序、
+COS 按 year/market 分区，schema 一致即可无缝拼接）。
+
+- **美股/港股**：yfinance 1m 仅近 7 天窗口，但「每日采当日」模式下窗口永远追不上采集——可免费起步。
+- **A股**：候选 TickFlow 付费档（SDK 已在用）/ akshare 东财分钟接口（免费但限流风险）/ QMT / iFinD（调研中，见 D4）。
+- **纪律要求**：ts 统一存 UTC；每日 job 必须幂等 UPSERT + 缺口报警。
 
 ### 阶段四前置：数据源确认（先于 4.2 系列启动）
 
@@ -94,6 +149,7 @@
 | D1 分钟K 历史源 | 全市场 1min K线历史（2 万标的 × 多年）从哪来 | TickFlow 免费档实测日K可用，分钟K覆盖范围/历史深度/限额未实测 | 4.2a 的采集 job 依赖 |
 | D2 tick 逐笔源 | 全市场逐笔成交从哪来 | 免费三源（TickFlow/akshare/OpenBB）基本不提供全市场逐笔历史；大概率需付费数据商或券商 Level-2 接口 | 4.2c 的前提；涉及费用决策 |
 | D3 采集限额与成本 | 分钟K/tick 的 API 限额、回填历史的速度、付费档价格 | 未调研 | 决定全量初始化要跑多久、年度数据预算 |
+| D4 QMT/iFinD 调研 | 迅投 QMT（券商量化终端）与同花顺 iFinD 的分钟K/tick 覆盖、API 形态、成本 | 调研中 | 可能替代/补充 D1、D2；iFinD 另有 Kimi 集成的金融数据库形态待确认 |
 
 **建议动作**：4.2 启动前先实测 TickFlow 分钟K 能力（D1），tick 源（D2）单独做一轮数据商调研对比再拍板。
 
@@ -104,7 +160,34 @@
 | 一 物理拆分 | ✅ 验收通过 | 见下（4 项归阶段二） | 已全部处置 | **实跑全绿** | 2026-08-20 |
 | 二 逻辑收口 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，data-api 彻底纯化** | 2026-08-20 |
 | 三 量化契约 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿** | 2026-08-22 |
+| 三.五 数据质量层（Q1-Q3） | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，端到端闭环** | 2026-08-22 |
 | 四 加固 | 未开始 | - | - | - | - |
+
+### 阶段三.五 review 明细（Q1-Q3，2026-08-22）
+
+范围决策（2026-08-22 定）：**前置建独立质量层**（app/quality/ 子包），不做轻量校验函数——
+数据管道「写一次读千次、错了污染下游」，后置重构成本远高于现在把层建对。
+
+主 agent 建 Q1 骨架（models/rules/normalize/gate/store + 两表 DDL + 存量迁移）；
+Q2 由子 agent Zeno 接入 4 个 OHLC job；Q3 主 agent 写 data-api quality 端点。
+
+已完成验证：
+- Q1 骨架：`app/quality/`（quality_gate 统一入口 + 声明式 QualityRule + 处置三态 ACCEPT/REPAIR/REJECT + 严重级 P0/P1/P2）；两表 `data_quality_rejects`（quarantine 留痕）+ `data_quality_metrics`（按表按日聚合）；init.sql + main.py 存量 ALTER 迁移。
+- Q2 接入：daily_kline/realtime_quotes/indices/macro_assets 4 个 OHLC job 写库前过 quality_gate，SQL/列顺序/ON CONFLICT 不变，返回条数基于 accepted。
+- Q3 可观测：质量日志（total/accepted/rejected/repaired/score）+ data-api `GET /api/system/quality`（data-api 只读）。
+- 三铁律映射：quality_gate 异常放行（不误停管道）；两表 collector 独占写、data-api 只读；P2 只标记不拦。
+
+实跑验收结果（2026-08-22）——**全部通过**：
+- ✅ 骨架单测：4 行（REPAIR 小写 symbol+字符串数值 / P0 high<low / P0 缺 close / 合格）→ 2 accepted、2 rejected、1 repaired、score 0.5，归一正确。
+- ✅ 存量迁移：重启 collector 后 `data_quality_rejects`/`data_quality_metrics` 两表就地建好。
+- ✅ 真实管道：daily_prices 质量度量落库（38680 行、rejected=0、score=1.0）——正常源下全合格。
+- ✅ 端到端闭环：手动注入脏行（BAD high<low）→ quality_gate 拦截（accepted=0）→ 落 data_quality_rejects（含 reject_reason/severity=P0）。
+- ✅ data-api `/api/system/quality` 读到 metrics（只读，单一写者成立）。
+
+Review 发现的问题与处置：
+1. **volume 归一 float→BIGINT 类型错风险**（Zeno 报）——normalize 把字符串 volume 转 float，asyncpg 对 BIGINT 列报类型错。已修：`_INT_FIELDS` 单独按 int 归一（volume 系列），单测验证 volume 归一为 int。✅ 已修。
+2. 全量初始化百万行质量校验增加几秒到十几秒（逐行纯 Python）——每日增量（5 天）无感，全量略慢可接受。不处理。
+3. quote_snapshots 的 change_percent ±100% 阈值（P1）对极端美/港股（拆股/仙股暴动）理论可能误拦——规则注明「跨市场最宽」，留观察项。不处理。
 
 ### 阶段三 review 明细（2026-08-22）
 

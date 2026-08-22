@@ -13,6 +13,7 @@ from datetime import date
 from app.datasource import tickflow_source
 from app.db import get_pool
 from app.jobs import progress
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +57,36 @@ def _to_canonical(tf_symbol: str, market: str) -> str:
 
 async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
     """批量 UPSERT 一个 universe 的日K（跳 null close）。返回写入条数。"""
-    rows = []
+    dict_rows = []
     for tf_sym, krows in klines.items():
         symbol = _to_canonical(tf_sym, market)
         for r in krows:
             if r.get("close") is None:
                 continue
-            rows.append(
-                (symbol, market, r["date"], r["open"], r["high"],
-                 r["low"], r["close"], r["volume"], r.get("amount"))
+            dict_rows.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "date": r["date"],
+                    "open": r["open"],
+                    "high": r["high"],
+                    "low": r["low"],
+                    "close": r["close"],
+                    "volume": r["volume"],
+                    "amount": r.get("amount"),
+                }
             )
-    if not rows:
+    if not dict_rows:
         return 0
+    # 写库前过质量闸：被拦的行不进 UPSERT（修复/拦截/落库由质量层处理）
+    accepted = await quality_gate("daily_prices", dict_rows)
+    if not accepted:
+        return 0
+    rows = [
+        (d["symbol"], d["market"], d["date"], d["open"], d["high"],
+         d["low"], d["close"], d["volume"], d["amount"])
+        for d in accepted
+    ]
     pool = await get_pool()
     async with pool.acquire() as conn:
         for i in range(0, len(rows), _UPSERT_BATCH):

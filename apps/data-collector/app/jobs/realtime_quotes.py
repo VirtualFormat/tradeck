@@ -11,6 +11,7 @@ from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
 from app.constants import TRACKED_SYMBOLS
 from app.markets import pick_market, pick_provider, to_yahoo_symbol
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -202,21 +203,39 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
         logger.warning("No quotes fetched")
         return {}
 
+    # 写库前组装 dict 行过质量闸，被拦的行不进 UPSERT
+    dict_rows = [
+        {
+            "symbol": q.get("symbol"),
+            "name": q.get("name"),
+            "last_price": q.get("last_price"),
+            "change": q.get("change"),
+            "change_percent": q.get("change_percent"),
+            "volume": q.get("volume"),
+            "market": pick_market(q.get("symbol", "")),
+            "data_as_of": _extract_data_as_of(q, pick_market(q.get("symbol", ""))),
+        }
+        for q in all_quotes
+        if q.get("symbol")
+    ]
+    accepted = await quality_gate("quote_snapshots", dict_rows)
+    if not accepted:
+        return {}
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = [
             (
-                q.get("symbol"),
-                q.get("name"),
-                q.get("last_price"),
-                q.get("change"),
-                q.get("change_percent"),
-                q.get("volume"),
-                pick_market(q.get("symbol", "")),
-                _extract_data_as_of(q, pick_market(q.get("symbol", ""))),
+                d["symbol"],
+                d["name"],
+                d["last_price"],
+                d["change"],
+                d["change_percent"],
+                d["volume"],
+                d["market"],
+                d["data_as_of"],
             )
-            for q in all_quotes
-            if q.get("symbol")
+            for d in accepted
         ]
         await conn.executemany(
             """

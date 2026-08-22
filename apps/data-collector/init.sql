@@ -368,3 +368,31 @@ CREATE TABLE IF NOT EXISTS yield_curve_rates (
     year_7 NUMERIC, year_10 NUMERIC, year_20 NUMERIC, year_30 NUMERIC,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ── 数据质量层（app/quality/，collector 独占写）─────────────────
+-- 被拦数据留痕（quarantine）：原始 payload + 原因 + 严重级，供审计
+CREATE TABLE IF NOT EXISTS data_quality_rejects (
+    id BIGSERIAL PRIMARY KEY,
+    source_table VARCHAR(50) NOT NULL,      -- 目标表名
+    symbol VARCHAR(20),                     -- 标的（无 symbol 的表为 null）
+    raw_payload JSONB NOT NULL,             -- 原始未归一的行
+    reject_reason TEXT NOT NULL,
+    severity VARCHAR(4) NOT NULL,           -- P0 / P1 / P2
+    rejected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dq_rejects_table_time
+    ON data_quality_rejects(source_table, rejected_at DESC);
+
+-- 质量度量（按表按日聚合）：总数/合格/拦截/修复/质量分，供可观测
+CREATE TABLE IF NOT EXISTS data_quality_metrics (
+    table_name VARCHAR(50) NOT NULL,
+    date DATE NOT NULL,
+    total INT NOT NULL DEFAULT 0,
+    accepted INT NOT NULL DEFAULT 0,
+    rejected INT NOT NULL DEFAULT 0,
+    repaired INT NOT NULL DEFAULT 0,
+    quality_score NUMERIC(6,4),             -- 合格数/总数，0-1
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (table_name, date)
+);
+CREATE INDEX IF NOT EXISTS idx_dq_metrics_date ON data_quality_metrics(date DESC);
