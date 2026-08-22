@@ -39,7 +39,7 @@ tradeck/
 │   └── post-create.sh           ← 容器创建后装 Node/pnpm/Python(backend requirements)/前端依赖
 ├── apps/
 │   ├── web/                     ← Next.js 前端（pnpm 包：tradeck-web）
-│   │   ├── src/app/             ← App Router 页面：/（全球概览）/global（全球宏观）/markets/{cn,us,hk} /macro /news /screener /stocks/[symbol]
+│   │   ├── src/app/             ← App Router 页面：/（全球概览）/macro（宏观工作区）/markets/{cn,us,hk} /news /screener /stocks/[symbol]
 │   │   ├── src/app/api/         ← Next API 路由（quotes/screener/historical，仅代理 backend）
 │   │   ├── src/components/      ← 业务组件（看板/图表/导航）
 │   │   ├── src/components/ui/   ← shadcn/ui 组件
@@ -112,29 +112,34 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ### 数据运行模式（live / mock 互斥）
 
-dev 与 prod 均默认 `DATA_MODE=live`。live 模式只启动 scheduler 和真实数据 job，绝不执行 mock seed。数据库内有持久化 mode marker，backend 会在任何 seed/scheduler 前校验；marker 与 `DATA_MODE` 不一致时直接拒绝启动。需要纯模拟页面时，显式以 mock 模式重建 dev、postgres、backend：
+dev 与 prod 均默认 `DATA_MODE=live`。live 模式只启动 scheduler 和真实数据 job，绝不执行 mock seed。数据库内有持久化 mode marker，data-api/collector 会在任何 seed/scheduler 前校验；marker 与 `DATA_MODE` 不一致时直接拒绝启动。需要纯模拟页面时，先用独立 Job 容器灌种子，再以 mock 模式重建 dev、postgres、data-api：
 
 ```bash
+# ① 先灌 mock 种子（独立 Job 容器，跑完即退出；DATA_MODE=mock + 独立卷）
 DATA_MODE=mock DEV_POSTGRES_VOLUME=tradeck-dev-postgres-mock-data \
-  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres backend
+  docker compose -f .devcontainer/docker-compose.yml --profile mock run --rm mock-seed
+# ② 再以 mock 模式起开发环境
+DATA_MODE=mock DEV_POSTGRES_VOLUME=tradeck-dev-postgres-mock-data \
+  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres data-api
 ```
 
-mock 模式会自动 seed，同时关闭 scheduler、手动同步与读 API 的按需回源。live 沿用现有 dev 数据卷；mock 命令显式指定独立 PostgreSQL volume，两个模式不会共享存量数据。不能只修改 `DATA_MODE` 或卷名来绕过绑定：mock 连接 live 卷、live 连接 mock 卷都会 fail fast。切回 live 时也显式指定兼容旧环境的卷名，并同步重建三个服务：
+mock 数据由 `mock-seed` Job 容器（`apps/mock`，一次性跑完 seed 即退出）写入；mock 模式的 data-api 只读库，同时关闭 scheduler、手动同步与读 API 的按需回源。live 沿用现有 dev 数据卷；mock 命令显式指定独立 PostgreSQL volume，两个模式不会共享存量数据。不能只修改 `DATA_MODE` 或卷名来绕过绑定：mock 连接 live 卷、live 连接 mock 卷都会 fail fast。切回 live 时也显式指定兼容旧环境的卷名，并同步重建三个服务：
 
 ```bash
 DATA_MODE=live DEV_POSTGRES_VOLUME=tradeck_devcontainer_dev-postgres-data \
-  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres backend
+  docker compose -f .devcontainer/docker-compose.yml up -d --force-recreate dev postgres data-api
 ```
 
 空数据库会绑定为当前 mode；已有业务数据但尚无 marker 的历史库只允许以 live 启动，并自动写入 live marker，因此升级不会丢失或改写现有数据。
 
-仅在已运行的 mock backend 中可手动重灌：
+需要重新灌 mock 数据时，重跑一次 mock-seed 容器即可（全部 UPSERT，幂等）：
 
 ```bash
-docker exec tradeck-dev-backend python -m app.seed_mock
+DATA_MODE=mock DEV_POSTGRES_VOLUME=tradeck-dev-postgres-mock-data \
+  docker compose -f .devcontainer/docker-compose.yml --profile mock run --rm mock-seed
 ```
 
-`app.seed_mock` 在 `DATA_MODE!=mock` 时会直接拒绝执行。`DATA_MODE` 只接受 `live` / `mock`，其他值会令 backend 启动失败；prod 根 compose 未传该变量，按配置默认值保持 live。
+`apps/mock/app/seed_mock.py` 在 `DATA_MODE!=mock` 时会直接拒绝执行。`DATA_MODE` 只接受 `live` / `mock`，其他值会令 data-api/collector 启动失败；prod 根 compose 未传该变量，按配置默认值保持 live。
 
 ### 数据层验证
 
@@ -302,3 +307,5 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 - `docs/PIPELINE.md` — 数据管道架构（拓扑、24 表存储、定时任务、API 端点、live/mock 模式）
 - `docs/DATA-LAYER.md` — 数据层特性（三源分工、薄门面限流降级、symbol 规范、调度错峰）
 - `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）
+- `docs/DATA-SERVICE.md` — 数据服务拆分技术方案（三条铁律、分层、容量、对外接口）
+- `docs/TASKS-DATA-SERVICE.md` — 拆分任务拆解与验收记录（进行中项目，含 review 门禁）

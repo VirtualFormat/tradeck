@@ -1,11 +1,10 @@
-"""GET /api/quotes — 从 quote_snapshots 读；美/港股缺失时按需回源现拉写库"""
+"""GET /api/quotes — 从 quote_snapshots 读；美/港股缺失时经 collector 按需回源"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
 from app.api._ensure import ensure, valid_symbol
 from app.db import get_pool
-from app.jobs.realtime_quotes import fetch_and_store_quotes
 
 router = APIRouter()
 
@@ -28,8 +27,8 @@ async def _fetch_rows(pool, sym_list: list[str]):
 async def get_quotes(symbols: str = Query(..., description="逗号分隔的股票代码")):
     """批量获取报价。返回扁平数组（非 OpenBB 的 { results: [...] } 包裹）。
 
-    美/港股缺失时按需回源 yfinance 现拉（首访 2-5s）；A 股 spot 为全市场接口，
-    单标的回源太重，由 30 分钟 job 覆盖，不在此回源。
+    美/港股缺失时经 collector 按需回源 yfinance 现拉（首访 2-5s）；A 股 spot
+    为全市场接口，单标的回源太重，由 30 分钟 job 覆盖，不在此回源。
     """
     if not symbols:
         return []
@@ -50,10 +49,7 @@ async def get_quotes(symbols: str = Query(..., description="逗号分隔的股�
         and not s.endswith((".SH", ".SS", ".SZ", ".BJ"))  # A 股不回源（见 docstring）
     ]
     if on_demand:
-        await ensure(
-            f"quotes:{','.join(sorted(on_demand))}",
-            lambda: fetch_and_store_quotes(on_demand),
-        )
+        await ensure("quotes", on_demand)
         rows = await _fetch_rows(pool, sym_list)
 
     return [

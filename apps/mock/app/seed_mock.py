@@ -1,8 +1,9 @@
 """mock 模式数据种子（填充独立 DB，方便本地检查页面效果）。
 
-生效方式：
-- **自动**：backend 以 DATA_MODE=mock 启动时调用 run_seed()。
-- **手动重灌**：mock backend 内运行 python -m app.seed_mock。
+生效方式（数据服务拆分后，seed 属独立 Job 容器，见 docs/TASKS-DATA-SERVICE.md 2.3）：
+- **mock-seed 容器**：`docker compose -f .devcontainer/docker-compose.yml --profile mock run --rm mock-seed`，
+  跑完 seed 即退出；之后以 DATA_MODE=mock 启动 dev/postgres/data-api。
+- **手动重灌**：mock-seed 容器内运行 python -m app.seed_mock。
 
 说明：
 - 覆盖看板业务表，全部 UPSERT，可重复执行
@@ -18,9 +19,9 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.config import settings
+from app.constants import TRACKED_COMMODITIES, TRACKED_INDICES, TRACKED_SYMBOLS
+from app.database_mode import ensure_database_mode
 from app.db import close_pool, get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
-from app.jobs.indices import TRACKED_COMMODITIES, TRACKED_INDICES
 from app.markets import pick_market
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -937,9 +938,11 @@ async def seed_market_breadth(conn) -> int:
 async def run_seed(conn) -> dict[str, int]:
     """在给定连接上灌入全部假数据（单事务），返回各表写入行数。
 
-    供 mock 模式启动自动 seed（main.py lifespan）与手动入口复用。
+    供 mock-seed Job 容器入口与手动重灌复用。
     """
     _require_mock_mode()
+    # 与 data-api/data-collector 同一契约：先校验/绑定数据库 mock 身份再写库。
+    await ensure_database_mode(conn, settings.DATA_MODE)
     # 局部导入避免模块初始化时形成循环依赖。
     from app.mock_data import (
         SeedRecordingConnection,

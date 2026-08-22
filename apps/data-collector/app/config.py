@@ -10,7 +10,8 @@ _VALID_DATA_MODES = {"live", "mock"}
 class Settings:
     DATABASE_URL: str
     OPENBB_API_URL: str
-    COLLECTOR_API_URL: str
+    OPENBB_OVERSEAS_API_URL: str
+    OPENBB_OVERSEAS_TOKEN: str
     TICKFLOW_API_KEY: str
     DATA_SYNC_TOKEN: str
     DATA_MODE: DataMode
@@ -29,11 +30,9 @@ class Settings:
             "postgresql://tradeck:tradeck_dev@postgres:5432/tradeck",
         )
         self.OPENBB_API_URL = os.getenv("OPENBB_API_URL", "http://openbb:6900")
-        # data-collector 运维 API（任务状态/调度信息）。海外分流属写路径，
-        # 已收敛在 collector，data-api 不再持有 OPENBB_OVERSEAS_* 配置。
-        self.COLLECTOR_API_URL = os.getenv(
-            "COLLECTOR_API_URL", "http://collector:8080"
-        )
+        # 海外节点（韩国瘦 OpenBB）。为空则海外源回落到国内 OPENBB_API_URL，行为不变。
+        self.OPENBB_OVERSEAS_API_URL = os.getenv("OPENBB_OVERSEAS_API_URL", "")
+        self.OPENBB_OVERSEAS_TOKEN = os.getenv("OPENBB_OVERSEAS_TOKEN", "")
         # TickFlow 日K 源。为空则用免费档 TickFlow.free()（日K 足够，盘中不实时）。
         self.TICKFLOW_API_KEY = os.getenv("TICKFLOW_API_KEY", "")
         # 数据中心手动同步令牌。仅 Next.js 服务端代理持有，避免公网直接触发重任务。

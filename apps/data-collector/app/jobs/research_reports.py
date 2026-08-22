@@ -12,7 +12,7 @@ from typing import Any
 
 from app.datasource import call_akshare
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.constants import TRACKED_SYMBOLS
 from app.markets import pick_market
 
 logger = logging.getLogger(__name__)

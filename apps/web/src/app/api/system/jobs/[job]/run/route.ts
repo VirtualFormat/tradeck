@@ -1,11 +1,11 @@
 /**
- * 手动同步 API 代理
+ * 手动同步 API 代理（转发到 collector——任务触发属写者进程内能力）
  * POST /api/system/jobs/:job/run
  */
 import { NextRequest, NextResponse } from "next/server";
 
-const BACKEND_API_URL =
-  process.env.BACKEND_API_URL ?? "http://localhost:8080";
+const COLLECTOR_API_URL =
+  process.env.COLLECTOR_API_URL ?? "http://localhost:8082";
 
 export async function POST(
   request: NextRequest,
@@ -15,7 +15,7 @@ export async function POST(
   const token = request.headers.get("x-data-sync-token") ?? "";
   try {
     const res = await fetch(
-      `${BACKEND_API_URL}/api/system/jobs/${encodeURIComponent(job)}/run`,
+      `${COLLECTOR_API_URL}/api/system/jobs/${encodeURIComponent(job)}/run`,
       {
         method: "POST",
         headers: {

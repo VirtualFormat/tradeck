@@ -1,27 +1,302 @@
-"""系统数据任务 API：状态快照、数据表概览与手动同步。"""
+"""系统数据 API（data-api 侧）：仅保留库表扫描概览 /api/system/data。
+
+拆分后职责划分：
+- /api/system/data 留在 data-api——纯库表统计（24 张表行数/体积/新鲜度、
+  daily_prices 市场覆盖），不依赖任何进程内调度状态。
+- /api/system/jobs 与手动触发 /run 已归位 collector（唯一写者持有
+  scheduler / registry / progress，见 apps/data-collector/app/api/system.py）。
+- next_run_at：data-api 进程内没有 scheduler，改为向 collector 的
+  /api/system/schedules 发起 HTTP 查询；last_run 同理来自 collector 的
+  /api/system/jobs。collector 不可达（mock 模式无 collector、或尚未
+  启动）时优雅降级为 null，绝不因此报错。
+"""
 from __future__ import annotations
 
 import asyncio
-import secrets
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from time import monotonic
-from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException, Response, status
+import httpx
+from fastapi import APIRouter
 
 from app.config import settings
 from app.db import get_pool
-from app.jobs import progress
-from app.jobs.registry import (
-    get_job_definition,
-    is_job_active,
-    job_catalog,
-    launch_registered_job,
-)
-from app.scheduler import scheduler_jobs_snapshot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# 任务展示元数据（展示名 + cron 文案 + 关联表 + 任务专属健康查询）；
+# 顺序即 /api/system/data 输出顺序。
+# 与 collector 的 registry 目录静态对齐：collector 增删任务时需同步此表。
+# health_queries 字段与 registry.JobHealthQuery 同构（name/table/where/...）。
+_CATALOG: list[dict] = [
+    {
+        "id": "daily_kline",
+        "label": "日 K 每日更新",
+        "schedule": "A/港 08:30；美股 21:30 UTC",
+        "tables": ["daily_prices", "equity_profiles"],
+    },
+    {
+        "id": "daily_kline_full",
+        "label": "日 K 全量初始化",
+        "schedule": "启动时按市场缺口自动触发",
+        "tables": ["daily_prices", "equity_profiles"],
+    },
+    {
+        "id": "realtime_quotes",
+        "label": "实时报价",
+        "schedule": "每 30 分钟",
+        "tables": ["quote_snapshots"],
+        "health_queries": [
+            {"name": "A 股报价", "table": "quote_snapshots", "where": "market = 'CN'"},
+            {"name": "港股报价", "table": "quote_snapshots", "where": "market = 'HK'"},
+            {"name": "美股报价", "table": "quote_snapshots", "where": "market = 'US'"},
+        ],
+    },
+    {
+        "id": "indices",
+        "label": "指数与商品历史",
+        "schedule": "各市场收盘后分批更新",
+        "tables": ["index_prices"],
+    },
+    {
+        "id": "movers",
+        "label": "美股涨跌榜",
+        "schedule": "每 5 分钟",
+        "tables": ["movers_cache"],
+        "health_queries": [
+            {"name": "美股榜单", "table": "movers_cache", "where": "market = 'US'"},
+        ],
+    },
+    {
+        "id": "movers_cn",
+        "label": "A 股涨跌榜",
+        "schedule": "每天 09:10 UTC",
+        "tables": ["movers_cache"],
+        "health_queries": [
+            {"name": "A 股榜单", "table": "movers_cache", "where": "market = 'CN'"},
+        ],
+    },
+    {
+        "id": "news",
+        "label": "海外新闻",
+        "schedule": "每 30 分钟",
+        "tables": ["news_articles"],
+        "health_queries": [
+            {
+                "name": "海外新闻",
+                "table": "news_articles",
+                "where": "symbol IS NOT NULL AND symbol !~ '[.](SH|SS|SZ|BJ)$'",
+            },
+        ],
+    },
+    {
+        "id": "akshare_news",
+        "label": "A 股新闻",
+        "schedule": "每 30 分钟",
+        "tables": ["news_articles"],
+        "health_queries": [
+            {
+                "name": "A 股新闻",
+                "table": "news_articles",
+                "where": "symbol ~ '[.](SH|SS|SZ|BJ)$'",
+            },
+        ],
+    },
+    {
+        "id": "news_score",
+        "label": "新闻情绪打分",
+        "schedule": "每 30 分钟",
+        "tables": ["news_articles"],
+        "health_queries": [
+            {
+                "name": "已打分新闻",
+                "table": "news_articles",
+                "where": "scored_at IS NOT NULL",
+                "latest_column": "scored_at",
+                "latest_kind": "datetime",
+                "max_age_hours": 36,
+                "label": "最近打分时间",
+            },
+        ],
+    },
+    {
+        "id": "macro",
+        "label": "宏观指标",
+        "schedule": "每天 06:00 UTC",
+        "tables": ["macro_indicators"],
+    },
+    {
+        "id": "fundamentals",
+        "label": "公司与财务数据",
+        "schedule": "每周一 07:00 UTC",
+        "tables": [
+            "equity_profiles",
+            "fundamental_metrics",
+            "income_statements",
+            "balance_sheets",
+            "cash_flow_statements",
+        ],
+    },
+    {
+        "id": "analyst_consensus",
+        "label": "分析师共识",
+        "schedule": "每天 21:00 UTC",
+        "tables": ["analyst_consensus"],
+    },
+    {
+        "id": "earnings_calendar",
+        "label": "财报日历",
+        "schedule": "每天 12:00 UTC",
+        "tables": ["earnings_calendar"],
+    },
+    {
+        "id": "economic_calendar",
+        "label": "宏观数据日历",
+        "schedule": "每天 06:30 UTC",
+        "tables": ["economic_calendar"],
+    },
+    {
+        "id": "board_heat",
+        "label": "板块行情热度",
+        "schedule": "每 30 分钟",
+        "tables": ["board_heat"],
+    },
+    {
+        "id": "board_map",
+        "label": "板块归属映射",
+        "schedule": "每周一 08:00 UTC",
+        "tables": ["symbol_board_map"],
+    },
+    {
+        "id": "board_sentiment",
+        "label": "板块舆情聚合",
+        "schedule": "每 30 分钟",
+        "tables": ["board_sentiment"],
+    },
+    {
+        "id": "fund_flow",
+        "label": "个股资金流向",
+        "schedule": "每 5 分钟",
+        "tables": ["fund_flow"],
+    },
+    {
+        "id": "announcements",
+        "label": "A 股公告",
+        "schedule": "每天 10:30 UTC",
+        "tables": ["announcements"],
+    },
+    {
+        "id": "research_reports",
+        "label": "A 股券商研报",
+        "schedule": "每周一 09:00 UTC",
+        "tables": ["research_reports"],
+    },
+    {
+        "id": "market_breadth",
+        "label": "A 股市场宽度",
+        "schedule": "每 30 分钟",
+        "tables": ["market_breadth"],
+        "health_queries": [
+            {
+                "name": "A 股宽度",
+                "table": "market_breadth",
+                "where": "market = 'CN' AND source = 'legu'",
+            },
+        ],
+    },
+    {
+        "id": "market_breadth_global",
+        "label": "美港市场宽度",
+        "schedule": "每天 09:05 / 22:05 UTC",
+        "tables": ["market_breadth"],
+        "health_queries": [
+            {
+                "name": "美股宽度",
+                "table": "market_breadth",
+                "where": "market = 'US' AND source = 'daily_kline'",
+            },
+            {
+                "name": "港股宽度",
+                "table": "market_breadth",
+                "where": "market = 'HK' AND source = 'daily_kline'",
+            },
+        ],
+    },
+    {
+        "id": "macro_assets",
+        "label": "宏观资产与收益率曲线",
+        "schedule": "每天 21:30 UTC",
+        "tables": ["macro_asset_prices", "yield_curve_rates"],
+    },
+    {
+        "id": "technical_indicators",
+        "label": "技术指标",
+        "schedule": "每天 09:00 / 22:00 UTC",
+        "tables": ["technical_indicators"],
+    },
+    {
+        "id": "cleanup",
+        "label": "过期数据清理",
+        "schedule": "每天 03:00 UTC",
+        "tables": [
+            "movers_cache",
+            "board_heat",
+            "board_sentiment",
+            "fund_flow",
+            "news_articles",
+        ],
+        "maintenance": True,
+    },
+]
+
+_SCHEDULES_TTL_SECONDS = 60
+_schedules_cache: tuple[float, dict[str, dict]] | None = None
+
+
+async def _collector_schedules() -> dict[str, dict]:
+    """从 collector 拉取各任务的调度信息；失败优雅降级为空表（next_run_at 为 null）。
+
+    结果缓存 60 秒，避免前端短轮询把请求放大到 collector。
+    """
+    global _schedules_cache
+
+    now = monotonic()
+    if _schedules_cache and now - _schedules_cache[0] < _SCHEDULES_TTL_SECONDS:
+        return _schedules_cache[1]
+
+    url = f"{settings.COLLECTOR_API_URL.rstrip('/')}/api/system/schedules"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(url)
+            schedules = res.json() if res.status_code == 200 else {}
+            if not isinstance(schedules, dict):
+                schedules = {}
+    except Exception:
+        logger.debug("collector 调度信息查询失败（%s），next_run_at 降级为 null", url)
+        return {}
+
+    _schedules_cache = (now, schedules)
+    return schedules
+
+
+async def _collector_job_runs() -> list[dict]:
+    """从 collector 拉取最近的任务运行记录；失败优雅降级为空列表。
+
+    不缓存：/api/system/data 本身有 60s 统计缓存兜底，运行记录需要更实时。
+    """
+    url = f"{settings.COLLECTOR_API_URL.rstrip('/')}/api/system/jobs"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(url)
+            runs = res.json() if res.status_code == 200 else []
+            return runs if isinstance(runs, list) else []
+    except Exception:
+        logger.debug("collector 任务记录查询失败（%s），last_run 降级为 null", url)
+        return []
 
 _STATS_TTL_SECONDS = 60
 _stats_lock = asyncio.Lock()
@@ -353,30 +628,27 @@ async def _get_database_stats(
         return table_rows, market_rows, job_health_rows
 
 
-@router.get("/api/system/jobs")
-async def get_system_jobs():
-    """最近的任务运行记录（含空结果、部分结果与异常），新的在前。"""
-    return progress.snapshot()
-
-
 @router.get("/api/system/data")
 async def get_system_data():
-    """数据页聚合快照：任务目录、运行状态、下次调度与 24 张表统计。"""
-    catalog = job_catalog()
-    schedules = scheduler_jobs_snapshot()
-    runs = progress.snapshot(limit=100)
+    """数据页聚合快照：任务目录、运行状态、下次调度与 24 张表统计。
+
+    库表扫描在 data-api 本地完成；last_run / next_run_at 经 collector
+    HTTP 聚合，collector 不可达时优雅降级为 null（不报错）。
+    """
+    catalog = _CATALOG
+    schedules, runs = await asyncio.gather(
+        _collector_schedules(), _collector_job_runs()
+    )
+    table_rows, market_rows, filtered_health = await _get_database_stats(catalog)
+    tables_by_name = {row["name"]: row for row in table_rows}
 
     latest_runs: dict[str, dict] = {}
     for run in runs:
-        latest_runs.setdefault(run["job"], run)
-
-    table_rows, market_rows, filtered_health = await _get_database_stats(catalog)
-    tables_by_name = {row["name"]: row for row in table_rows}
+        latest_runs.setdefault(run.get("job"), run)
 
     jobs = []
     for job in catalog:
         latest = latest_runs.get(job["id"])
-        active = is_job_active(job["id"])
         related_tables = filtered_health.get(job["id"])
         if related_tables is None:
             related_tables = [
@@ -387,7 +659,7 @@ async def get_system_data():
                     "latest_data_date": tables_by_name[name]["latest_data_date"],
                     "note": tables_by_name[name]["freshness_note"],
                 }
-                for name in job["tables"]
+                for name in job.get("tables", ())
                 if name in tables_by_name
             ]
         data_health = _aggregate_data_health(related_tables)
@@ -395,15 +667,13 @@ async def get_system_data():
             {
                 **{key: value for key, value in job.items() if key != "health_queries"},
                 "status": _effective_job_status(
-                    active=active,
+                    active=False,
                     latest=latest,
                     data_health=data_health,
                     maintenance=job.get("maintenance", False),
                 ),
                 "data_health": data_health,
-                "last_run": latest
-                if not active or (latest and latest["status"] == "running")
-                else None,
+                "last_run": latest,
                 "next_run_at": schedules.get(job["id"], {}).get("next_run_at"),
             }
         )
@@ -424,30 +694,3 @@ async def get_system_data():
             "total_bytes": sum(row["total_bytes"] for row in table_rows),
         },
     }
-
-
-@router.post("/api/system/jobs/{job_id}/run", status_code=status.HTTP_202_ACCEPTED)
-async def run_system_job(
-    job_id: str,
-    response: Response,
-    x_data_sync_token: Annotated[str | None, Header()] = None,
-):
-    """后台触发一次白名单数据任务；运行中任务不重复触发。"""
-    if not settings.DATA_SYNC_TOKEN:
-        raise HTTPException(status_code=503, detail="手动同步未配置")
-    if not x_data_sync_token or not secrets.compare_digest(
-        x_data_sync_token, settings.DATA_SYNC_TOKEN
-    ):
-        raise HTTPException(status_code=401, detail="无权触发同步任务")
-    job = get_job_definition(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if not job.allow_manual:
-        raise HTTPException(status_code=403, detail="该任务不支持手动同步")
-    if is_job_active(job_id):
-        response.status_code = status.HTTP_409_CONFLICT
-        return {"accepted": False, "job": job_id, "message": "任务正在运行"}
-    if not launch_registered_job(job_id):
-        response.status_code = status.HTTP_409_CONFLICT
-        return {"accepted": False, "job": job_id, "message": "任务未触发"}
-    return {"accepted": True, "job": job_id, "message": "同步任务已启动"}

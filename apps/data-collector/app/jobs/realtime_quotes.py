@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from app.datasource import call_akshare, fetch_openbb
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.constants import TRACKED_SYMBOLS
 from app.markets import pick_market, pick_provider, to_yahoo_symbol
 
 logger = logging.getLogger(__name__)

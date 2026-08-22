@@ -1,11 +1,10 @@
-"""GET /api/profile — 从 equity_profiles 读；无数据时按需回源 yfinance 现拉写库"""
+"""GET /api/profile — 从 equity_profiles 读；无数据时经 collector 按需回源"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
 from app.api._ensure import ensure, valid_symbol
 from app.db import get_pool
-from app.jobs.fundamentals import fetch_and_store_profile
 
 router = APIRouter()
 
@@ -24,7 +23,7 @@ async def _fetch_row(pool, symbol: str):
 
 @router.get("/api/profile")
 async def get_profile(symbol: str = Query(...)):
-    """获取公司信息。DB 无（或仅名称占位行）时按需回源现拉（首访 2-5s，此后读库）。"""
+    """获取公司信息。DB 无（或仅名称占位行）时经 collector 按需回源（首访 2-5s，此后读库）。"""
     sym = symbol.upper()
     pool = await get_pool()
     row = await _fetch_row(pool, sym)
@@ -32,7 +31,7 @@ async def get_profile(symbol: str = Query(...)):
     if (
         row is None or (row["sector"] is None and row["market_cap"] is None)
     ) and valid_symbol(sym):
-        await ensure(f"profile:{sym}", lambda: fetch_and_store_profile(sym))
+        await ensure("profile", [sym])
         row = await _fetch_row(pool, sym)
 
     if not row:

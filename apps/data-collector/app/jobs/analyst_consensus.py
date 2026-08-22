@@ -5,7 +5,7 @@ import logging
 from datetime import date
 
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.constants import TRACKED_SYMBOLS
 from app.markets import to_yahoo_symbol
 from app.openbb_client import fetch_openbb
 

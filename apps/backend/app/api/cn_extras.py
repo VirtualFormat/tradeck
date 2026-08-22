@@ -4,19 +4,17 @@
 - research：单只 A 股券商研报（东财，research_reports 表）
 - breadth：A 股市场宽度（乐咕，market_breadth 表）
 全部返回扁平数组。
+
+注：data-api 不 import collector 的 TRACKED_SYMBOLS；tracked A 股从
+announcements 表反查（数据本就由 collector 按 tracked 列表写入，库即事实）。
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
-from app.markets import pick_market
 
 router = APIRouter()
-
-# tracked A 股（announcements 不带 symbol 时默认查全体）
-_CN_SYMBOLS = [s for s in TRACKED_SYMBOLS if pick_market(s) == "CN"]
 
 
 @router.get("/api/announcements")
@@ -24,7 +22,7 @@ async def get_announcements(
     symbol: str | None = Query(None),
     days: int = Query(30),
 ):
-    """A 股公告，按发布日期倒序。不带 symbol 返回 tracked 全体 A 股。"""
+    """A 股公告，按发布日期倒序。不带 symbol 返回库内 tracked 全体 A 股。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         if symbol:
@@ -40,15 +38,14 @@ async def get_announcements(
                 days,
             )
         else:
+            # tracked A 股集合：取库内已有公告的 symbol（collector 按 tracked 写入）。
             rows = await conn.fetch(
                 """
                 SELECT symbol, title, category, publish_date, url
                 FROM announcements
-                WHERE symbol = ANY($1::text[])
-                  AND publish_date >= CURRENT_DATE - make_interval(days => $2)
+                WHERE publish_date >= CURRENT_DATE - make_interval(days => $1)
                 ORDER BY publish_date DESC, fetched_at DESC
                 """,
-                _CN_SYMBOLS,
                 days,
             )
     return [

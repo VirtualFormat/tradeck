@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.constants import TRACKED_SYMBOLS
 from app.markets import pick_market, to_yahoo_symbol
 
 logger = logging.getLogger(__name__)

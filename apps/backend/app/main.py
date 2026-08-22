@@ -1,4 +1,11 @@
-"""FastAPI 入口 + lifespan（按 DATA_MODE 启动 live 管道或 mock 数据）。"""
+"""data-api（原 backend）FastAPI 入口 + lifespan。
+
+拆分后职责：唯一读出口，只暴露 18 个业务读路由，从库读数据（<50ms）。
+- 不起 scheduler、不写库（写路径全部收敛在 data-collector，单一写者）。
+- 不 seed（mock 数据准备属独立流程，见 docs/TASKS-DATA-SERVICE.md 阶段二 2.3）。
+- DATA_MODE 仅用于：mock 模式下关闭「读 API 按需回源」（不触发真实数据回源）。
+数据库身份 marker 由 collector 绑定；data-api 启动时只校验一致性，不匹配 fail fast。
+"""
 from __future__ import annotations
 
 import logging
@@ -9,9 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import analyst, boards, calendar, cn_extras, cross_asset, fundflow, fundamentals, historical, indices, macro, market_summary, movers, news, profile, quotes, search, system, technicals
 from app.config import settings
+from app.database_mode import ensure_database_mode
 from app.db import close_pool, get_pool
-from app.mock_data import ensure_database_mode
-from app.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,17 +25,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_QUOTE_DATA_AS_OF_MIGRATION = """
-ALTER TABLE quote_snapshots
-ADD COLUMN IF NOT EXISTS data_as_of TIMESTAMPTZ
-"""
-
 
 async def _skip_mock_on_demand_fetch(
-    key: str, fetch: object  # noqa: ARG001 — 与 _ensure.ensure 签名兼容
+    kind: str, symbols: list[str]  # noqa: ARG001 — 与 _ensure.ensure 签名兼容
 ) -> None:
-    """mock 模式不执行读 API 的真实数据按需回源。"""
-    logger.info("DATA_MODE=mock: skipped on-demand live fetch: %s", key)
+    """mock 模式不执行读 API 的真实数据按需回源（不发起 collector 调用）。"""
+    logger.info("DATA_MODE=mock: skipped on-demand live fetch: %s:%s", kind, symbols)
 
 
 if settings.DATA_MODE == "mock":
@@ -42,43 +43,25 @@ if settings.DATA_MODE == "mock":
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动：连 DB，并按 live/mock 互斥运行；关闭：释放对应资源。"""
-    logger.info("tradeck backend starting in %s mode...", settings.DATA_MODE)
+    """启动：连 DB 并校验数据库身份（不绑定、不写库）；关闭：释放连接池。"""
+    logger.info("tradeck data-api starting in %s mode...", settings.DATA_MODE)
 
-    # 1. 连 PostgreSQL，并在任何 seed/scheduler 前校验数据库身份。
     pool = await get_pool()
-    scheduler_started = False
     try:
         async with pool.acquire() as conn:
             version = await conn.fetchval("SELECT version()")
             database_mode = await ensure_database_mode(conn, settings.DATA_MODE)
-            # init.sql 只在空卷执行；存量卷必须在任何 seed/job 前补齐字段。
-            await conn.execute(_QUOTE_DATA_AS_OF_MIGRATION)
             logger.info(f"connected to PostgreSQL: {version[:50]}...")
             logger.info("database DATA_MODE marker verified: %s", database_mode)
 
-        if settings.DATA_MODE == "mock":
-            from app.seed_mock import run_seed
-
-            async with pool.acquire() as conn:
-                counts = await run_seed(conn)
-            logger.info("DATA_MODE=mock: seeded %s rows", sum(counts.values()))
-            logger.info("DATA_MODE=mock: scheduler and live data jobs are disabled")
-        else:
-            # live 模式只运行真实数据管道，启动时会后台触发一轮预热。
-            await start_scheduler()
-            scheduler_started = True
-
-        logger.info("tradeck backend ready")
+        logger.info("tradeck data-api ready")
         yield
     finally:
-        logger.info("tradeck backend shutting down...")
-        if scheduler_started:
-            await stop_scheduler()
+        logger.info("tradeck data-api shutting down...")
         await close_pool()
 
 
-app = FastAPI(title="tradeck backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="tradeck data-api", version="0.1.0", lifespan=lifespan)
 
 # CORS（前端同源访问不需要，但 dev 环境跨端口要）
 app.add_middleware(

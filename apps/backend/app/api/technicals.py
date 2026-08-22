@@ -5,7 +5,7 @@ import pandas as pd
 from fastapi import APIRouter, Query
 
 from app.db import get_pool
-from app.jobs.technical_indicators import LOOKBACK_DAYS, compute_indicators
+from app.services.indicators import LOOKBACK_DAYS, compute_indicators
 
 router = APIRouter()
 

@@ -1,15 +1,18 @@
 # tradeck 项目 1 — 市场资讯看板
-# 架构：PostgreSQL + FastAPI backend + OpenBB 数据源 + Next.js 前端
+# 架构：PostgreSQL + collector（数据管道/写者）+ data-api（读 API）+ OpenBB 数据源 + Next.js 前端
+#
+# 注意：mock 种子（apps/mock）仅 dev 可用，prod 不接 mock——本 compose 恒为 live。
 #
 # 使用：
 #   cp .env.example .env  # 填 API key（可选，免费源不需要）
 #   docker compose up -d --build
 #   前端：http://localhost:3000
-#   backend API：http://localhost:8080/docs
+#   data-api：http://localhost:8080/docs
 #   OpenBB API：http://localhost:6900/docs
 
 services:
   # ── 数据存储 ──────────────────────────────────────
+  # 铁律：DB 永不对外暴露宿主机端口，仅内网对 collector / data-api 可见
   postgres:
     image: postgres:16-alpine
     container_name: tradeck-postgres
@@ -19,9 +22,8 @@ services:
       POSTGRES_PASSWORD: tradeck_dev
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./apps/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
+      # schema 所有权归 collector
+      - ./apps/data-collector/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tradeck"]
       interval: 10s
@@ -56,11 +58,13 @@ services:
       timeout: 10s
       retries: 3
 
-  # ── 数据管道 + API 服务 ──────────────────────────
-  backend:
-    build: ./apps/backend
-    container_name: tradeck-backend
+  # ── 数据管道（写者：定时拉取数据源写库 + 内部运维 API）──
+  # 不对外映射端口，仅内网可达
+  collector:
+    build: ./apps/data-collector
+    container_name: tradeck-collector
     environment:
+      DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
       # 海外节点（韩国瘦 OpenBB）：为空则海外源回落国内 openbb
@@ -75,6 +79,25 @@ services:
         condition: service_healthy
       openbb:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
+  data-api:
+    build: ./apps/backend
+    container_name: tradeck-data-api
+    environment:
+      DATA_MODE: ${DATA_MODE:-live}
+      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      OPENBB_API_URL: http://openbb:6900
+      # 数据中心手动同步令牌；留空时后端禁用手动触发
+      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openbb:
+        condition: service_healthy
+      collector:
+        condition: service_started
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -88,13 +111,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # 改为从 backend 读（backend 从 DB 读，<50ms）
-      - BACKEND_API_URL=http://backend:8080
+      # 从 data-api 读（data-api 从 DB 读，<50ms）
+      - BACKEND_API_URL=http://data-api:8080
       # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
       - OPENBB_API_URL=http://openbb:6900
       - NODE_ENV=production
     depends_on:
-      backend:
+      data-api:
         condition: service_started
       openbb:
         condition: service_healthy

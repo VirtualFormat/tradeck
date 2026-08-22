@@ -16,11 +16,14 @@ from datetime import date as date_type
 from fastapi import APIRouter, Query
 
 from app.db import get_pool
-from app.jobs.market_breadth_global import MARKET_COVERAGE_THRESHOLDS
 
 router = APIRouter()
 
 _MARKETS = ("CN", "US", "HK")
+
+# US/HK 市场宽度自算的最低日K覆盖门槛（与 collector 的 market_breadth_global
+# job 口径一致：覆盖不足的日快照视为无效，不展示）。纯常量，无进程依赖。
+MARKET_COVERAGE_THRESHOLDS = {"US": 5_000, "HK": 1_000}
 
 
 def _coverage_threshold(market: str) -> int | None:

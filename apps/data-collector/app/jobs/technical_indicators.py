@@ -10,7 +10,7 @@ import logging
 import pandas as pd
 
 from app.db import get_pool
-from app.jobs.daily_kline import TRACKED_SYMBOLS
+from app.constants import TRACKED_SYMBOLS
 
 logger = logging.getLogger(__name__)
 
