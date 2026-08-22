@@ -146,12 +146,19 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 
 | 待确认项 | 内容 | 现状 | 影响 |
 |---|---|---|---|
-| D1 分钟K 历史源 | 全市场 1min K线历史（2 万标的 × 多年）从哪来 | TickFlow 免费档实测日K可用，分钟K覆盖范围/历史深度/限额未实测 | 4.2a 的采集 job 依赖 |
+| D1 分钟K 历史源 | 全市场 1min K线历史（2 万标的 × 多年）从哪来 | **已实测（2026-08-22）**：TickFlow SDK 原生支持分钟K（`klines.intraday`/`intraday_batch`，Period='1m/5m/10m/15m/30m/60m'），但**免费档 403 拒绝**（`PermissionError: 免费服务不支持日内分时数据`）。分钟K 需付费档 | 4.2a 的采集 job 依赖 |
 | D2 tick 逐笔源 | 全市场逐笔成交从哪来 | 免费三源（TickFlow/akshare/OpenBB）基本不提供全市场逐笔历史；大概率需付费数据商或券商 Level-2 接口 | 4.2c 的前提；涉及费用决策 |
 | D3 采集限额与成本 | 分钟K/tick 的 API 限额、回填历史的速度、付费档价格 | 未调研 | 决定全量初始化要跑多久、年度数据预算 |
 | D4 QMT/iFinD 调研 | 迅投 QMT（券商量化终端）与同花顺 iFinD 的分钟K/tick 覆盖、API 形态、成本 | 调研中 | 可能替代/补充 D1、D2；iFinD 另有 Kimi 集成的金融数据库形态待确认 |
 
-**建议动作**：4.2 启动前先实测 TickFlow 分钟K 能力（D1），tick 源（D2）单独做一轮数据商调研对比再拍板。
+**D1 实测明细（2026-08-22）**：
+- **接口形态** ✅：`klines.intraday(symbol, period, count)` 单只 + `intraday_batch(symbols, period, count, batch_size=100)` 批量（与日K 同 SDK、同批量分片模式，接入成本低）。
+- **周期覆盖** ✅：`1m / 5m / 10m / 15m / 30m / 60m`（另有 1d/1w/1M/1Q/1Y）。
+- **免费档权限** ❌：intraday 调 `600519.SH` 返回 HTTP 403「免费服务不支持日内分时数据」。日K 免费，分钟K 必须付费档。
+- **未实测（需付费 key）**：付费档的分钟K 历史深度（能回填多少天）、全市场覆盖（CN/HK/US 是否都有）、限额与价格。
+- **akshare 东财分钟接口** ❌：`stock_zh_a_hist_min_em(600519, period='1')` 被断连（RemoteDisconnected，与东财 spot 同命运，AGENTS.md 已知限制）——A股分钟K 免费路径本地不可行，需 VPS 实测或走付费源。
+
+**建议动作**：D1 已确认「TickFlow 付费档有分钟K 接口」——下一步是**评估付费档**（注册试用 key，实测历史深度/覆盖/限额/价格，填 D3），与 D2（tick 源）、D4（QMT/iFinD 调研）合并做一轮数据商对比再拍板。免费路径现状：美股/港股可用 yfinance 1m（近 7 天窗口）起步；**A股分钟K 免费路径（akshare 东财）本地被封**，只能走 TickFlow 付费档 / QMT / iFinD。
 
 ## 验收记录
 
