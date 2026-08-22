@@ -159,10 +159,56 @@ services:
     networks:
       - dev-net
 
+  # MinIO（S3 兼容对象存储，本地「假 COS」）
+  # 用于上线真 COS 前验收 S3 后端（boto3 协议路径/endpoint/网络）。
+  # 日常开发用本地文件 provider（COLD_STORAGE_BACKEND=local），不需要本服务；
+  # 仅在显式启用 s3-test profile 时起：--profile s3-test up -d minio minio-init
+  minio:
+    image: minio/minio:latest
+    container_name: tradeck-dev-minio
+    profiles: ["s3-test"]
+    environment:
+      MINIO_ROOT_USER: ${COLD_S3_ACCESS_KEY:-tradeck}
+      MINIO_ROOT_PASSWORD: ${COLD_S3_SECRET_KEY:-tradeck_dev_cold}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"  # S3 API（调试/宿主机直连用；容器内走 minio:9000）
+      - "9001:9001"  # 控制台（可选，调试用）
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dev-net
+
+  # MinIO 初始化：建 cold-lake bucket（Job 型，起一次即退）
+  minio-init:
+    image: minio/mc:latest
+    container_name: tradeck-dev-minio-init
+    profiles: ["s3-test"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-tradeck} $${MINIO_ROOT_PASSWORD:-tradeck_dev_cold}
+        && mc mb -p local/$${COLD_S3_BUCKET:-tradeck-lake} || true
+    environment:
+      MINIO_ROOT_USER: ${COLD_S3_ACCESS_KEY:-tradeck}
+      MINIO_ROOT_PASSWORD: ${COLD_S3_SECRET_KEY:-tradeck_dev_cold}
+      COLD_S3_BUCKET: ${COLD_S3_BUCKET:-tradeck-lake}
+    networks:
+      - dev-net
+
 volumes:
   dev-node-modules:
   dev-venv:
   dev-openbb-config:
+  minio-data:
   dev-postgres-data:
     # DATA_MODE 与数据库 marker 在 backend 启动时强校验；错误卷组合会拒绝启动。
     # live 默认沿用旧卷；mock 命令必须显式指定独立卷。

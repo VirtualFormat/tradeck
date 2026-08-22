@@ -13,3 +13,6 @@ yfinance>=0.2
 pandas>=3.0
 # 日K 稳定源（官方 SDK，自带分片+并发闸+429退避）；免费档 TickFlow.free()
 tickflow[all]>=0.1
+# 冷层存储（分钟K/tick Parquet）：pyarrow 写列存、boto3 走 S3 兼容（COS）
+pyarrow>=15.0
+boto3>=1.34
