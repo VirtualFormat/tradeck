@@ -136,7 +136,9 @@ RULES: dict[str, QualityRule] = {
     "fund_flow": QualityRule(
         table="fund_flow",
         required_fields=("symbol", "snapshot_date"),
-        max_change_pct=1.0,
+        # 东财 change_percent 为百分数口径（如 9.96 = 9.96%），阈值按百分数设 ±40
+        # （覆盖科创/创业/北交所涨停 20%/30%，留余量；曾按小数设 ±1.0 有误拦风险）
+        max_change_pct=40.0,
         non_negative_fields=("amount_in", "amount_out", "amount_total"),
         # net_amount 可为负（净流出），不设非负
         zscore_field="net_amount",  # P2：资金流净额离群标记
@@ -144,7 +146,9 @@ RULES: dict[str, QualityRule] = {
     "board_heat": QualityRule(
         table="board_heat",
         required_fields=("board_type", "name", "snapshot_date"),
-        max_change_pct=1.0,
+        # 板块 change_percent 为百分数口径（东财原值，9.96 = 9.96%），
+        # 阈值按百分数设 ±50（板块单日 ±50% 才视为损坏；曾误设 ±1.0 致大量误拦）
+        max_change_pct=50.0,
         non_negative_fields=("market_cap",),
     ),
     "analyst_consensus": QualityRule(

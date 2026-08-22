@@ -46,6 +46,31 @@ import { cn } from "@/lib/utils";
 
 const POLL_MS = 3000;
 
+/** 数据质量度量（data-api /api/system/quality） */
+interface QualityMetric {
+  table_name: string;
+  date: string | null;
+  total: number;
+  accepted: number;
+  rejected: number;
+  repaired: number;
+  quality_score: number | null;
+  updated_at: string | null;
+}
+
+interface QualityReject {
+  source_table: string;
+  symbol: string | null;
+  reject_reason: string | null;
+  severity: string | null;
+  rejected_at: string | null;
+}
+
+interface QualitySnapshot {
+  metrics: QualityMetric[];
+  recent_rejects: QualityReject[];
+}
+
 const EMPTY_SNAPSHOT: DataSystemSnapshot = {
   jobs: [],
   tables: [],
@@ -343,9 +368,270 @@ function RunningPanel({ jobs }: { jobs: DataJob[] }) {
   );
 }
 
+/** 质量分展示：null → 灰色「—」；>= 0.99 绿、0.9-0.99 黄、< 0.9 红（百分比，1 位小数） */
+function QualityScoreValue({ score }: { score: number | null }) {
+  if (score === null || Number.isNaN(score)) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const pct = score * 100;
+  const colorClass =
+    score >= 0.99 ? "text-down" : score >= 0.9 ? "text-warn" : "text-up";
+  return (
+    <span className={cn("font-mono font-semibold tabular-nums", colorClass)}>
+      {pct.toFixed(1)}%
+    </span>
+  );
+}
+
+/** 拦截样本 severity 徽标：P0/P1 红、P2 黄（可疑但已放行），其余灰 */
+function SeverityBadge({ severity }: { severity: string | null }) {
+  if (severity === "P0" || severity === "P1") {
+    return <Badge variant="destructive">{severity} 已拦截</Badge>;
+  }
+  if (severity === "P2") {
+    return (
+      <Badge variant="outline" className="border-warn/40 text-warn">
+        P2 可疑但已放行
+      </Badge>
+    );
+  }
+  return <Badge variant="outline">{severity ?? "未知"}</Badge>;
+}
+
+/** 数据质量面板：质量分概览 + 近 N 天同步状态 + 拦截样本 */
+function QualityPanel({ snapshot }: { snapshot: QualitySnapshot }) {
+  const { metrics, recent_rejects } = snapshot;
+
+  // 质量分概览：每表取最新一天的 quality_score
+  const latestByTable = useMemo(() => {
+    const map = new Map<string, QualityMetric>();
+    for (const metric of metrics) {
+      const prev = map.get(metric.table_name);
+      if (!prev || (metric.date ?? "") > (prev.date ?? "")) {
+        map.set(metric.table_name, metric);
+      }
+    }
+    return [...map.values()].sort((a, b) =>
+      a.table_name.localeCompare(b.table_name)
+    );
+  }, [metrics]);
+
+  // 同步状态：近 N 天按表聚合 total/accepted/rejected/repaired
+  const totalsByTable = useMemo(() => {
+    const map = new Map<
+      string,
+      { total: number; accepted: number; rejected: number; repaired: number }
+    >();
+    for (const metric of metrics) {
+      const agg = map.get(metric.table_name) ?? {
+        total: 0,
+        accepted: 0,
+        rejected: 0,
+        repaired: 0,
+      };
+      agg.total += metric.total;
+      agg.accepted += metric.accepted;
+      agg.rejected += metric.rejected;
+      agg.repaired += metric.repaired;
+      map.set(metric.table_name, agg);
+    }
+    return [...map.entries()]
+      .map(([table_name, agg]) => ({ table_name, ...agg }))
+      .sort((a, b) => a.table_name.localeCompare(b.table_name));
+  }, [metrics]);
+
+  if (metrics.length === 0 && recent_rejects.length === 0) {
+    return (
+      <Card>
+        <CardContent>
+          <EmptyState
+            title="暂无数据质量记录"
+            description="collector 数据质量层尚未写库；当日任务跑完后此处会展示质量分与拦截样本。"
+          />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-medium">质量分概览</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            每张表最近一天的入库质量分（合格数 ÷ 总数，修复后的记录计为合格）。
+          </p>
+        </div>
+        {latestByTable.length === 0 ? (
+          <Card>
+            <CardContent>
+              <EmptyState compact title="暂无质量分记录" />
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {latestByTable.map((metric) => (
+              <Card key={metric.table_name} size="sm">
+                <CardHeader>
+                  <CardTitle className="font-mono text-xs">
+                    {metric.table_name}
+                  </CardTitle>
+                  <CardAction>
+                    <Badge variant="outline">
+                      {formatDate(metric.date)}
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-xl">
+                    <QualityScoreValue score={metric.quality_score} />
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    当日 {formatNumber(metric.total)} 条 · 拦截{" "}
+                    {formatNumber(metric.rejected)} · 修复{" "}
+                    {formatNumber(metric.repaired)}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-medium">同步状态概览</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            近 N 天各表入库条数聚合：总数 / 合格 / 拦截 / 修复。
+          </p>
+        </div>
+        <Card>
+          <CardContent className="px-0">
+            <Table className="min-w-[640px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-4">表名</TableHead>
+                  <TableHead className="text-right">总数</TableHead>
+                  <TableHead className="text-right">合格</TableHead>
+                  <TableHead className="text-right">拦截</TableHead>
+                  <TableHead className="pr-4 text-right">修复</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {totalsByTable.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5}>
+                      <EmptyState compact title="暂无同步质量记录" />
+                    </TableCell>
+                  </TableRow>
+                )}
+                {totalsByTable.map((row) => (
+                  <TableRow key={row.table_name}>
+                    <TableCell className="pl-4 font-mono text-xs">
+                      {row.table_name}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {formatNumber(row.total)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums text-down">
+                      {formatNumber(row.accepted)}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right font-mono tabular-nums",
+                        row.rejected > 0
+                          ? "text-up"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      {formatNumber(row.rejected)}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "pr-4 text-right font-mono tabular-nums",
+                        row.repaired > 0
+                          ? "text-warn"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      {formatNumber(row.repaired)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-medium">拦截样本</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            最近被质量层拦下或标记的记录（最多 100 条）；P2 为可疑但已放行。
+          </p>
+        </div>
+        <Card>
+          <CardContent className="px-0">
+            <Table className="min-w-[720px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-4">级别</TableHead>
+                  <TableHead>表名</TableHead>
+                  <TableHead>标的</TableHead>
+                  <TableHead>原因</TableHead>
+                  <TableHead className="pr-4 text-right">时间</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {recent_rejects.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5}>
+                      <EmptyState
+                        compact
+                        title="暂无拦截样本"
+                        description="最近没有记录被质量层拦截或标记。"
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+                {recent_rejects.map((reject, index) => (
+                  <TableRow
+                    key={`${reject.source_table}-${reject.symbol}-${reject.rejected_at}-${index}`}
+                  >
+                    <TableCell className="pl-4">
+                      <SeverityBadge severity={reject.severity} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {reject.source_table}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {reject.symbol ?? "—"}
+                    </TableCell>
+                    <TableCell className="max-w-80 whitespace-normal text-xs text-muted-foreground">
+                      {reject.reject_reason ?? "—"}
+                    </TableCell>
+                    <TableCell className="pr-4 text-right text-xs text-muted-foreground">
+                      {formatCompactDateTime(reject.rejected_at)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </section>
+    </div>
+  );
+}
+
 export function DataPageClient() {
   const [snapshot, setSnapshot] =
     useState<DataSystemSnapshot>(EMPTY_SNAPSHOT);
+  const [quality, setQuality] = useState<QualitySnapshot>({
+    metrics: [],
+    recent_rejects: [],
+  });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [syncToken, setSyncToken] = useState("");
@@ -365,6 +651,13 @@ export function DataPageClient() {
         ...data,
         summary: { ...EMPTY_SNAPSHOT.summary, ...data.summary },
       });
+      // 质量度量跟随主快照一起刷新；接口内部已降级，失败时保持空数据
+      const qualityRes = await fetch("/api/system/quality?days=7", {
+        cache: "no-store",
+      });
+      if (qualityRes.ok) {
+        setQuality((await qualityRes.json()) as QualitySnapshot);
+      }
       setLoadError("");
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "数据服务暂不可用");
@@ -540,6 +833,7 @@ export function DataPageClient() {
         <TabsList variant="line">
           <TabsTrigger value="jobs">同步任务</TabsTrigger>
           <TabsTrigger value="tables">数据表</TabsTrigger>
+          <TabsTrigger value="quality">数据质量</TabsTrigger>
         </TabsList>
 
         <TabsContent value="jobs">
@@ -726,6 +1020,10 @@ export function DataPageClient() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="quality">
+          <QualityPanel snapshot={quality} />
         </TabsContent>
       </Tabs>
     </div>
