@@ -164,6 +164,22 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 | 三.五 数据质量层（Q4） | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，规则全覆盖** | 2026-08-22 |
 | 四 加固 | 未开始 | - | - | - | - |
 
+> **阶段三.五收尾（2026-08-22）**：质量层两表已纳入 cleanup TTL（90 天，commit e307fa4）；
+> Q4 记录的「movers percent_change 口径不一致」经实测证伪（库内两市场均为小数，子 agent 误报）。
+> **质量层后端（Q1-Q4 + TTL）已完整收口。** 剩余 Q5（分钟K 质量）随 4.2 系列、Q6（质量面板）见下。
+
+#### Q6 数据质量面板（独立前端任务，待启动）
+
+> 质量层后端已产出 metrics/rejects 数据并经 data-api `/api/system/quality` 暴露，
+> 但前端尚未展示——质量层的价值闭环需要一个可视化入口。这是独立前端迭代，
+> 须遵守 AGENTS.md「UI 强制规则」（shadcn 组件、检查清单、Server/Client 边界、空态统一）。
+
+| 任务 | 内容 | 写范围 |
+|---|---|---|
+| Q6.1 质量 Tab | 数据面板（data-page-client.tsx）新增「数据质量」Tab：质量分概览（各表 score）+ 近 N 天拦截/修复统计 + 最近拦截样本表（quarantine）。用 shadcn Tabs/Table/Badge/Empty，禁手写 | `apps/web/src/components/data/` |
+| Q6.2 质量代理路由 | Next 代理 `/api/system/quality` 转发 data-api（参照现有 system 路由模式） | `apps/web/src/app/api/system/quality/route.ts` |
+| Q6.3 P2 展示区分 | 拦截样本按 severity 分色 Badge（P0/P1 红、P2 黄），文案标明 P2 为「可疑但已放行」 | 同 Q6.1 |
+
 ### 阶段三.五 Q4 review 明细（规则全覆盖 + P2 统计标记，2026-08-22）
 
 主 agent 升级规则框架（non_negative_fields + P2 配置）与 statistical.py（P2 批级检测）；
