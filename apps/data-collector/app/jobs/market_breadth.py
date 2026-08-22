@@ -14,6 +14,7 @@ from typing import Any
 
 from app.datasource import call_akshare
 from app.db import get_pool
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,26 @@ async def run_market_breadth_job() -> int:
 
     # 以 legu 统计日期为准，拿不到则用当天（同日重跑覆盖同一行）
     snapshot_date = stat_date or date.today()
+
+    # 写库前组装 dict 行过质量闸（键与 market_breadth 列名一致），被拦则跳过写库
+    dict_row = {
+        "date": snapshot_date,
+        "market": "CN",
+        "up_count": values.get("up_count"),
+        "down_count": values.get("down_count"),
+        "flat_count": values.get("flat_count"),
+        "limit_up_count": values.get("limit_up_count"),
+        "limit_down_count": values.get("limit_down_count"),
+        "real_limit_up_count": values.get("real_limit_up_count"),
+        "real_limit_down_count": values.get("real_limit_down_count"),
+        "suspended_count": values.get("suspended_count"),
+        "activity_rate": values.get("activity_rate"),
+        "source": "legu",
+    }
+    accepted = await quality_gate("market_breadth", [dict_row])
+    if not accepted:
+        logger.warning("market breadth 被质量闸拦截，保留旧快照")
+        return 0
 
     pool = await get_pool()
     async with pool.acquire() as conn:

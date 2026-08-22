@@ -8,6 +8,7 @@ from app.db import get_pool
 from app.constants import TRACKED_SYMBOLS
 from app.markets import to_yahoo_symbol
 from app.openbb_client import fetch_openbb
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,24 @@ async def fetch_and_store_consensus(symbol: str, snapshot_date: date) -> int:
         return 0
 
     r = results[0]
+    # 写库前组装 dict 行过质量闸（键与 analyst_consensus 列名一致），被拦则跳过本标的
+    dict_row = {
+        "symbol": symbol,
+        "snapshot_date": snapshot_date,
+        "recommendation": r.get("recommendation"),
+        "recommendation_mean": float(r["recommendation_mean"]) if r.get("recommendation_mean") is not None else None,
+        "number_of_analysts": int(r["number_of_analysts"]) if r.get("number_of_analysts") is not None else None,
+        "target_high": float(r["target_high"]) if r.get("target_high") is not None else None,
+        "target_low": float(r["target_low"]) if r.get("target_low") is not None else None,
+        "target_consensus": float(r["target_consensus"]) if r.get("target_consensus") is not None else None,
+        "target_median": float(r["target_median"]) if r.get("target_median") is not None else None,
+        "current_price": float(r["current_price"]) if r.get("current_price") is not None else None,
+        "currency": r.get("currency"),
+    }
+    accepted = await quality_gate("analyst_consensus", [dict_row])
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -45,17 +64,17 @@ async def fetch_and_store_consensus(symbol: str, snapshot_date: date) -> int:
                 currency = EXCLUDED.currency,
                 fetched_at = NOW()
             """,
-            symbol,
-            snapshot_date,
-            r.get("recommendation"),
-            float(r["recommendation_mean"]) if r.get("recommendation_mean") is not None else None,
-            int(r["number_of_analysts"]) if r.get("number_of_analysts") is not None else None,
-            float(r["target_high"]) if r.get("target_high") is not None else None,
-            float(r["target_low"]) if r.get("target_low") is not None else None,
-            float(r["target_consensus"]) if r.get("target_consensus") is not None else None,
-            float(r["target_median"]) if r.get("target_median") is not None else None,
-            float(r["current_price"]) if r.get("current_price") is not None else None,
-            r.get("currency"),
+            dict_row["symbol"],
+            dict_row["snapshot_date"],
+            dict_row["recommendation"],
+            dict_row["recommendation_mean"],
+            dict_row["number_of_analysts"],
+            dict_row["target_high"],
+            dict_row["target_low"],
+            dict_row["target_consensus"],
+            dict_row["target_median"],
+            dict_row["current_price"],
+            dict_row["currency"],
         )
     return 1
 

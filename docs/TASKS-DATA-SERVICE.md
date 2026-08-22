@@ -161,7 +161,34 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 | 二 逻辑收口 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，data-api 彻底纯化** | 2026-08-20 |
 | 三 量化契约 | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿** | 2026-08-22 |
 | 三.五 数据质量层（Q1-Q3） | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，端到端闭环** | 2026-08-22 |
+| 三.五 数据质量层（Q4） | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，规则全覆盖** | 2026-08-22 |
 | 四 加固 | 未开始 | - | - | - | - |
+
+### 阶段三.五 Q4 review 明细（规则全覆盖 + P2 统计标记，2026-08-22）
+
+主 agent 升级规则框架（non_negative_fields + P2 配置）与 statistical.py（P2 批级检测）；
+Q4 接入由子 agent Lagrange 完成（7 job、11 处）。
+
+已完成验证：
+- 规则框架升级：`QualityRule` 加 `non_negative_fields`（P0 数值非负）+ `zscore_field`/`daily_gap`（P2 配置）；
+  `validate_row` 接入 non_negative 检查；RULES 新增 13 张表规则（榜单/指标/基本面/宏观）。
+- P2 统计标记：新建 `statistical.py`（`detect_outliers_zscore` 批内离群 + `detect_daily_gaps` 日K 跳空），
+  批级检测挂进 gate._process；P2 只标记不拦（accepted 照收、落 quarantine、不计 rejected_count）。
+- Q4 接入：movers/fund_flow/board_heat/analyst_consensus/market_breadth/macro/fundamentals
+  （5 写库点）共 7 job 11 处 quality_gate，SQL/列顺序/ON CONFLICT 不变，返回基于 accepted。
+
+实跑验收结果（2026-08-22）——**全部通过**：
+- ✅ 规则单测：movers 负 volume P0 / 涨幅 5000% P1、fundamentals 负市值 P0，拦截正确。
+- ✅ P2 单测：日K 跳空 63.5% → 放行（accepted=3）+ 落 P2 标记 + 不计 rejected_count。
+- ✅ 真实管道覆盖：metrics 表新增 macro_indicators(6749 行)/market_breadth(1 行)/daily_prices(103155 行)。
+- ✅ 新表脏数据端到端：movers 负 volume、market_breadth 负计数均 P0 拦截落 quarantine。
+- ✅ 精确性验证：daily_prices 10 万行仅 1 条 rejected（为此前手动注入的 BAD 测试行），真实源零误拦。
+
+Review 发现的问题与处置：
+1. **movers_cache.percent_change 单位口径 CN/US 不一致**（CN 存小数、US 存百分数）——存量数据口径缺陷，
+   会使 P2 z-score 混合量纲。非 Q4 接入引入，修复需改 movers 两条链路。**记录为待办，归 Q5 或独立口径统一任务**。
+2. fund_flow/board_heat 的 snapshot_date 不在 tuple（靠 DB DEFAULT），过闸 dict 补 date.today()——与 DB 默认同日，仅满足规则校验，无害。
+3. technical_indicators（本地自算）/文本类/news/board_map/yield_curve 未接入——规则未登记或无数值语义，符合设计边界。
 
 ### 阶段三.五 review 明细（Q1-Q3，2026-08-22）
 

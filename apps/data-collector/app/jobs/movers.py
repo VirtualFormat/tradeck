@@ -14,6 +14,7 @@ from typing import Any
 
 from app.db import get_pool
 from app.openbb_client import fetch_openbb
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,16 @@ async def _replace_snapshot(
 ) -> int:
     if not rows:
         return 0
+    # 写库前把 tuple 转 dict 过质量闸（键与 movers_cache 列名一致），被拦的行不进 INSERT
+    _cols = (
+        "type", "market", "rank", "symbol", "name", "price",
+        "percent_change", "volume", "amount", "snapshot_date",
+    )
+    dict_rows = [dict(zip(_cols, row)) for row in rows]
+    accepted = await quality_gate("movers_cache", dict_rows)
+    if not accepted:
+        return 0
+    rows = [tuple(d[c] for c in _cols) for d in accepted]
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():

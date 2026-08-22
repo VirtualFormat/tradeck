@@ -31,6 +31,12 @@ class QualityRule:
     row_rules: tuple[RowRule, ...] = ()
     # symbol 字段名（各表不一）
     symbol_field: str = "symbol"
+    # 数值非负字段（如市值/计数/成交额，为负即 P0 物理不可能）
+    non_negative_fields: tuple[str, ...] = ()
+    # P2 统计检测（批级，只标记不拦）：
+    # zscore_field 非空则对该字段做批内 Z-score 离群标记；daily_gap=True 做日K 跳空标记
+    zscore_field: str | None = None
+    daily_gap: bool = False
 
 
 def _fnum(v: Any) -> float | None:
@@ -85,6 +91,15 @@ def _check_change_pct(rule: QualityRule, row: dict[str, Any]) -> tuple[Severity,
     return None
 
 
+def _check_non_negative(rule: QualityRule, row: dict[str, Any]) -> tuple[Severity, str] | None:
+    """数值非负（P0 物理不可能）：市值/计数/成交额等为负即损坏。"""
+    for f in rule.non_negative_fields:
+        v = _fnum(row.get(f))
+        if v is not None and v < 0:
+            return (Severity.P0, f"{f} 为负: {v}")
+    return None
+
+
 # ── 各表规则登记 ─────────────────────────────────────────────
 # OHLC 类表开 ohlc=True；涨跌幅阈值按市场物理边界取最宽（CN 北交所 30% 最宽；
 # US/HK 无硬限但 >100% 视为损坏）。
@@ -94,6 +109,7 @@ RULES: dict[str, QualityRule] = {
         table="daily_prices",
         required_fields=("symbol", "date", "close"),
         ohlc=True,
+        daily_gap=True,  # P2：日K 跳空标记
     ),
     "quote_snapshots": QualityRule(
         table="quote_snapshots",
@@ -107,6 +123,69 @@ RULES: dict[str, QualityRule] = {
     "macro_asset_prices": QualityRule(
         table="macro_asset_prices",
         required_fields=("symbol", "date", "close"),
+    ),
+    # ── 数值榜单/指标表 ──
+    "movers_cache": QualityRule(
+        table="movers_cache",
+        required_fields=("symbol", "type", "market", "snapshot_date"),
+        max_change_pct=10.0,  # 榜单 percent_change 极端容错（>1000% 视为损坏）
+        change_pct_field="percent_change",
+        non_negative_fields=("volume", "amount"),
+        zscore_field="percent_change",  # P2：榜单内离群标记
+    ),
+    "fund_flow": QualityRule(
+        table="fund_flow",
+        required_fields=("symbol", "snapshot_date"),
+        max_change_pct=1.0,
+        non_negative_fields=("amount_in", "amount_out", "amount_total"),
+        # net_amount 可为负（净流出），不设非负
+        zscore_field="net_amount",  # P2：资金流净额离群标记
+    ),
+    "board_heat": QualityRule(
+        table="board_heat",
+        required_fields=("board_type", "name", "snapshot_date"),
+        max_change_pct=1.0,
+        non_negative_fields=("market_cap",),
+    ),
+    "analyst_consensus": QualityRule(
+        table="analyst_consensus",
+        required_fields=("symbol", "snapshot_date"),
+        non_negative_fields=("number_of_analysts",),
+    ),
+    "market_breadth": QualityRule(
+        table="market_breadth",
+        required_fields=("date", "market"),
+        non_negative_fields=(
+            "up_count", "down_count", "flat_count",
+            "limit_up_count", "limit_down_count",
+        ),
+    ),
+    # ── 基本面/宏观表 ──
+    "fundamental_metrics": QualityRule(
+        table="fundamental_metrics",
+        required_fields=("symbol",),
+        non_negative_fields=("market_cap",),
+    ),
+    "macro_indicators": QualityRule(
+        table="macro_indicators",
+        required_fields=("name", "date", "value"),
+    ),
+    "equity_profiles": QualityRule(
+        table="equity_profiles",
+        required_fields=("symbol",),
+        non_negative_fields=("market_cap",),
+    ),
+    "income_statements": QualityRule(
+        table="income_statements",
+        required_fields=("symbol", "fiscal_year"),
+    ),
+    "balance_sheets": QualityRule(
+        table="balance_sheets",
+        required_fields=("symbol", "period", "fiscal_date"),
+    ),
+    "cash_flow_statements": QualityRule(
+        table="cash_flow_statements",
+        required_fields=("symbol", "period", "fiscal_date"),
     ),
 }
 
@@ -126,6 +205,10 @@ def validate_row(rule: QualityRule, row: dict[str, Any]) -> tuple[Severity, str]
             return r
 
     if (r := _check_change_pct(rule, row)) is not None:
+        return r
+
+    # 数值非负（P0）
+    if (r := _check_non_negative(rule, row)) is not None:
         return r
 
     for rr in rule.row_rules:

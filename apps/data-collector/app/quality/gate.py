@@ -14,6 +14,7 @@ from typing import Any
 from app.quality.models import QualityOutcome, RejectRecord, Severity
 from app.quality.normalize import normalize_row
 from app.quality.rules import get_rule, validate_row
+from app.quality.statistical import detect_daily_gaps, detect_outliers_zscore
 from app.quality.store import store_metrics, store_rejects
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,16 @@ def _process(table: str, rows: list[dict[str, Any]]) -> QualityOutcome:
         if severity in (Severity.P0, Severity.P1):
             continue
         outcome.accepted.append(normalized)
+
+    # P2 批级统计标记（只标记不拦）：Z-score 离群、日K 跳空
+    if rule.zscore_field:
+        outcome.rejects.extend(
+            detect_outliers_zscore(table, outcome.accepted, rule.zscore_field, rule.symbol_field)
+        )
+    if rule.daily_gap:
+        outcome.rejects.extend(
+            detect_daily_gaps(table, outcome.accepted, rule.symbol_field)
+        )
 
     return outcome
 

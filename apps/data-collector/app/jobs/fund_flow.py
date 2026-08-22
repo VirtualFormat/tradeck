@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from app.datasource import call_akshare
 from app.db import get_pool
 from app.jobs.board_map import _to_symbol
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,22 @@ async def run_fund_flow_job() -> int:
             f"fund flow 有效净额仅 {valid_count} 行（非交易时段），保留旧快照"
         )
         return 0
+
+    # 写库前把 tuple 转 dict 过质量闸（键与 fund_flow 列名一致；snapshot_date 恒为当天，
+    # 与 INSERT 的 DEFAULT CURRENT_DATE 同口径），被拦的行不进 INSERT
+    _cols = (
+        "symbol", "name", "price", "change_percent", "turnover_rate",
+        "amount_in", "amount_out", "net_amount", "amount_total",
+    )
+    today = date.today()
+    dict_rows = [
+        {**dict(zip(_cols, row)), "snapshot_date": today} for row in rows
+    ]
+    accepted = await quality_gate("fund_flow", dict_rows)
+    if not accepted:
+        logger.warning("fund flow 全部被质量闸拦截，保留旧快照")
+        return 0
+    rows = [tuple(d[c] for c in _cols) for d in accepted]
 
     pool = await get_pool()
     async with pool.acquire() as conn:

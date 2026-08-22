@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from app.datasource import call_akshare
 from app.db import get_pool
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,22 @@ async def fetch_and_store_boards(board_type: str) -> int:
     if not rows:
         logger.warning(f"No boards data for {board_type}")
         return 0
+
+    # 写库前把 tuple 转 dict 过质量闸（键与 board_heat 列名一致；snapshot_date 恒为当天，
+    # 与 INSERT 的 DEFAULT CURRENT_DATE 同口径），被拦的行不进 INSERT
+    _cols = (
+        "board_type", "name", "code", "change_percent", "market_cap",
+        "turnover_rate", "leader_stock", "leader_change",
+    )
+    today = date.today()
+    dict_rows = [
+        {**dict(zip(_cols, row)), "snapshot_date": today} for row in rows
+    ]
+    accepted = await quality_gate("board_heat", dict_rows)
+    if not accepted:
+        logger.warning(f"boards {board_type} 全部被质量闸拦截，保留旧快照")
+        return 0
+    rows = [tuple(d[c] for c in _cols) for d in accepted]
 
     pool = await get_pool()
     async with pool.acquire() as conn:

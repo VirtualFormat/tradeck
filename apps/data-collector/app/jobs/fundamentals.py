@@ -8,6 +8,7 @@ from app.db import get_pool
 from app.constants import TRACKED_SYMBOLS
 from app.markets import to_yahoo_symbol
 from app.openbb_client import fetch_openbb
+from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,21 @@ async def fetch_and_store_profile(symbol: str) -> int:
         return 0
 
     r = results[0]
+    # 写库前组装 dict 行过质量闸（键与 equity_profiles 列名一致），被拦则跳过
+    dict_row = {
+        "symbol": symbol,
+        "name": r.get("name"),
+        "sector": r.get("sector"),
+        "industry": r.get("industry"),
+        "market_cap": int(r["market_cap"]) if r.get("market_cap") else None,
+        "currency": r.get("currency"),
+        "exchange": r.get("exchange"),
+        "description": r.get("description"),
+    }
+    accepted = await quality_gate("equity_profiles", [dict_row])
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -49,14 +65,14 @@ async def fetch_and_store_profile(symbol: str) -> int:
                 currency = EXCLUDED.currency, exchange = EXCLUDED.exchange,
                 description = EXCLUDED.description, updated_at = NOW()
             """,
-            symbol,
-            r.get("name"),
-            r.get("sector"),
-            r.get("industry"),
-            int(r["market_cap"]) if r.get("market_cap") else None,
-            r.get("currency"),
-            r.get("exchange"),
-            r.get("description"),
+            dict_row["symbol"],
+            dict_row["name"],
+            dict_row["sector"],
+            dict_row["industry"],
+            dict_row["market_cap"],
+            dict_row["currency"],
+            dict_row["exchange"],
+            dict_row["description"],
         )
     return 1
 
@@ -72,6 +88,27 @@ async def fetch_and_store_metrics(symbol: str) -> int:
         return 0
 
     r = results[0]
+    # 写库前组装 dict 行过质量闸（键与 fundamental_metrics 列名一致），被拦则跳过
+    dict_row = {
+        "symbol": symbol,
+        "market_cap": int(r["market_cap"]) if r.get("market_cap") else None,
+        "pe_ratio": float(r["pe_ratio"]) if r.get("pe_ratio") else None,
+        "forward_pe": float(r["forward_pe"]) if r.get("forward_pe") else None,
+        "peg_ratio": float(r["peg_ratio"]) if r.get("peg_ratio") else None,
+        "enterprise_to_ebitda": float(r["enterprise_to_ebitda"]) if r.get("enterprise_to_ebitda") else None,
+        "earnings_growth": float(r["earnings_growth"]) if r.get("earnings_growth") else None,
+        "revenue_growth": float(r["revenue_growth"]) if r.get("revenue_growth") else None,
+        # yfinance dividend_yield 已是百分数（0.32 = 0.32%），统一存小数口径（前端 ×100 显示）
+        "dividend_yield": float(r["dividend_yield"]) / 100 if r.get("dividend_yield") else None,
+        "beta": float(r["beta"]) if r.get("beta") else None,
+        "profit_margins": float(r["profit_margins"]) if r.get("profit_margins") else None,
+        "return_on_equity": float(r["return_on_equity"]) if r.get("return_on_equity") else None,
+        "debt_to_equity": float(r["debt_to_equity"]) if r.get("debt_to_equity") else None,
+    }
+    accepted = await quality_gate("fundamental_metrics", [dict_row])
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -91,20 +128,19 @@ async def fetch_and_store_metrics(symbol: str) -> int:
                 return_on_equity = EXCLUDED.return_on_equity,
                 debt_to_equity = EXCLUDED.debt_to_equity, updated_at = NOW()
             """,
-            symbol,
-            int(r["market_cap"]) if r.get("market_cap") else None,
-            float(r["pe_ratio"]) if r.get("pe_ratio") else None,
-            float(r["forward_pe"]) if r.get("forward_pe") else None,
-            float(r["peg_ratio"]) if r.get("peg_ratio") else None,
-            float(r["enterprise_to_ebitda"]) if r.get("enterprise_to_ebitda") else None,
-            float(r["earnings_growth"]) if r.get("earnings_growth") else None,
-            float(r["revenue_growth"]) if r.get("revenue_growth") else None,
-            # yfinance dividend_yield 已是百分数（0.32 = 0.32%），统一存小数口径（前端 ×100 显示）
-            float(r["dividend_yield"]) / 100 if r.get("dividend_yield") else None,
-            float(r["beta"]) if r.get("beta") else None,
-            float(r["profit_margins"]) if r.get("profit_margins") else None,
-            float(r["return_on_equity"]) if r.get("return_on_equity") else None,
-            float(r["debt_to_equity"]) if r.get("debt_to_equity") else None,
+            dict_row["symbol"],
+            dict_row["market_cap"],
+            dict_row["pe_ratio"],
+            dict_row["forward_pe"],
+            dict_row["peg_ratio"],
+            dict_row["enterprise_to_ebitda"],
+            dict_row["earnings_growth"],
+            dict_row["revenue_growth"],
+            dict_row["dividend_yield"],
+            dict_row["beta"],
+            dict_row["profit_margins"],
+            dict_row["return_on_equity"],
+            dict_row["debt_to_equity"],
         )
     return 1
 
@@ -119,15 +155,31 @@ async def fetch_and_store_income(symbol: str) -> int:
     if not results:
         return 0
 
+    # 先解析出有效行并组装 dict 过质量闸（键与 income_statements 列名一致）
+    dict_rows = []
+    for r in results:
+        fy = r.get("fiscal_year")
+        if not fy:
+            continue
+        # SEC 源字段名：total_gross_profit / total_operating_income
+        gross = r.get("gross_profit") if r.get("gross_profit") is not None else r.get("total_gross_profit")
+        op_income = r.get("operating_income") if r.get("operating_income") is not None else r.get("total_operating_income")
+        dict_rows.append({
+            "symbol": symbol,
+            "fiscal_year": int(fy),
+            "total_revenue": float(r["total_revenue"]) if r.get("total_revenue") else None,
+            "net_income": float(r["net_income"]) if r.get("net_income") else None,
+            "gross_profit": float(gross) if gross is not None else None,
+            "operating_income": float(op_income) if op_income is not None else None,
+        })
+
+    accepted = await quality_gate("income_statements", dict_rows)
+    if not accepted:
+        return 0
+
     pool = await get_pool()
     async with pool.acquire() as conn:
-        for r in results:
-            fy = r.get("fiscal_year")
-            if not fy:
-                continue
-            # SEC 源字段名：total_gross_profit / total_operating_income
-            gross = r.get("gross_profit") if r.get("gross_profit") is not None else r.get("total_gross_profit")
-            op_income = r.get("operating_income") if r.get("operating_income") is not None else r.get("total_operating_income")
+        for row in accepted:
             await conn.execute(
                 """
                 INSERT INTO income_statements (symbol, fiscal_year, total_revenue, net_income, gross_profit, operating_income)
@@ -138,14 +190,14 @@ async def fetch_and_store_income(symbol: str) -> int:
                     gross_profit = EXCLUDED.gross_profit,
                     operating_income = EXCLUDED.operating_income
                 """,
-                symbol,
-                int(fy),
-                float(r["total_revenue"]) if r.get("total_revenue") else None,
-                float(r["net_income"]) if r.get("net_income") else None,
-                float(gross) if gross is not None else None,
-                float(op_income) if op_income is not None else None,
+                row["symbol"],
+                row["fiscal_year"],
+                row["total_revenue"],
+                row["net_income"],
+                row["gross_profit"],
+                row["operating_income"],
             )
-    return len(results)
+    return len(accepted)
 
 
 async def fetch_and_store_balance(symbol: str) -> int:
@@ -183,6 +235,19 @@ async def fetch_and_store_balance(symbol: str) -> int:
     if not rows:
         return 0
 
+    # 写库前把 tuple 转 dict 过质量闸（键与 balance_sheets 列名一致），被拦的行不进 UPSERT
+    _cols = (
+        "symbol", "period", "fiscal_date", "total_assets", "total_liabilities",
+        "total_equity", "total_current_assets", "total_current_liabilities",
+        "cash_and_equivalents", "inventories", "accounts_receivable",
+        "total_debt", "retained_earnings",
+    )
+    dict_rows = [dict(zip(_cols, row)) for row in rows]
+    accepted = await quality_gate("balance_sheets", dict_rows)
+    if not accepted:
+        return 0
+    rows = [tuple(d[c] for c in _cols) for d in accepted]
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.executemany(
@@ -208,7 +273,7 @@ async def fetch_and_store_balance(symbol: str) -> int:
             """,
             rows,
         )
-    return len(rows)
+    return len(accepted)
 
 
 async def fetch_and_store_cash(symbol: str) -> int:
@@ -241,6 +306,19 @@ async def fetch_and_store_cash(symbol: str) -> int:
     if not rows:
         return 0
 
+    # 写库前把 tuple 转 dict 过质量闸（键与 cash_flow_statements 列名一致），被拦的行不进 UPSERT
+    _cols = (
+        "symbol", "period", "fiscal_date", "operating_cash_flow",
+        "investing_cash_flow", "financing_cash_flow", "capital_expenditure",
+        "free_cash_flow", "net_income", "depreciation_amortization",
+        "share_repurchase", "dividends_paid",
+    )
+    dict_rows = [dict(zip(_cols, row)) for row in rows]
+    accepted = await quality_gate("cash_flow_statements", dict_rows)
+    if not accepted:
+        return 0
+    rows = [tuple(d[c] for c in _cols) for d in accepted]
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.executemany(
@@ -264,7 +342,7 @@ async def fetch_and_store_cash(symbol: str) -> int:
             """,
             rows,
         )
-    return len(rows)
+    return len(accepted)
 
 
 async def run_fundamentals_job() -> dict[str, int]:
