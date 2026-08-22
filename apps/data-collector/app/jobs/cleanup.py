@@ -23,6 +23,7 @@ async def run_cleanup_job() -> dict[str, int]:
     - 快照表（movers_cache / fund_flow / board_heat / board_sentiment / analyst_consensus）：保留 30 天
     - announcements / research_reports：保留 180 天
     - market_breadth：保留 730 天
+    - data_quality_rejects / data_quality_metrics：保留 90 天（质量层留痕与度量）
     - daily_prices / index_prices / macro_indicators：永久保留（历史数据）
     - income_statements / equity_profiles / fundamental_metrics / balance_sheets / cash_flow_statements：永久保留
     """
@@ -66,6 +67,20 @@ async def run_cleanup_job() -> dict[str, int]:
         )
         counts["market_breadth"] = _deleted_count(deleted_breadth)
         logger.info(f"deleted {deleted_breadth} old rows from market_breadth")
+
+        # 数据质量层：quarantine 留痕与质量度量均保留 90 天
+        # （拒绝样本有审计价值，比榜单类 30 天略长；度量是聚合行，量极小）
+        deleted_rejects = await conn.execute(
+            "DELETE FROM data_quality_rejects WHERE rejected_at < NOW() - INTERVAL '90 days'"
+        )
+        counts["data_quality_rejects"] = _deleted_count(deleted_rejects)
+        logger.info(f"deleted {deleted_rejects} old rows from data_quality_rejects")
+
+        deleted_dq_metrics = await conn.execute(
+            "DELETE FROM data_quality_metrics WHERE date < CURRENT_DATE - INTERVAL '90 days'"
+        )
+        counts["data_quality_metrics"] = _deleted_count(deleted_dq_metrics)
+        logger.info(f"deleted {deleted_dq_metrics} old rows from data_quality_metrics")
 
     logger.info("=== cleanup job done ===")
     return counts

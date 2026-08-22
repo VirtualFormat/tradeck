@@ -185,8 +185,9 @@ Q4 接入由子 agent Lagrange 完成（7 job、11 处）。
 - ✅ 精确性验证：daily_prices 10 万行仅 1 条 rejected（为此前手动注入的 BAD 测试行），真实源零误拦。
 
 Review 发现的问题与处置：
-1. **movers_cache.percent_change 单位口径 CN/US 不一致**（CN 存小数、US 存百分数）——存量数据口径缺陷，
-   会使 P2 z-score 混合量纲。非 Q4 接入引入，修复需改 movers 两条链路。**记录为待办，归 Q5 或独立口径统一任务**。
+1. ~~movers_cache.percent_change 单位口径 CN/US 不一致~~ **经实测证伪（2026-08-22）**：库里 US/CN
+   的 percent_change 均为小数口径（US max 0.148、CN max 0.30），两条链路口径一致，P2 z-score 无量纲混合。
+   子 agent 的「US 存百分数」为误报，待办不成立，无需处理。
 2. fund_flow/board_heat 的 snapshot_date 不在 tuple（靠 DB DEFAULT），过闸 dict 补 date.today()——与 DB 默认同日，仅满足规则校验，无害。
 3. technical_indicators（本地自算）/文本类/news/board_map/yield_curve 未接入——规则未登记或无数值语义，符合设计边界。
 
