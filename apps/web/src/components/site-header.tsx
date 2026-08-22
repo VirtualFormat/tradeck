@@ -10,8 +10,8 @@ const TITLES: Record<string, string> = {
   "/screener": "自选 / 筛选",
   "/heatmap": "热力图",
   "/news": "新闻流",
-  "/macro": "宏观数据",
-  "/global": "全球宏观",
+  "/macro": "宏观",
+  "/global": "宏观",
   "/data": "数据中心",
 }
 

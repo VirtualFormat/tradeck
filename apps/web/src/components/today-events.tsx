@@ -1,6 +1,6 @@
 /**
  * 今日事件（首页侧栏）
- * 数据：fetchEconomicCalendar —— 复用 /macro 页宏观数据日历的 fetcher
+ * 数据：fetchEconomicCalendar —— 复用宏观工作区事件日历的 fetcher
  * 展示今日（本地时区）宏观事件，高重要度优先；每行：时间 tag + 名称 + 重要度
  * 无数据走 EmptyState（优雅降级，不造假）
  */
@@ -86,7 +86,7 @@ export async function TodayEvents() {
         )}
         <CardAction>
           <Link
-            href="/macro"
+            href="/macro?view=events"
             className="text-xs text-muted-foreground hover:text-fg"
           >
             更多 →

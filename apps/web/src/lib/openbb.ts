@@ -782,7 +782,7 @@ export async function fetchMarketSummary(
   return backendFetch<MarketSummary[]>(`/api/market-summary${dateQuery}`);
 }
 
-// ─── 全球宏观（/global 页） ───────────────────────────────
+// ─── 宏观市场结构（/macro?view=structure） ─────────────────
 
 /** 跨资产总览行（股指/商品/汇率/波动率/债券） */
 export interface CrossAssetItem {

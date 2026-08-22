@@ -59,7 +59,10 @@ export async function MacroSnapshot() {
             <span className="text-xs text-muted-foreground">{monthLabel}</span>
           )}
         </div>
-        <Link href="/macro" className="text-[10px] text-muted-foreground hover:text-fg">
+        <Link
+          href="/macro?view=indicators"
+          className="text-[10px] text-muted-foreground hover:text-fg"
+        >
           更多 →
         </Link>
       </div>
@@ -69,7 +72,7 @@ export async function MacroSnapshot() {
           value={macro.cpi ? fmtPct(macro.cpi.value) : "—"}
           change={calcChange(macro.cpi?.value, macro.cpiPrev?.value)}
           date={fmtDate(macro.cpi?.date)}
-          href="/macro"
+          href="/macro?view=indicators"
           hist={macro.cpiHist}
         />
         <MacroCard
@@ -77,7 +80,7 @@ export async function MacroSnapshot() {
           value={macro.effr ? fmtPct(macro.effr.rate) : "—"}
           change={calcChange(macro.effr?.rate, macro.effrPrev?.rate)}
           date={fmtDate(macro.effr?.date)}
-          href="/macro"
+          href="/macro?view=indicators"
           hist={macro.effrHist}
         />
         <MacroCard
@@ -85,7 +88,7 @@ export async function MacroSnapshot() {
           value={macro.unemp ? fmtPct(macro.unemp.value) : "—"}
           change={calcChange(macro.unemp?.value, macro.unempPrev?.value)}
           date={fmtDate(macro.unemp?.date)}
-          href="/macro"
+          href="/macro?view=indicators"
           hist={macro.unempHist}
         />
       </div>

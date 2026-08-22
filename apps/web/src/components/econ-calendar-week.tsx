@@ -1,6 +1,6 @@
 /**
  * 本周经济日历（首页侧栏）
- * 数据：fetchEconomicCalendar —— 复用 /macro 页宏观数据日历的 fetcher
+ * 数据：fetchEconomicCalendar —— 复用宏观工作区事件日历的 fetcher
  * 展示未来 7 天宏观事件竖排：日期 tag + 事件 + 重要度；按日期→时间升序
  * 无数据走 EmptyState（优雅降级，不造假）
  */
@@ -71,7 +71,7 @@ export async function EconCalendarWeek() {
         </CardTitle>
         <CardAction>
           <Link
-            href="/macro"
+            href="/macro?view=events"
             className="text-xs text-muted-foreground hover:text-fg"
           >
             更多 →

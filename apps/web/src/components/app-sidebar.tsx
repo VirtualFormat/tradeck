@@ -24,7 +24,7 @@ import {
   BankIcon,
   CityIcon,
   DatabaseIcon,
-  GlobeIcon,
+  SparkleIcon,
 } from "@phosphor-icons/react"
 
 const navMain: NavItem[] = [
@@ -39,9 +39,9 @@ const navMain: NavItem[] = [
     ],
   },
   { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
+  { title: "AI 分析", url: "/ai-analysis", icon: <SparkleIcon /> },
   { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
-  { title: "全球宏观", url: "/global", icon: <GlobeIcon /> },
-  { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
+  { title: "宏观", url: "/macro", icon: <ChartBarIcon /> },
   { title: "数据中心", url: "/data", icon: <DatabaseIcon /> },
 ]
 

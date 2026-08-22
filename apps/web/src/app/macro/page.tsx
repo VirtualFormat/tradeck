@@ -1,381 +1,92 @@
 /**
- * 宏观数据页
- * 路由：/macro
- * 数据：OpenBB API（oecd + federal_reserve 免费源）
- * - CPI（消费者价格指数）
- * - 失业率
- * - GDP（名义）
- * - EFFR（联邦基金有效利率）
- * - SOFR（担保隔夜融资利率）
+ * 宏观工作区：市场结构 / 指标趋势 / 事件日历
+ * 路由：/macro?view=structure|indicators|events
  */
-import Link from "next/link";
-import {
-  getCPI,
-  getUnemployment,
-  getGDPNominal,
-  getEFFR,
-  getSOFR,
-  fetchEarningsCalendar,
-  fetchEconomicCalendar,
-} from "@/lib/openbb";
-import { fmtMacroPct, fmtBigUSD } from "@/lib/format";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { MacroTrendChart } from "@/components/macro-trend-chart";
-import { EmptyState } from "@/components/empty-state";
+import { redirect } from "next/navigation";
+import { Suspense } from "react";
 
-// 强制动态渲染：生产构建下不做静态预渲染，每次请求实时从 backend 取数（宏观/日历数据有时效性）
+import { MacroEventsSection } from "@/components/macro-events-section";
+import { MacroIndicatorSection } from "@/components/macro-indicator-section";
+import { MacroStructureSection } from "@/components/macro-structure-section";
+import { MacroViewTabs } from "@/components/macro-view-tabs";
+import { StockSearch } from "@/components/stock-search";
+import { RefreshButton } from "@/components/refresh-button";
+import { Skeleton } from "@/components/ui/skeleton";
+
 export const dynamic = "force-dynamic";
 
-function fmtMonthDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "—";
-  const d = new Date(dateStr);
-  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit" });
-}
+type MacroView = "structure" | "indicators" | "events";
 
-function fmtDailyDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "—";
-  return dateStr.slice(0, 10);
-}
-
-/** 日历用短日期：07-30 周四 */
-function fmtCalDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "—";
-  const d = new Date(`${dateStr}T00:00:00`);
-  return d.toLocaleDateString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  });
-}
-
-/** 财报披露时段：BMO 盘前 / AMC 盘后 / 其他未知 */
-function fmtSession(session: string | null): string {
-  if (session === "BMO") return "盘前";
-  if (session === "AMC") return "盘后";
-  return "—";
-}
-
-/** 重要性着色：高=红（重点关注）、中=警告色、其他=灰 */
-function importanceClass(importance: string | null): string {
-  if (importance === "高" || importance === "high") return "text-up";
-  if (importance === "中" || importance === "medium") return "text-warn";
-  return "text-muted-foreground";
-}
-
-function MacroCard({
-  title,
-  latestValue,
-  latestDate,
-  source,
-  change,
-  changeTone,
-  chartData,
-  color,
-  formatType,
-}: {
-  title: string;
-  latestValue: string;
-  latestDate: string;
-  source: "OECD" | "Federal Reserve";
-  change: string | null;
-  changeTone: "up" | "down" | "neutral";
-  chartData: { date: string; value: number }[];
-  color: string;
-  formatType: "pct" | "bigValue";
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="flex items-baseline justify-between">
-          <div>
-            <div className="tab-nums text-2xl font-bold">{latestValue}</div>
-            <div className="text-[10px] text-muted-foreground">
-              {source} · 截至 {latestDate}
-            </div>
-          </div>
-          {change && (
-            <div
-              className={`tab-nums text-sm ${
-                changeTone === "up"
-                  ? "text-up"
-                  : changeTone === "down"
-                    ? "text-down"
-                    : "text-muted-foreground"
-              }`}
-            >
-              {change}
-            </div>
-          )}
-        </div>
-        <div className="mt-2">
-          <MacroTrendChart data={chartData} color={color} formatType={formatType} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-type ChangeDisplay = {
-  text: string | null;
-  tone: "up" | "down" | "neutral";
+const VIEW_DESCRIPTIONS: Record<MacroView, string> = {
+  structure: "跨资产、利率曲线与内部结构，回答市场正在如何定价",
+  indicators: "CPI、失业率、GDP 与政策利率的历史趋势和最新变化",
+  events: "未来财报与宏观发布，按来源日期、预期与重要性查看",
 };
 
-function changeTone(diff: number): ChangeDisplay["tone"] {
-  return diff > 0 ? "up" : diff < 0 ? "down" : "neutral";
+function normalizeView(value: string | undefined): MacroView {
+  if (value === "indicators" || value === "events") return value;
+  return "structure";
 }
 
-function calcRelativeChange(data: { value: number }[]): ChangeDisplay {
-  if (data.length < 2) return { text: null, tone: "neutral" };
-  const last = data[data.length - 1].value;
-  const prev = data[data.length - 2].value;
-  const diff = last - prev;
-  if (prev === 0) return { text: null, tone: changeTone(diff) };
-  const pct = (diff / prev) * 100;
-  const sign = pct > 0 ? "+" : "";
-  return { text: `${sign}${pct.toFixed(2)}%`, tone: changeTone(diff) };
-}
-
-function calcPointChange(data: { value: number }[]): ChangeDisplay {
-  if (data.length < 2) return { text: null, tone: "neutral" };
-  const last = data[data.length - 1].value;
-  const prev = data[data.length - 2].value;
-  const diff = last - prev;
-  const points = diff * 100;
-  const sign = points > 0 ? "+" : "";
-  return {
-    text: `${sign}${points.toFixed(2)} pp`,
-    tone: changeTone(diff),
-  };
-}
-
-function calcBasisPointChange(data: { value: number }[]): ChangeDisplay {
-  if (data.length < 2) return { text: null, tone: "neutral" };
-  const last = data[data.length - 1].value;
-  const prev = data[data.length - 2].value;
-  const diff = last - prev;
-  const basisPoints = diff * 10000;
-  const sign = basisPoints > 0 ? "+" : "";
-  return {
-    text: `${sign}${basisPoints.toFixed(0)} bp`,
-    tone: changeTone(diff),
-  };
-}
-
-export default async function MacroPage() {
-  // 并行拉取所有宏观数据
-  const [cpi, unemployment, gdp, effr, sofr, earnings, econEvents] =
-    await Promise.all([
-      getCPI("oecd", 60).catch(() => []),
-      getUnemployment("oecd", 60).catch(() => []),
-      getGDPNominal("oecd", 40).catch(() => []),
-      getEFFR("federal_reserve", 250).catch(() => []),
-      getSOFR("federal_reserve", 250).catch(() => []),
-      fetchEarningsCalendar(14).catch(() => []),
-      fetchEconomicCalendar(7).catch(() => []),
-    ]);
-
-  // 取最新值
-  const latestCPI = cpi.length > 0 ? cpi[cpi.length - 1] : null;
-  const latestUnemp = unemployment.length > 0 ? unemployment[unemployment.length - 1] : null;
-  const latestGDP = gdp.length > 0 ? gdp[gdp.length - 1] : null;
-  const latestEFFR = effr.length > 0 ? effr[effr.length - 1] : null;
-  const latestSOFR = sofr.length > 0 ? sofr[sofr.length - 1] : null;
-  const cpiChange = calcPointChange(cpi);
-  const unemploymentChange = calcPointChange(unemployment);
-  const gdpChange = calcRelativeChange(gdp);
-  const effrChange = calcBasisPointChange(
-    effr.map((item) => ({ value: item.rate }))
+function SectionSkeleton() {
+  return (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: 3 }).map((_, index) => (
+        <Skeleton key={index} className="h-48 w-full rounded-lg" />
+      ))}
+    </div>
   );
-  const sofrChange = calcBasisPointChange(
-    sofr.map((item) => ({ value: item.rate }))
-  );
+}
+
+export default async function MacroPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const viewValue = Array.isArray(params.view) ? params.view[0] : params.view;
+  const view = normalizeView(viewValue);
+
+  // 裸 /macro 明确指向默认结构视图，避免同一路径存在两种语义。
+  if (viewValue !== view) {
+    redirect(`/macro?view=${view}`);
+  }
 
   return (
-    <div className="px-4 lg:px-6">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {/* CPI */}
-          <MacroCard
-            title="CPI 消费者价格指数"
-            latestValue={latestCPI ? fmtMacroPct(latestCPI.value) : "—"}
-            latestDate={fmtMonthDate(latestCPI?.date)}
-            source="OECD"
-            change={cpiChange.text}
-            changeTone={cpiChange.tone}
-            chartData={cpi.map((d) => ({ date: d.date, value: d.value }))}
-            color="var(--up)"
-            formatType="pct"
-          />
-
-          {/* 失业率 */}
-          <MacroCard
-            title="失业率"
-            latestValue={latestUnemp ? fmtMacroPct(latestUnemp.value) : "—"}
-            latestDate={fmtMonthDate(latestUnemp?.date)}
-            source="OECD"
-            change={unemploymentChange.text}
-            changeTone={unemploymentChange.tone}
-            chartData={unemployment.map((d) => ({ date: d.date, value: d.value }))}
-            color="var(--warn)"
-            formatType="pct"
-          />
-
-          {/* GDP */}
-          <MacroCard
-            title="GDP 名义（美国）"
-            latestValue={latestGDP ? fmtBigUSD(latestGDP.value) : "—"}
-            latestDate={fmtMonthDate(latestGDP?.date)}
-            source="OECD"
-            change={gdpChange.text}
-            changeTone={gdpChange.tone}
-            chartData={gdp.map((d) => ({ date: d.date, value: d.value }))}
-            color="var(--accent)"
-            formatType="bigValue"
-          />
-
-          {/* EFFR */}
-          <MacroCard
-            title="EFFR 联邦基金有效利率"
-            latestValue={latestEFFR ? fmtMacroPct(latestEFFR.rate) : "—"}
-            latestDate={fmtDailyDate(latestEFFR?.date)}
-            source="Federal Reserve"
-            change={effrChange.text}
-            changeTone={effrChange.tone}
-            chartData={effr.map((d) => ({ date: d.date, value: d.rate }))}
-            color="var(--down)"
-            formatType="pct"
-          />
-
-          {/* SOFR */}
-          <MacroCard
-            title="SOFR 担保隔夜融资利率"
-            latestValue={latestSOFR ? fmtMacroPct(latestSOFR.rate) : "—"}
-            latestDate={fmtDailyDate(latestSOFR?.date)}
-            source="Federal Reserve"
-            change={sofrChange.text}
-            changeTone={sofrChange.tone}
-            chartData={sofr.map((d) => ({ date: d.date, value: d.rate }))}
-            color="var(--down)"
-            formatType="pct"
-          />
+    <div className="space-y-5 px-4 lg:px-6">
+      <header className="flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">宏观</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {VIEW_DESCRIPTIONS[view]}
+          </p>
         </div>
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1 sm:w-80 [&_[data-slot=command]]:w-full">
+            <StockSearch />
+          </div>
+          <RefreshButton />
+        </div>
+      </header>
 
-      {/* 日历区块：财报日历 + 宏观数据日历（源不可用时显示暂无数据，属预期降级） */}
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* 财报日历 */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">财报日历（未来 14 天）</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {earnings.length > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>日期</TableHead>
-                    <TableHead>代码</TableHead>
-                    <TableHead>时段</TableHead>
-                    <TableHead className="text-right">EPS 预期</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {earnings.map((item) => (
-                    <TableRow key={`${item.symbol}-${item.report_date}`}>
-                      <TableCell className="tab-nums whitespace-nowrap">
-                        {fmtCalDate(item.report_date)}
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/stocks/${item.symbol}`}
-                          className="font-medium hover:text-accent"
-                        >
-                          {item.symbol}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {fmtSession(item.session)}
-                      </TableCell>
-                      <TableCell className="text-right tab-nums">
-                        {item.eps_estimate != null
-                          ? item.eps_estimate.toFixed(2)
-                          : "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <EmptyState />
-            )}
-          </CardContent>
-        </Card>
-
-        {/* 宏观数据日历 */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">宏观数据日历（未来 7 天）</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {econEvents.length > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>日期</TableHead>
-                    <TableHead>时间</TableHead>
-                    <TableHead>国家</TableHead>
-                    <TableHead>事件</TableHead>
-                    <TableHead>重要性</TableHead>
-                    <TableHead className="text-right">预期</TableHead>
-                    <TableHead className="text-right">前值</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {econEvents.map((item, idx) => (
-                    <TableRow key={`${item.event_date}-${item.event_name}-${idx}`}>
-                      <TableCell className="tab-nums whitespace-nowrap">
-                        {fmtCalDate(item.event_date)}
-                      </TableCell>
-                      <TableCell className="tab-nums text-muted-foreground">
-                        {item.event_time ?? "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {item.country ?? "—"}
-                      </TableCell>
-                      <TableCell>{item.event_name}</TableCell>
-                      <TableCell className={importanceClass(item.importance)}>
-                        {item.importance ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-right tab-nums">
-                        {item.forecast ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-right tab-nums text-muted-foreground">
-                        {item.previous ?? "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <EmptyState />
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <MacroViewTabs
+        value={view}
+        structure={
+          <Suspense fallback={<SectionSkeleton />}>
+            <MacroStructureSection />
+          </Suspense>
+        }
+        indicators={
+          <Suspense fallback={<SectionSkeleton />}>
+            <MacroIndicatorSection />
+          </Suspense>
+        }
+        events={
+          <Suspense fallback={<SectionSkeleton />}>
+            <MacroEventsSection />
+          </Suspense>
+        }
+      />
     </div>
   );
 }

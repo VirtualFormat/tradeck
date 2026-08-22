@@ -16,6 +16,8 @@ web (Next.js :3000)  ──▶  backend (FastAPI :8080)  ──▶  PostgreSQL (
 数据源 ──① APScheduler 定时拉取──▶ PostgreSQL ──② FastAPI 只读──▶ Next.js Server Component
 ```
 
+前端路由上，旧 `/global` 已并入统一宏观工作区，访问会跳转到 `/macro?view=structure`；指标趋势与事件日历分别为 `/macro?view=indicators`、`/macro?view=events`。
+
 三源分工与限流降级见 [`DATA-LAYER.md`](DATA-LAYER.md)；海外源分流见 [`OVERSEAS-NODE.md`](OVERSEAS-NODE.md)。
 
 ## 运行模式

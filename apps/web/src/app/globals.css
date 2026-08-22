@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
+@import "./typeset.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -187,3 +189,25 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── shadcn/typeset 预设：AI 问答气泡 / 研究报告 ──────────────────
+   吃 preset 令牌：正文 Roboto Slab(--font-serif)、标题 Public Sans(--font-heading)、
+   代码 Geist Mono(--font-mono)。问答紧凑、报告宽松。 */
+.typeset-chat {
+  --typeset-font-body: var(--font-serif);
+  --typeset-font-heading: var(--font-heading);
+  --typeset-font-mono: var(--font-mono);
+  --typeset-size: 0.9375em;
+  --typeset-leading: 1.65;
+  --typeset-flow: 0.9em;
+}
+.typeset-report {
+  --typeset-font-body: var(--font-serif);
+  --typeset-font-heading: var(--font-heading);
+  --typeset-font-mono: var(--font-mono);
+  --typeset-size: 15px;
+  --typeset-leading: 1.8;
+  --typeset-flow: 1.4em;
+}
+/* 全站强制深色，深色下行高略松 */
+.dark .typeset { --typeset-leading: 1.85; }

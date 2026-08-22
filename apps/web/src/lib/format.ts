@@ -67,7 +67,7 @@ export function fmtDataTime(value: string | null | undefined): string | null {
   return format(d, "HH:mm");
 }
 
-/** 月度数据：显 2026年6月（与 /macro 页格式一致） */
+/** 月度数据：显 2026年6月（与宏观指标趋势视图格式一致） */
 export function fmtDataMonth(value: string | null | undefined): string | null {
   if (!value) return null;
   const d = new Date(value);
