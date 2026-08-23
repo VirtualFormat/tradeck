@@ -172,6 +172,20 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 | 三.五 数据质量层（Q6 面板） | ✅ 验收通过 | 见下 | 已全部处置 | **实跑全绿，首日即抓到真实误拦** | 2026-08-22 |
 | 四 加固 | 未开始 | - | - | - | - |
 
+### 4.2a-0 分钟K 冷层先行（2026-08-23）
+
+前置基础设施与采集 job 已落地（本地 yfinance 限流，真实采集待 VPS 验证）：
+
+| 件 | 内容 | Commit |
+|---|---|---|
+| 冷层 provider | ColdStorage 双后端（Local 默认 + S3/COS，boto3）；测试策略：日常 local 验逻辑、MinIO（profile s3-test）验 S3 协议 | e728a09 |
+| MinIO dev 环境 | dev compose minio + minio-init（profile s3-test），自动建 tradeck-lake bucket | 57b839d |
+| 分钟K 采集 job | yfinance 1m → quality_gate → 冷层 Parquet（year/market/date + (symbol,ts) 排序）；registry/scheduler 注册（纽约盘后 17:45） | 50620da |
+
+验收：Local/S3(MinIO) 双后端写读排序通过；分钟K 链路（合成数据 → 质量闸拦脏 → 冷层落地）打通；job 注册成功；本地限流优雅降级；修复 _df_to_rows symbol 反解 bug（HK 5↔4 位，修复前 HK 采不到）。
+
+待办（4.2a-0 收尾）：① VPS 实测 yfinance 1m 真实采集（本地限流）；② A股分钟K 接付费源（D3）；③ 缺口检测/补拉（7 天窗口内）；④ CH 温层从冷层批量导入（4.2a）。
+
 ### 阶段三.五 Q6 review 明细（数据质量面板，2026-08-22）
 
 Q6 前端由子 agent Faraday 完成（代理路由 + 质量 Tab）；阈值误拦修复由主 agent 诊断 + 实施。
