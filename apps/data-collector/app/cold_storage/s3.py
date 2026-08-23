@@ -45,6 +45,9 @@ class S3ColdStorage(ColdStorage):
         *,
         sort_by: list[str],
     ) -> str:
+        """单次 put_object 上传。当前适配 tracked 规模（分钟K 数百行~几万行/分区，
+        单文件几 MB）；全市场分钟K（百万行/分区、单文件上百 MB）需改 multipart
+        upload（留待 4.2 全量化时处理）。"""
         import pyarrow as pa
         import pyarrow.parquet as pq
 

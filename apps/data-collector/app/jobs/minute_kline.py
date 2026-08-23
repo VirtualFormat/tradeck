@@ -32,8 +32,17 @@ def _minute_symbols() -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {"US": [], "HK": []}
     for s in TRACKED_SYMBOLS:
         m = pick_market(s)
-        if m in groups:
-            groups[m].append(s)
+        if m not in groups:
+            continue
+        # 健壮性：港股规范码须为 5 位（不足 5 位的原始码经 to_yahoo_symbol 的
+        # lstrip('0').zfill(4) 可能产生非法 yahoo ticker，导致查询不到数据）。
+        # 规范约定港股 5 位补零，这里断言兜底，异常代码记日志跳过。
+        if m == "HK":
+            code = s.split(".")[0]
+            if len(code) != 5:
+                logger.warning(f"minute_kline 跳过非法港股代码（非 5 位）: {s}")
+                continue
+        groups[m].append(s)
     return groups
 
 
@@ -61,6 +70,16 @@ def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dic
     rows: list[dict[str, Any]] = []
     is_multi = isinstance(df.columns, pd.MultiIndex)
 
+    def _v(x: Any) -> float | None:
+        """NaN/None → None，否则转 float（对齐 amount 的 None 语义，避免 NaN 进 Parquet）。"""
+        if x is None:
+            return None
+        try:
+            f = float(x)
+        except (TypeError, ValueError):
+            return None
+        return None if pd.isna(f) else f
+
     # DataFrame 列是 yahoo 格式（港股 4 位、.SH→.SS），需转换后取数；
     # 写库的 symbol 仍是规范格式（行内 sym），仅取数时用 yahoo 格式定位列
     for sym in symbols:
@@ -70,8 +89,8 @@ def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dic
         except (KeyError, ValueError):
             continue
         for ts, r in sub.iterrows():
-            close = r.get("Close")
-            if close is None or (isinstance(close, float) and close != close):  # NaN
+            close = _v(r.get("Close"))
+            if close is None:  # 无 close 的分钟K 行无意义，跳过
                 continue
             # 时间戳统一 UTC epoch 秒（yfinance 返回带交易所时区的 DatetimeIndex）
             if hasattr(ts, "tz_convert"):
@@ -84,11 +103,11 @@ def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dic
                     "symbol": sym,
                     "market": market,
                     "ts": epoch,
-                    "open": r.get("Open"),
-                    "high": r.get("High"),
-                    "low": r.get("Low"),
+                    "open": _v(r.get("Open")),
+                    "high": _v(r.get("High")),
+                    "low": _v(r.get("Low")),
                     "close": close,
-                    "volume": r.get("Volume"),
+                    "volume": _v(r.get("Volume")),
                     "amount": None,  # yfinance 1m 无成交额，留 None
                 }
             )
@@ -119,12 +138,43 @@ async def fetch_and_store_minute_kline(
     if not accepted:
         return 0
 
-    # ③ 冷层：year/market/date 分区 + 文件内 (symbol,ts) 排序；幂等覆盖当日文件
-    key = f"minute_bars/year={day.year}/market={market}/date={day.isoformat()}/part-000.parquet"
+    # ③ 冷层：year/market/date 分区 + 文件内 (symbol,ts) 排序；幂等覆盖当日文件。
+    # 分区日期用数据真实交易日（yfinance index 的首个交易日，交易所时区），
+    # 不用入参 day——misfire 补跑跨 UTC 日界时 day 可能错位，数据日期才是准的。
+    trade_date = _trade_date_of(rows) or day
+    key = (
+        f"minute_bars/year={trade_date.year}/market={market}/"
+        f"date={trade_date.isoformat()}/part-000.parquet"
+    )
     cs = get_cold_storage()
-    await asyncio.to_thread(cs.write_parquet, key, accepted, sort_by=["symbol", "ts"])
-    logger.info(f"minute_kline {market} {day}: {len(accepted)} rows → {key}")
+    try:
+        await asyncio.to_thread(cs.write_parquet, key, accepted, sort_by=["symbol", "ts"])
+    except Exception as e:  # noqa: BLE001 — 冷层写失败降级记日志，不连带阻塞其他市场
+        logger.error(
+            f"minute_kline {market} 写冷层失败（{len(accepted)} 行 → {key}）："
+            f"{type(e).__name__}: {e}"
+        )
+        return 0
+    logger.info(f"minute_kline {market} {trade_date}: {len(accepted)} rows → {key}")
     return len(accepted)
+
+
+def _trade_date_of(rows: list[dict[str, Any]]) -> date | None:
+    """从已落行的 ts（UTC epoch 秒）推导数据的真实交易日（取众数日的 UTC 日期）。
+
+    分钟K 单行 ts 是 UTC；同一交易日内的行 UTC 日期一致（US/HK 盘后数据）。
+    用于冷层分区 key，比信任入参 day 更抗 misfire 跨日界错位。
+    """
+    if not rows:
+        return None
+    days = [
+        datetime.fromtimestamp(r["ts"], tz=timezone.utc).date()
+        for r in rows
+        if r.get("ts") is not None
+    ]
+    if not days:
+        return None
+    return max(set(days), key=days.count)
 
 
 async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
@@ -134,7 +184,12 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
     groups = _minute_symbols()
     counts: dict[str, int] = {}
     for market, symbols in groups.items():
-        counts[market] = await fetch_and_store_minute_kline(market, symbols, day)
+        # 每市场独立降级：一个市场失败（拉取/质量/写冷层）不影响另一市场
+        try:
+            counts[market] = await fetch_and_store_minute_kline(market, symbols, day)
+        except Exception:  # noqa: BLE001 — 双保险（fetch_and_store 内部已分层降级）
+            logger.exception(f"minute_kline {market} 未捕获异常，跳过本市场")
+            counts[market] = 0
     logger.info(
         "=== minute kline job done: "
         + ", ".join(f"{m}={c}" for m, c in counts.items())

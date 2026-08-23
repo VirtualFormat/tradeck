@@ -168,6 +168,7 @@ services:
     container_name: tradeck-dev-minio
     profiles: ["s3-test"]
     environment:
+      # 开发专用默认值（勿用于生产；生产 COS 走 COLD_S3_* 环境变量注入真实密钥）
       MINIO_ROOT_USER: ${COLD_S3_ACCESS_KEY:-tradeck}
       MINIO_ROOT_PASSWORD: ${COLD_S3_SECRET_KEY:-tradeck_dev_cold}
     command: ["server", "/data", "--console-address", ":9001"]

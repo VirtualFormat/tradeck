@@ -651,13 +651,6 @@ export function DataPageClient() {
         ...data,
         summary: { ...EMPTY_SNAPSHOT.summary, ...data.summary },
       });
-      // 质量度量跟随主快照一起刷新；接口内部已降级，失败时保持空数据
-      const qualityRes = await fetch("/api/system/quality?days=7", {
-        cache: "no-store",
-      });
-      if (qualityRes.ok) {
-        setQuality((await qualityRes.json()) as QualitySnapshot);
-      }
       setLoadError("");
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "数据服务暂不可用");
@@ -665,6 +658,29 @@ export function DataPageClient() {
       setLoading(false);
     }
   }, []);
+
+  // 质量度量独立低频轮询（30s）：质量接口查两张表（近 7 天 metrics 全量 +
+  // rejects LIMIT 100），不随主快照的 3s 高频轮询；失败保留旧数据 + console 留痕。
+  const refreshQuality = useCallback(async () => {
+    try {
+      const res = await fetch("/api/system/quality?days=7", { cache: "no-store" });
+      if (!res.ok) throw new Error(`质量度量接口 ${res.status}`);
+      setQuality((await res.json()) as QualitySnapshot);
+    } catch (error) {
+      // 保留旧数据不清空，但留痕便于发现停更（与主快照 loadError 分开展示）
+      console.warn("数据质量度量刷新失败：", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    // 首调用 setTimeout 推迟（避免 effect 内同步 setState，与主 refresh 的 initialTimer 一致）
+    const initialTimer = window.setTimeout(() => void refreshQuality(), 0);
+    const timer = window.setInterval(() => void refreshQuality(), 30_000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
+  }, [refreshQuality]);
 
   useEffect(() => {
     const initialTimer = window.setTimeout(() => void refresh(), 0);

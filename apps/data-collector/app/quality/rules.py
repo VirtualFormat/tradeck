@@ -23,7 +23,9 @@ class QualityRule:
     required_fields: tuple[str, ...] = ()
     # OHLC 类表标记：开启 OHLC 自洽 + 价格/量非负校验
     ohlc: bool = False
-    # 涨跌幅物理边界（小数，如 0.30 = ±30%）；None 不校验
+    # 涨跌幅物理边界；None 不校验。
+    # ⚠️ 口径跟随各表入库格式：quote_snapshots/movers_cache 为小数（0.05=5%，
+    # 阈值 ±1.0/±10），fund_flow/board_heat 为东财百分数（9.96=9.96%，阈值 ±40/±50）。
     max_change_pct: float | None = None
     # 涨跌幅字段名（各表不一）
     change_pct_field: str = "change_percent"

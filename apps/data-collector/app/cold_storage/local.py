@@ -16,9 +16,12 @@ class LocalColdStorage(ColdStorage):
         self._root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, key: str) -> Path:
-        # 防路径逃逸：key 不得含 .. 或绝对路径
+        # 防路径逃逸：用 relative_to 判定 p 是否在 root 内（startswith 前缀匹配
+        # 会被 /app/data-lake-evil 这类同前缀目录绕过）
         p = (self._root / key).resolve()
-        if not str(p).startswith(str(self._root.resolve())):
+        try:
+            p.relative_to(self._root.resolve())
+        except ValueError:
             raise ValueError(f"非法 key（路径逃逸）: {key!r}")
         return p
 
