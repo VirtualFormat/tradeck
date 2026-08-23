@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.cold_storage import get_cold_storage
 from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
+
+# 缺口检测窗口（天）：yfinance 1m 仅近 7 天可拉，超出即永久丢失。
+# 每日采集当日后，顺带检测近 N 天缺口并补拉（窗口内可救）。
+_GAP_LOOKBACK_DAYS = 7
 
 
 def _minute_symbols() -> dict[str, list[str]]:
@@ -46,16 +50,28 @@ def _minute_symbols() -> dict[str, list[str]]:
     return groups
 
 
-def _fetch_1m(symbols: list[str]) -> Any:
-    """同步拉多只标的当日 1m（yfinance 库直调）。限流/失败抛异常由调用方降级。"""
+def _fetch_1m(symbols: list[str], day: date | None = None) -> Any:
+    """同步拉多只标的 1m（yfinance 库直调）。限流/失败抛异常由调用方降级。
+
+    day=None 拉当日（period='1d'）；指定 day 拉该天（start/end 区间，补拉缺口用，
+    仅近 7 天窗口内有效）。auto_adjust=False 保留原始 OHLC（复权另算）。
+    """
     import yfinance as yf
     from app.markets import to_yahoo_symbol
 
     yahoo = [to_yahoo_symbol(s) for s in symbols]
-    # period='1d' 当日分钟K；auto_adjust=False 保留原始 OHLC（复权另算）
-    return yf.download(
-        yahoo, interval="1m", period="1d", progress=False, auto_adjust=False
-    )
+    kwargs: dict[str, Any] = {
+        "interval": "1m",
+        "progress": False,
+        "auto_adjust": False,
+    }
+    if day is None:
+        kwargs["period"] = "1d"
+    else:
+        # yfinance end 为开区间，+1 天才含当日
+        kwargs["start"] = day.isoformat()
+        kwargs["end"] = (day + timedelta(days=1)).isoformat()
+    return yf.download(yahoo, **kwargs)
 
 
 def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dict[str, Any]]:
@@ -117,13 +133,17 @@ def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dic
 async def fetch_and_store_minute_kline(
     market: str, symbols: list[str], day: date
 ) -> int:
-    """拉单市场当日分钟K → 质量闸 → 冷层。返回落冷层条数。"""
+    """拉单市场某天分钟K → 质量闸 → 冷层。返回落冷层条数。
+
+    day 为要采集的交易日（采当日传当天，补拉缺口传历史某天）。
+    """
     if not symbols:
         return 0
 
-    # ① 拉取（限流/失败优雅降级：记日志返回 0，不抛）
+    # ① 拉取（限流/失败优雅降级：记日志返回 0，不抛）。day 传给 _fetch_1m
+    # 决定拉当日还是历史某天（补拉）。
     try:
-        df = await asyncio.to_thread(_fetch_1m, symbols)
+        df = await asyncio.to_thread(_fetch_1m, symbols, day)
     except Exception as e:  # noqa: BLE001 — yfinance 限流/网络，优雅降级
         logger.warning(f"minute_kline {market} 拉取失败（{type(e).__name__}: {e}）")
         return 0
@@ -177,6 +197,75 @@ def _trade_date_of(rows: list[dict[str, Any]]) -> date | None:
     return max(set(days), key=days.count)
 
 
+def _partition_key(market: str, day: date) -> str:
+    """冷层分区 key（year/market/date 布局）。"""
+    return f"minute_bars/year={day.year}/market={market}/date={day.isoformat()}/part-000.parquet"
+
+
+async def detect_missing_days(
+    market: str, lookback_days: int, today: date
+) -> list[date]:
+    """缺口检测：近 lookback_days 天内，该市场缺哪些交易日的冷层分区。
+
+    用冷层 list_keys 列已有分区，对比「应有的近期日期」找缺口。
+    周末/节假日不预判（无交易日历，漏采的非交易日也会被列入——补拉时
+    yfinance 对该天返回空，自然跳过，不产生假数据）。
+    返回缺口日期列表（升序）。检测失败（冷层不可达）记日志返回空（不误报）。
+    """
+    cs = get_cold_storage()
+    try:
+        keys = await asyncio.to_thread(cs.list_keys, f"minute_bars/")
+    except Exception:  # noqa: BLE001
+        logger.exception(f"minute_kline {market} 缺口检测列分区失败，本轮跳过")
+        return []
+
+    # 已有分区的 (market, date) 集合
+    have: set[date] = set()
+    prefix = f"minute_bars/year="
+    marker = f"/market={market}/date="
+    for k in keys:
+        if not k.startswith(prefix) or marker not in k:
+            continue
+        try:
+            dstr = k.split(marker, 1)[1].split("/", 1)[0]
+            have.add(date.fromisoformat(dstr))
+        except (IndexError, ValueError):
+            continue
+
+    # 近 lookback_days 天（不含今日——今日由本轮正常采集覆盖）中缺失的
+    missing = []
+    for i in range(1, lookback_days + 1):
+        d = today - timedelta(days=i)
+        if d not in have:
+            missing.append(d)
+    return sorted(missing)
+
+
+async def backfill_missing_days(market: str, symbols: list[str], today: date) -> int:
+    """补拉近 7 天缺口（yfinance 1m 窗口内可救）。返回补回的分区数。
+
+    每个缺口日独立降级：补拉失败（限流/该天非交易日无数据）记日志跳过，
+    不影响其他缺口日。幂等（补拉覆盖同分区）。
+    """
+    if not symbols:
+        return 0
+    missing = await detect_missing_days(market, _GAP_LOOKBACK_DAYS, today)
+    if not missing:
+        return 0
+    logger.info(f"minute_kline {market} 检测到 {len(missing)} 个缺口日: {missing}")
+
+    filled = 0
+    for d in missing:
+        try:
+            n = await fetch_and_store_minute_kline(market, symbols, d)
+            if n > 0:
+                filled += 1
+                logger.info(f"minute_kline {market} 补拉 {d}: {n} rows")
+        except Exception:  # noqa: BLE001 — 单缺口日失败不影响其他
+            logger.exception(f"minute_kline {market} 补拉 {d} 失败，跳过")
+    return filled
+
+
 async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
     """每日分钟K 采集：US/HK 各市场采当日。返回各市场落冷层条数。"""
     logger.info("=== minute kline job start ===")
@@ -190,6 +279,17 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
         except Exception:  # noqa: BLE001 — 双保险（fetch_and_store 内部已分层降级）
             logger.exception(f"minute_kline {market} 未捕获异常，跳过本市场")
             counts[market] = 0
+
+    # 第二阶段：缺口检测 + 窗口期内补拉（漏采即永久丢失，近 7 天可救）。
+    # 与当日采集同样按市场隔离降级。
+    for market, symbols in groups.items():
+        try:
+            filled = await backfill_missing_days(market, symbols, day)
+            if filled:
+                logger.info(f"minute_kline {market} 补回 {filled} 个缺口日")
+        except Exception:  # noqa: BLE001
+            logger.exception(f"minute_kline {market} 缺口补拉失败")
+
     logger.info(
         "=== minute kline job done: "
         + ", ".join(f"{m}={c}" for m, c in counts.items())
