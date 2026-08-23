@@ -184,7 +184,11 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 
 验收：Local/S3(MinIO) 双后端写读排序通过；分钟K 链路（合成数据 → 质量闸拦脏 → 冷层落地）打通；job 注册成功；本地限流优雅降级；修复 _df_to_rows symbol 反解 bug（HK 5↔4 位，修复前 HK 采不到）。
 
-待办（4.2a-0 收尾）：① VPS 实测 yfinance 1m 真实采集（本地限流）；② A股分钟K 接付费源（D3）；③ 缺口检测/补拉（7 天窗口内）；④ CH 温层从冷层批量导入（4.2a）。
+待办（4.2a-0 收尾）：① VPS 实测 yfinance 1m 真实采集（本地限流）；② A股分钟K 接付费源（D3）；④ CH 温层从冷层批量导入（4.2a）。
+③ 缺口检测/补拉 ✅ 已完成（add456b）：_fetch_1m 支持日期范围；detect_missing_days 冷层对比找缺口；
+backfill_missing_days 近 7 天窗口逐日独立降级补拉；run 第二阶段当日采集后顺带补拉。
+容错链完整：采当日（限流降级）→ 缺口检测 → 逐日补拉（独立降级）。实测缺口检测正确 +
+限流下逐日独立降级不 crash。
 
 **独立 review（2026-08-23，Schrodinger）**：对 57b839d/e728a09/50620da/68cec8c 四 commit 审查，
 发现 1 P0（HK 映射健壮性，经核实降为 P2 加固）+ 5 P1 + 4 P2。已修复（commit b6a91ba）：
