@@ -14,6 +14,13 @@ class Settings:
     OPENBB_OVERSEAS_TOKEN: str
     TICKFLOW_API_KEY: str
     DATA_SYNC_TOKEN: str
+    COLD_STORAGE_BACKEND: str
+    COLD_STORAGE_LOCAL_ROOT: str
+    COLD_S3_BUCKET: str
+    COLD_S3_ENDPOINT: str
+    COLD_S3_ACCESS_KEY: str
+    COLD_S3_SECRET_KEY: str
+    COLD_S3_REGION: str
     DATA_MODE: DataMode
 
     def __init__(self) -> None:
@@ -40,6 +47,19 @@ class Settings:
         self.DATA_SYNC_TOKEN = (
             os.getenv("DATA_SYNC_TOKEN", "") if self.DATA_MODE == "live" else ""
         )
+        # ── 冷层存储（分钟K/tick Parquet，app/cold_storage/）──
+        # 后端：local（本地文件，日常开发/单测默认）/ s3（S3 兼容，生产指 COS、
+        # 验收指本地 MinIO）。
+        self.COLD_STORAGE_BACKEND = os.getenv("COLD_STORAGE_BACKEND", "local").strip()
+        # local 后端根目录。
+        self.COLD_STORAGE_LOCAL_ROOT = os.getenv("COLD_STORAGE_LOCAL_ROOT", "./data-lake")
+        # s3 后端：bucket + endpoint（COS 指 COS endpoint，MinIO 指 minio:9000，
+        # 真 AWS S3 留空）+ 密钥。s3 后端缺 bucket/key 时 get_cold_storage 抛错。
+        self.COLD_S3_BUCKET = os.getenv("COLD_S3_BUCKET", "")
+        self.COLD_S3_ENDPOINT = os.getenv("COLD_S3_ENDPOINT", "")
+        self.COLD_S3_ACCESS_KEY = os.getenv("COLD_S3_ACCESS_KEY", "")
+        self.COLD_S3_SECRET_KEY = os.getenv("COLD_S3_SECRET_KEY", "")
+        self.COLD_S3_REGION = os.getenv("COLD_S3_REGION", "")
 
 
 settings = Settings()
