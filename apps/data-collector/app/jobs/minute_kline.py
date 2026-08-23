@@ -197,27 +197,29 @@ def _trade_date_of(rows: list[dict[str, Any]]) -> date | None:
     return max(set(days), key=days.count)
 
 
-def _partition_key(market: str, day: date) -> str:
-    """冷层分区 key（year/market/date 布局）。"""
-    return f"minute_bars/year={day.year}/market={market}/date={day.isoformat()}/part-000.parquet"
-
-
 async def detect_missing_days(
     market: str, lookback_days: int, today: date
-) -> list[date]:
+) -> tuple[list[date], bool]:
     """缺口检测：近 lookback_days 天内，该市场缺哪些交易日的冷层分区。
 
     用冷层 list_keys 列已有分区，对比「应有的近期日期」找缺口。
-    周末/节假日不预判（无交易日历，漏采的非交易日也会被列入——补拉时
-    yfinance 对该天返回空，自然跳过，不产生假数据）。
-    返回缺口日期列表（升序）。检测失败（冷层不可达）记日志返回空（不误报）。
+    候选集剔除周末（周六/周日全球休市，yfinance 必返回空，列为缺口会常态化
+    刷屏、淹没真缺口）。节假日不预判（无交易日历）——补拉空转，但量级小。
+
+    返回 (缺口日期列表升序, 检测是否成功)。检测失败（冷层不可达）返回
+    ([], False)——调用方据此区分「无缺口」与「检测失败」，失败需显式告警
+    （漏采即永久丢失，检测失败 = 缺口检测形同虚设，不能静默）。
     """
-    cs = get_cold_storage()
+    try:
+        cs = get_cold_storage()
+    except Exception:  # noqa: BLE001 — 配置非法也算检测失败
+        logger.exception(f"minute_kline {market} 缺口检测初始化冷层失败")
+        return [], False
     try:
         keys = await asyncio.to_thread(cs.list_keys, f"minute_bars/")
     except Exception:  # noqa: BLE001
-        logger.exception(f"minute_kline {market} 缺口检测列分区失败，本轮跳过")
-        return []
+        logger.exception(f"minute_kline {market} 缺口检测列分区失败")
+        return [], False
 
     # 已有分区的 (market, date) 集合
     have: set[date] = set()
@@ -232,13 +234,16 @@ async def detect_missing_days(
         except (IndexError, ValueError):
             continue
 
-    # 近 lookback_days 天（不含今日——今日由本轮正常采集覆盖）中缺失的
+    # 近 lookback_days 天（不含今日——今日由本轮正常采集覆盖）中缺失的；
+    # 剔除周末（weekday() 5=周六 6=周日）
     missing = []
     for i in range(1, lookback_days + 1):
         d = today - timedelta(days=i)
+        if d.weekday() >= 5:
+            continue
         if d not in have:
             missing.append(d)
-    return sorted(missing)
+    return sorted(missing), True
 
 
 async def backfill_missing_days(market: str, symbols: list[str], today: date) -> int:
@@ -246,13 +251,21 @@ async def backfill_missing_days(market: str, symbols: list[str], today: date) ->
 
     每个缺口日独立降级：补拉失败（限流/该天非交易日无数据）记日志跳过，
     不影响其他缺口日。幂等（补拉覆盖同分区）。
+    检测失败（冷层不可达）显式告警（ERROR），不误报为「无缺口」——
+    漏采即永久丢失，检测失败 = 缺口检测形同虚设，必须可被发现。
     """
     if not symbols:
         return 0
-    missing = await detect_missing_days(market, _GAP_LOOKBACK_DAYS, today)
+    missing, detect_ok = await detect_missing_days(market, _GAP_LOOKBACK_DAYS, today)
+    if not detect_ok:
+        # 显式告警（区别于日常 noise）：连续出现说明冷层挂了，缺口在悄悄累积
+        logger.error(
+            f"minute_kline {market} 缺口检测失败（冷层不可达），本轮无法确认缺口"
+        )
+        return 0
     if not missing:
         return 0
-    logger.info(f"minute_kline {market} 检测到 {len(missing)} 个缺口日: {missing}")
+    logger.info(f"minute_kline {market} 检测到 {len(missing)} 个缺口日（已剔周末）: {missing}")
 
     filled = 0
     for d in missing:
@@ -261,6 +274,10 @@ async def backfill_missing_days(market: str, symbols: list[str], today: date) ->
             if n > 0:
                 filled += 1
                 logger.info(f"minute_kline {market} 补拉 {d}: {n} rows")
+            else:
+                # 区分「该天无数据」（节假日/滑出窗口）与「补拉失败」（异常）：
+                # fetch_and_store 返回 0 是正常空转（不写假数据），记 info 而非 exception
+                logger.info(f"minute_kline {market} 补拉 {d}: 该天无数据（节假日或窗口外）")
         except Exception:  # noqa: BLE001 — 单缺口日失败不影响其他
             logger.exception(f"minute_kline {market} 补拉 {d} 失败，跳过")
     return filled
