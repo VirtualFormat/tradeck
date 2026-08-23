@@ -134,6 +134,10 @@ async def _macro_assets() -> None:
     await run_registered_job("macro_assets")
 
 
+async def _minute_kline() -> None:
+    await run_registered_job("minute_kline")
+
+
 async def _cleanup() -> None:
     await run_registered_job("cleanup")
 
@@ -377,6 +381,16 @@ async def start_scheduler() -> None:
         CronTrigger(hour=3, minute=0, timezone="UTC"),
         id="cleanup",
         replace_existing=True,
+    )
+
+    # 分钟K 采集（冷层）：美股盘后纽约 17:45（日K/宏观资产之后）；US/HK 一次跑
+    # （yfinance 1m 仅近 7 天窗口，每日盘后采当日，漏采即永久丢失）。
+    _scheduler.add_job(
+        _minute_kline,
+        CronTrigger(hour=17, minute=45, timezone="America/New_York"),
+        id="minute_kline",
+        replace_existing=True,
+        **_DAILY_MARKET_JOB_OPTIONS,
     )
 
     _scheduler.start()

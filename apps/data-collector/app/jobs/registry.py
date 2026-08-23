@@ -27,6 +27,7 @@ from app.jobs.fundamentals import run_fundamentals_job
 from app.jobs.indices import run_indices_job
 from app.jobs.macro import run_macro_job
 from app.jobs.macro_assets import run_macro_assets_job
+from app.jobs.minute_kline import run_minute_kline_job
 from app.jobs.market_breadth import run_market_breadth_job
 from app.jobs.market_breadth_global import run_market_breadth_global_job
 from app.jobs.movers import fetch_and_store_cn_movers, run_movers_job
@@ -205,6 +206,15 @@ JOB_DEFINITIONS = (
         "每天 06:00 UTC",
         ("macro_indicators",),
         run_macro_job,
+    ),
+    JobDefinition(
+        "minute_kline",
+        "分钟K 采集（冷层）",
+        "US/HK 当日 1m 分钟K → quality_gate → 冷层 Parquet（year/market/date 分区）；A股待付费源",
+        "yfinance 1m",
+        "每交易日盘后",
+        (),  # 不落库表，直写冷层 Parquet；质量留痕于 data_quality_* 表
+        run_minute_kline_job,
     ),
     JobDefinition(
         "economic_calendar",

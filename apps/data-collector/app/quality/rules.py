@@ -124,6 +124,13 @@ RULES: dict[str, QualityRule] = {
         table="macro_asset_prices",
         required_fields=("symbol", "date", "close"),
     ),
+    # 分钟K（冷层 Parquet，不落库表——table 名即逻辑数据集名，quarantine 留痕用）
+    # OHLC 自洽 + 价格/量非负；ts 为 K 线起始时间（UTC epoch 秒）。
+    "minute_bars": QualityRule(
+        table="minute_bars",
+        required_fields=("symbol", "ts", "close"),
+        ohlc=True,
+    ),
     # ── 数值榜单/指标表 ──
     "movers_cache": QualityRule(
         table="movers_cache",

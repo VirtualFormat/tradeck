@@ -15,12 +15,14 @@ _INT_FIELDS: dict[str, tuple[str, ...]] = {
     "daily_prices": ("volume",),
     "quote_snapshots": ("volume",),
     "index_prices": ("volume",),
+    "minute_bars": ("volume", "ts"),  # ts 为 UTC epoch 秒（整型）
 }
 _NUMERIC_FIELDS: dict[str, tuple[str, ...]] = {
     "daily_prices": ("open", "high", "low", "close", "amount"),
     "quote_snapshots": ("last_price", "change", "change_percent"),
     "index_prices": ("close",),
     "macro_asset_prices": ("close",),
+    "minute_bars": ("open", "high", "low", "close", "amount"),
 }
 
 
