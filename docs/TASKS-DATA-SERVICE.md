@@ -186,6 +186,15 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 
 待办（4.2a-0 收尾）：① VPS 实测 yfinance 1m 真实采集（本地限流）；② A股分钟K 接付费源（D3）；③ 缺口检测/补拉（7 天窗口内）；④ CH 温层从冷层批量导入（4.2a）。
 
+**独立 review（2026-08-23，Schrodinger）**：对 57b839d/e728a09/50620da/68cec8c 四 commit 审查，
+发现 1 P0（HK 映射健壮性，经核实降为 P2 加固）+ 5 P1 + 4 P2。已修复（commit b6a91ba）：
+- P1 分钟K 降级破口：冷层写失败连带阻塞另一市场 → 写失败 try/catch + 每市场独立降级；
+  分区日期改用数据真实交易日（misfire 跨日界防错位）；OHLCV NaN→None；HK 5 位断言。
+- P1 local 路径逃逸：startswith 前缀匹配被同前缀目录绕过 → relative_to。
+- P1 质量面板 3s 高频轮询 + 失败静默 → 独立 30s 低频 + console 留痕。
+- P2：S3 multipart 注释、MinIO 凭据注释、涨跌幅口径说明。
+- 结论：分钟K 为「漏采即丢失」生死线任务，降级破口与日期边界修复后方可上 VPS 实测。
+
 ### 阶段三.五 Q6 review 明细（数据质量面板，2026-08-22）
 
 Q6 前端由子 agent Faraday 完成（代理路由 + 质量 Tab）；阈值误拦修复由主 agent 诊断 + 实施。
