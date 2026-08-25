@@ -16,6 +16,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: tradeck-postgres
+    mem_limit: 512m
     environment:
       POSTGRES_DB: tradeck
       POSTGRES_USER: tradeck
@@ -49,6 +50,9 @@ services:
       - TIINGO_API_KEY=${TIINGO_API_KEY:-}
       - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
       - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
+    # 小内存机（7.5GB）：openbb 默认 4 worker × ~330MB 太吃内存，降 1 worker
+    command: ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "1"]
+    mem_limit: 1g
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
@@ -61,6 +65,8 @@ services:
   collector:
     image: ghcr.io/virtualformat/tradeck-collector:latest
     container_name: tradeck-collector
+    # 全量导入（170MB Parquet 解析 + 近千万行）峰值较高，给足但防雪崩
+    mem_limit: 2g
     environment:
       DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
@@ -87,6 +93,7 @@ services:
   data-api:
     image: ghcr.io/virtualformat/tradeck-data-api:latest
     container_name: tradeck-data-api
+    mem_limit: 512m
     environment:
       DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
@@ -113,6 +120,7 @@ services:
   quant:
     image: ghcr.io/virtualformat/tradeck-quant:latest
     container_name: tradeck-quant
+    mem_limit: 1g
     profiles: ["quant"]
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
@@ -140,6 +148,7 @@ services:
   web:
     image: ghcr.io/virtualformat/tradeck-web:latest
     container_name: tradeck-web
+    mem_limit: 512m
     ports:
       # 仅绑 localhost：对外由宿主机 nginx（host 网络 80/443，CF 橙云回源）
       # 反代到 127.0.0.1:3000，web 不直接暴露公网。
