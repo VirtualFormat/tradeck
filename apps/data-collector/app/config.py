@@ -14,6 +14,8 @@ class Settings:
     OPENBB_OVERSEAS_TOKEN: str
     TICKFLOW_API_KEY: str
     DATA_SYNC_TOKEN: str
+    FINDB_KEY: str
+    FINDB_BASE_URL: str
     COLD_STORAGE_BACKEND: str
     COLD_STORAGE_LOCAL_ROOT: str
     COLD_S3_BUCKET: str
@@ -42,6 +44,13 @@ class Settings:
         self.OPENBB_OVERSEAS_TOKEN = os.getenv("OPENBB_OVERSEAS_TOKEN", "")
         # TickFlow 日K 源。为空则用免费档 TickFlow.free()（日K 足够，盘中不实时）。
         self.TICKFLOW_API_KEY = os.getenv("TICKFLOW_API_KEY", "")
+        # findb 金融数据 API（主数据源，A股全市场 + 复权 + 分钟K + 85 表）。
+        # 只读、仅 GET、Bearer 鉴权；密钥一人一设备一把（共享会被吊销）。
+        # 为空则 findb 源不可用（优雅降级，相关调用返回空）。
+        self.FINDB_KEY = os.getenv("FINDB_KEY", "")
+        self.FINDB_BASE_URL = os.getenv(
+            "FINDB_BASE_URL", "https://api.jiucaicat.icu"
+        )
         # 数据中心手动同步令牌。仅 Next.js 服务端代理持有，避免公网直接触发重任务。
         # mock 模式强制禁用，避免通过 API 启动任何真实数据任务。
         self.DATA_SYNC_TOKEN = (

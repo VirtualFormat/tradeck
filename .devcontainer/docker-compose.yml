@@ -77,6 +77,8 @@ services:
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
+      # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
+      FINDB_KEY: ${FINDB_KEY:-}
     volumes:
       - ../apps/data-collector:/app
     ports:

@@ -74,6 +74,8 @@ services:
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-}
       # TickFlow 日K 源：为空则用免费档 TickFlow.free()
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
+      # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
+      FINDB_KEY: ${FINDB_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
