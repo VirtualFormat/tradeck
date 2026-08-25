@@ -68,17 +68,17 @@ services:
   collector:
     build: ../apps/data-collector
     container_name: tradeck-dev-collector
+    # 显式读项目根 .env（dev compose 默认只找 .devcontainer/.env，根 .env 的
+    # FINDB_KEY/TICKFLOW_API_KEY/OPENBB_OVERSEAS_* 才不会丢）
+    env_file:
+      - ../.env
     environment:
       DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
-      # 海外节点（可选）：为空则海外源回落国内 openbb
-      OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
-      OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
+      # 海外节点 / TickFlow / findb 密钥由上方 env_file（根 .env）注入，
+      # 不在此处插值（environment 空串会覆盖 env_file 的值）。
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
-      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
-      # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
-      FINDB_KEY: ${FINDB_KEY:-}
     volumes:
       - ../apps/data-collector:/app
     ports:
