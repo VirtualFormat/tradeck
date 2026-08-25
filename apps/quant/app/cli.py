@@ -54,9 +54,35 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_run(_args: argparse.Namespace) -> int:
-    """运行策略回测（占位）。"""
-    print(_TODO_MSG)
+def _cmd_list(_args: argparse.Namespace) -> int:
+    """列出全部已加载策略。"""
+    from app.runner import _default_strategy_dirs
+    from app.strategy import StrategyRegistry
+    reg = StrategyRegistry(_default_strategy_dirs())
+    for s in reg.all():
+        print(f"{s.strategy_id:24s} {s.name:12s} [{s.source}]  {s.meta.get('description','')}")
+    for e in reg.load_errors():
+        print(f"[加载失败] {e['file']}: {e['error']}")
+    return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """运行策略回测（数据→矩阵→复权→策略→撮合→统计）。"""
+    import json
+    from app.runner import run_backtest
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    if not symbols:
+        print("未指定有效 symbol")
+        return 1
+    end = _parse_date(args.end) if args.end else date.today()
+    params = json.loads(args.params) if args.params else None
+    out = run_backtest(symbols, args.strategy, _parse_date(args.start), end, params)
+    st = out["stats"]
+    print(f"策略 {out['strategy']} | {len(out['symbols'])} 只 | {out['range'][0]} ~ {out['range'][1]}")
+    print(f"交易 {st['trades']} 笔 | 总收益 {st['total_return']:+.2%} | 年化 {st['annual_return']:+.2%} | "
+          f"最大回撤 {st['max_drawdown']:.2%} | 夏普 {st['sharpe']:.2f} | 胜率 {st['win_rate']:.0%}")
+    if out["unadjusted"]:
+        print(f"[未复权降级] {len(out['unadjusted'])} 只：{','.join(out['unadjusted'][:5])}")
     return 0
 
 
@@ -75,7 +101,15 @@ def main() -> int:
     p_fetch.add_argument("--with-factors", action="store_true", help="同时拉除权因子（需 TICKFLOW_API_KEY）")
     p_fetch.set_defaults(func=_cmd_fetch)
 
-    p_run = sub.add_parser("run", help="运行回测（占位）")
+    p_list = sub.add_parser("list", help="列出全部策略")
+    p_list.set_defaults(func=_cmd_list)
+
+    p_run = sub.add_parser("run", help="运行策略回测")
+    p_run.add_argument("strategy", help="策略 id（见 list）")
+    p_run.add_argument("--symbols", required=True, help="逗号分隔的规范代码")
+    p_run.add_argument("--start", required=True, help="开始日期 YYYY-MM-DD")
+    p_run.add_argument("--end", default="", help="结束日期 YYYY-MM-DD（默认今天）")
+    p_run.add_argument("--params", default="", help='策略参数 JSON，如 {"vol_ratio_min":1.5}')
     p_run.set_defaults(func=_cmd_run)
 
     args = parser.parse_args()
