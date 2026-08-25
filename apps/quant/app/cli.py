@@ -1,7 +1,8 @@
 """量化引擎 CLI。
 
 fetch：拉取日K（经 data-api /api/bars）与除权因子（TickFlow）到本地 Parquet 缓存。
-run：运行策略回测（占位，见 plans/TASKS-QUANT-BACKTEST.md 阶段 B）。
+run：运行策略回测。
+screen：策略选股（取最新交易日截面，按 score 排序输出 Top N）。
 """
 from __future__ import annotations
 
@@ -86,6 +87,48 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_screen(args: argparse.Namespace) -> int:
+    """策略选股：最新交易日截面 entry=True 入选，按 score 排序输出。"""
+    import json
+    import math
+
+    from app.runner import _default_strategy_dirs
+    from app.screener import screen
+    from app.strategy import StrategyRegistry
+
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    if not symbols:
+        print("未指定有效 symbol")
+        return 1
+    end = _parse_date(args.end) if args.end else None
+    params = json.loads(args.params) if args.params else None
+
+    reg = StrategyRegistry(_default_strategy_dirs())
+    try:
+        strat = reg.get(args.strategy)
+    except KeyError as e:
+        print(f"策略不存在：{e}")
+        return 1
+
+    result = screen(args.strategy, symbols, end_date=end, params=params, registry=reg)
+    # --limit 覆盖 META.limit（None 表示按 META 截断，0/负数表示不截断）
+    rows = result.rows
+    if args.limit is not None:
+        rows = rows if args.limit <= 0 else rows[: args.limit]
+
+    print(f"策略 {result.strategy_id}（{strat.name}）| 截面 {result.as_of} | "
+          f"入选 {result.total} 只 | 标的池 {len(symbols)} 只")
+    print(f"{'symbol':<14s} {'score':>10s} {'入场':^6s} {'出场':^6s} {'市场':<4s}")
+    for r in rows:
+        score = f"{r.score:.4f}" if not math.isnan(r.score) else "NaN"
+        print(f"{r.symbol:<14s} {score:>10s} "
+              f"{('是' if r.signals['entry'] else '否'):^6s} "
+              f"{('是' if r.signals['exit'] else '否'):^6s} {r.market:<4s}")
+    if result.unadjusted:
+        print(f"[未复权降级] {len(result.unadjusted)} 只：{','.join(result.unadjusted[:5])}")
+    return 0
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(
@@ -111,6 +154,15 @@ def main() -> int:
     p_run.add_argument("--end", default="", help="结束日期 YYYY-MM-DD（默认今天）")
     p_run.add_argument("--params", default="", help='策略参数 JSON，如 {"vol_ratio_min":1.5}')
     p_run.set_defaults(func=_cmd_run)
+
+    p_screen = sub.add_parser("screen", help="策略选股（最新交易日截面）")
+    p_screen.add_argument("strategy", help="策略 id（见 list）")
+    p_screen.add_argument("--symbols", required=True, help="逗号分隔的规范代码")
+    p_screen.add_argument("--end", default="", help="截面基准日 YYYY-MM-DD（默认今天）")
+    p_screen.add_argument("--params", default="", help='策略参数 JSON，如 {"rsi_threshold":25}')
+    p_screen.add_argument("--limit", type=int, default=None,
+                          help="覆盖 META.limit；0/负数表示不截断")
+    p_screen.set_defaults(func=_cmd_screen)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
