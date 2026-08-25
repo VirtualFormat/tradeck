@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+# 量化计算核心：列矩阵引擎（Polars）+ 数值计算（NumPy），不引入 numba/pandas/vectorbt
+polars>=1.0
+numpy>=1.26
+# Parquet 缓存层（行情/因子缓存 + enriched 矩阵落盘）
+pyarrow>=15.0
+pydantic>=2.9
+# pydantic v2 的 BaseSettings 已拆到独立包，config.py 依赖它
+pydantic-settings>=2.5
+# 除权因子（ex_factors）走 TickFlow 官方 SDK，与 data-collector 同款；免费档 TickFlow.free()
+tickflow[all]>=0.1

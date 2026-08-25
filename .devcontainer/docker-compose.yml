@@ -161,6 +161,37 @@ services:
     networks:
       - dev-net
 
+  # quant（量化引擎：回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）
+  # Job/服务型容器，默认不启动，按需显式启用 quant profile：
+  #   --profile quant run --rm quant ...（一次性任务）或 --profile quant up -d quant（HTTP 服务）
+  # dev 环境从源码热挂载运行，改动无需重建镜像
+  quant:
+    build: ../apps/quant
+    container_name: tradeck-dev-quant
+    profiles: ["quant"]
+    environment:
+      # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
+      BACKEND_API_URL: http://data-api:8080
+      # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；dev 留空内网放行
+      SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
+      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
+      # Parquet 缓存目录（行情/因子缓存 + enriched 矩阵 + 报告/候选库）
+      QUANT_CACHE_DIR: /data/cache
+      # AI 策略生成（可选）：全部留空即关闭
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+    volumes:
+      - quant-cache:/data/cache
+      # dev 热挂载（与 collector 同模式）
+      - ../apps/quant:/app
+    depends_on:
+      data-api:
+        condition: service_started
+    networks:
+      - dev-net
+
   # MinIO（S3 兼容对象存储，本地「假 COS」）
   # 用于上线真 COS 前验收 S3 后端（boto3 协议路径/endpoint/网络）。
   # 日常开发用本地文件 provider（COLD_STORAGE_BACKEND=local），不需要本服务；
@@ -212,6 +243,7 @@ volumes:
   dev-venv:
   dev-openbb-config:
   minio-data:
+  quant-cache:
   dev-postgres-data:
     # DATA_MODE 与数据库 marker 在 backend 启动时强校验；错误卷组合会拒绝启动。
     # live 默认沿用旧卷；mock 命令必须显式指定独立卷。

@@ -107,6 +107,33 @@ services:
       - "8080:8080"
     restart: unless-stopped
 
+  # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
+  # 默认不启动，按需显式启用 quant profile：
+  #   --profile quant run --rm quant ...（一次性任务）或 --profile quant up -d quant（HTTP 服务）
+  quant:
+    build: ./apps/quant
+    container_name: tradeck-quant
+    profiles: ["quant"]
+    environment:
+      # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
+      BACKEND_API_URL: http://data-api:8080
+      # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；留空内网放行
+      SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
+      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
+      # Parquet 缓存目录（行情/因子缓存 + enriched 矩阵 + 报告/候选库）
+      QUANT_CACHE_DIR: /data/cache
+      # AI 策略生成（可选）：全部留空即关闭
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+    volumes:
+      - quant-cache:/data/cache
+    depends_on:
+      data-api:
+        condition: service_started
+    restart: unless-stopped
+
   # ── 前端 ──────────────────────────────────────────
   web:
     build:
@@ -133,3 +160,4 @@ volumes:
   openbb-config:
   web-node-modules:
   postgres-data:
+  quant-cache:
