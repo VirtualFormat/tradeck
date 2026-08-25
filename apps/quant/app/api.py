@@ -91,6 +91,7 @@ class BacktestRequest(_SymbolRequest):
     start: date  # 回测必填起点
     initial_capital: float = Field(default=1_000_000.0, gt=0)
     max_positions: int = Field(default=10, ge=1, le=100)
+    commission_pct: float | None = Field(default=None, ge=0, le=0.01)  # 佣金率覆盖（小数）
 
 
 @app.post("/api/backtest")
@@ -100,7 +101,11 @@ async def api_backtest(req: BacktestRequest) -> dict:
     reg = _registry()
     if req.strategy_id not in {s.strategy_id for s in reg.all()}:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
-    cfg = MatcherConfig(initial_capital=req.initial_capital, max_positions=req.max_positions)
+    cfg = MatcherConfig(
+        initial_capital=req.initial_capital,
+        max_positions=req.max_positions,
+        commission_pct=req.commission_pct,
+    )
     end = req.end or date.today()
     return await run_backtest_async(req.symbols, req.strategy_id, req.start, end,
                                     params=req.params or None, config=cfg, registry=reg)

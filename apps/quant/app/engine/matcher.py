@@ -40,12 +40,22 @@ COST_US = CostModel(commission_pct=0.0, min_commission=0.0, stamp_tax_pct=0.0, s
 COST_HK = CostModel(commission_pct=0.0003, min_commission=0.0, stamp_tax_pct=0.001, slippage_bps=100)
 
 
-def _cost_of(symbol: str) -> CostModel:
+def _cost_of(symbol: str, commission_pct: float | None = None) -> CostModel:
+    """分市场成本模型；commission_pct 显式给出时覆盖默认佣金（其余成本项不变）。"""
     if symbol.endswith((".SH", ".SS", ".SZ", ".BJ")):
-        return COST_CN
-    if symbol.endswith(".HK"):
-        return COST_HK
-    return COST_US
+        base = COST_CN
+    elif symbol.endswith(".HK"):
+        base = COST_HK
+    else:
+        base = COST_US
+    if commission_pct is None:
+        return base
+    return CostModel(
+        commission_pct=commission_pct,
+        min_commission=base.min_commission,
+        stamp_tax_pct=base.stamp_tax_pct,
+        slippage_bps=base.slippage_bps,
+    )
 
 
 def _is_cn(symbol: str) -> bool:
@@ -59,6 +69,7 @@ class MatcherConfig:
     exit_fill: str = "open_t+1"
     initial_capital: float = 1_000_000.0
     max_positions: int = 10          # 最大同时持仓数
+    commission_pct: float | None = None  # 佣金率覆盖（小数），None=用分市场默认
     t1: bool = True                  # CN T+1：当日买不可卖
     price_limit: bool = True         # CN 涨跌停不可成交
     lot_size: bool = True            # CN 整手 100 股
@@ -176,7 +187,7 @@ def simulate(
             if np.isnan(px):
                 continue
             value = pos["shares"] * px
-            cost = _cost_of(sym).sell_cost(value)
+            cost = _cost_of(sym, config.commission_pct).sell_cost(value)
             cash += value - cost
             pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
             trades.append(Trade(
@@ -207,7 +218,7 @@ def simulate(
                     sym = symbols[j]
                     px = entry_price_of(i, j)
                     # 预算含交易成本：按 (1 + 买入成本率) 预留 + 微小余量（防浮点边界满仓开不了仓）
-                    cost_rate = _cost_of(sym).buy_cost(1.0)
+                    cost_rate = _cost_of(sym, config.commission_pct).buy_cost(1.0)
                     alloc = min(budget, cash / (1.0 + cost_rate + 1e-9))
                     if alloc <= 0:
                         break
@@ -217,7 +228,7 @@ def simulate(
                         if shares <= 0:
                             continue
                     value = shares * px
-                    cost = _cost_of(sym).buy_cost(value)
+                    cost = _cost_of(sym, config.commission_pct).buy_cost(value)
                     if value + cost > cash:
                         continue
                     cash -= value + cost
@@ -243,7 +254,7 @@ def simulate(
         if np.isnan(px):
             px = pos["entry_price"]
         value = pos["shares"] * px
-        cost = _cost_of(sym).sell_cost(value)
+        cost = _cost_of(sym, config.commission_pct).sell_cost(value)
         pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
         trades.append(Trade(
             symbol=sym, entry_date=pos["entry_date"], exit_date=dates[last],

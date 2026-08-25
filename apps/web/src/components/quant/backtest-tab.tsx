@@ -5,11 +5,12 @@
  * 结果区结构：概要条 → 核心指标卡网格（tooltip 解释）→ 净值曲线 → 卖出归因 → 交易明细表
  */
 import { useState } from "react";
-import { PlayIcon } from "@phosphor-icons/react";
+import { CalendarIcon, PlayIcon } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import {
   Card,
   CardContent,
@@ -19,6 +20,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -33,7 +39,6 @@ import { EquityChart } from "./equity-chart";
 import { MetricCard } from "./metric-card";
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
 import { TradesTable } from "./trades-table";
-import { DateField } from "./date-field";
 import {
   buildParamsPayload,
   exitReasonLabel,
@@ -80,12 +85,24 @@ export function BacktestTab({
 }: BacktestTabProps) {
   const [symbolsInput, setSymbolsInput] = useState("600519.SH,AAPL");
   const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [initialCapital, setInitialCapital] = useState("100000");
+  const [commissionPct, setCommissionPct] = useState("");
+  const [startOpen, setStartOpen] = useState(false);
+  const [endOpen, setEndOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const strategy = strategies.find((s) => s.id === strategyId) ?? null;
+
+  // Date → YYYY-MM-DD（与 date-picker.tsx 同款格式化）
+  function fmtDate(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
 
   async function runBacktest() {
     const symbols = parseSymbols(symbolsInput);
@@ -100,8 +117,11 @@ export function BacktestTab({
           strategy_id: strategyId,
           symbols,
           start: startDate,
+          end: endDate || undefined,
           params: buildParamsPayload(strategy, paramValues),
           initial_capital: Number(initialCapital) || undefined,
+          // 佣金按 % 输入，后端要小数（0.025% → 0.00025）
+          commission_pct: commissionPct ? Number(commissionPct) / 100 : undefined,
         }),
       });
       if (!res.ok) {
@@ -151,13 +171,68 @@ export function BacktestTab({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="quant-bt-start">开始日期</Label>
-              <DateField
-                id="quant-bt-start"
-                value={startDate}
-                onChange={setStartDate}
-                disabled={loading}
-              />
+              <Popover open={startOpen} onOpenChange={setStartOpen}>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      id="quant-bt-start"
+                      variant="outline"
+                      className="w-full justify-start gap-1.5 font-normal"
+                      disabled={loading}
+                    />
+                  }
+                >
+                  <CalendarIcon className="size-3.5 text-fg-dim" />
+                  {startDate || (
+                    <span className="text-muted-foreground">选择日期</span>
+                  )}
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={startDate ? new Date(`${startDate}T00:00:00`) : undefined}
+                    onSelect={(d) => {
+                      setStartDate(d ? fmtDate(d) : "");
+                      setStartOpen(false);
+                    }}
+                    disabled={(date) => date > new Date()}
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quant-bt-end">结束日期</Label>
+              <Popover open={endOpen} onOpenChange={setEndOpen}>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      id="quant-bt-end"
+                      variant="outline"
+                      className="w-full justify-start gap-1.5 font-normal"
+                      disabled={loading}
+                    />
+                  }
+                >
+                  <CalendarIcon className="size-3.5 text-fg-dim" />
+                  {endDate || (
+                    <span className="text-muted-foreground">默认今天</span>
+                  )}
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={endDate ? new Date(`${endDate}T00:00:00`) : undefined}
+                    onSelect={(d) => {
+                      setEndDate(d ? fmtDate(d) : "");
+                      setEndOpen(false);
+                    }}
+                    disabled={(date) => date > new Date()}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="quant-bt-capital">初始资金</Label>
               <Input
@@ -166,6 +241,19 @@ export function BacktestTab({
                 min={1}
                 value={initialCapital}
                 onValueChange={(v) => setInitialCapital(v)}
+                disabled={loading}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quant-bt-commission">佣金（%，留空=默认）</Label>
+              <Input
+                id="quant-bt-commission"
+                type="number"
+                min={0}
+                step={0.001}
+                placeholder="如 0.025"
+                value={commissionPct}
+                onValueChange={(v) => setCommissionPct(v)}
                 disabled={loading}
               />
             </div>
