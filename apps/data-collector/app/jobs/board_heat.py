@@ -1,15 +1,25 @@
-"""板块行情热度（概念/行业板块，直调 akshare，写入 board_heat）
+"""板块行情热度（findb 同花顺概念指数 + 申万行业，写入 board_heat）
 
-说明：OpenBB REST API 只暴露标准模型，ConceptBoards 等自定义模型仅 Python SDK 可用，
-因此本 job 在 backend 内直接调 akshare（上游同为东财，链路不变）。
+数据源（findb /api/table，A 股全市场稳定源，替代原 akshare 东财板块接口）：
+- 概念：ths_index（type=N 概念指数目录）+ ths_index_daily（指数日线，
+  按 ts_code 聚合取最新一根的涨跌幅）。
+- 行业：sw_industry（申万行业目录，2021 版一级行业）+ sw_daily
+  （申万行业指数日行情，按 ts_code 聚合取最新一根）。
+
+原 akshare 东财概念/行业板块接口已退役：本地常被东财断连/封 IP。
+
+code 口径：findb 板块 ts_code 直接写入（885xxx.TI / 801xxx.SI），
+不带 THS: 前缀——后端 /api/boards/heat 按 THS: 前缀判 source=ths，
+此处沿用 tushare 风格 ts_code 走默认 eastmoney 分支（与旧东财快照一致）。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 from typing import Any
 
-from app.datasource import call_akshare
+from app.datasource import findb_source
 from app.db import get_pool
 from app.quality import quality_gate
 
@@ -32,88 +42,110 @@ def _i(v: Any) -> int | None:
     return None if f is None or f != f else int(f)
 
 
-async def _fetch_ths_industry_rows() -> list[tuple]:
-    """同花顺行业行情兜底。
+async def _latest_daily_by_code(
+    table: str, *, codes: list[str], daily_cols: str
+) -> dict[str, dict]:
+    """按 ts_code 聚合取指数日线最新一根（单 code 拉取 + 合并，order=desc 取首条）。
 
-    东财行业接口被断连时，使用同花顺行业一览表。该源没有总市值，
-    因此将总成交额（亿元→元）作为 Treemap 面积权重，并用 THS: 前缀
-    标记 code，API 据此返回正确的数据源与面积口径。
+    findb 日线表为单 code 接口（sort/order 对全表生效、非按 code 分组），
+    逐 code 拉 order=desc limit=1 得到每个指数最新一根。
+    单 code 失败只丢该指数，不拖累其余（优雅降级）。
     """
-    import akshare as ak
+    latest: dict[str, dict] = {}
 
-    try:
-        summary = await call_akshare(ak.stock_board_industry_summary_ths)
-        names = await call_akshare(ak.stock_board_industry_name_ths)
-    except Exception as e:
-        logger.warning(f"akshare boards industry THS fallback failed: {e}")
-        return []
-    if summary is None or summary.empty:
+    async def _one(code: str) -> None:
+        rows = await findb_source.fetch_table(
+            table, cols=daily_cols, col="ts_code", val=code,
+            sort="trade_date", order="desc", limit=1,
+        )
+        if rows:
+            latest[code] = rows[0]
+
+    # 全市场指数目录 ~500 个，分批并发控制请求节奏
+    _BATCH = 20
+    for i in range(0, len(codes), _BATCH):
+        await asyncio.gather(*(_one(c) for c in codes[i : i + _BATCH]))
+    return latest
+
+
+async def _fetch_concept_rows() -> list[tuple]:
+    """同花顺概念指数（ths_index type=N + ths_index_daily 最新涨跌幅）。"""
+    boards = await findb_source.fetch_table(
+        "ths_index", cols="ts_code,name", col="type", val="N", limit=5000
+    )
+    if not boards:
+        logger.warning("findb ths_index 概念目录为空")
         return []
 
-    code_map: dict[str, str] = {}
-    if names is not None and not names.empty:
-        code_map = {
-            str(r.get("name") or "").strip(): str(r.get("code") or "").strip()
-            for _, r in names.iterrows()
-            if r.get("name")
-        }
+    codes = [str(r["ts_code"]) for r in boards if r.get("ts_code") and r.get("name")]
+    latest = await _latest_daily_by_code(
+        "ths_index_daily", codes=codes,
+        daily_cols="ts_code,pct_change,total_mv,turnover_rate",
+    )
 
     rows = []
-    for _, r in summary.iterrows():
-        name = str(r.get("板块") or "").strip()
-        if not name:
+    for r in boards:
+        code = str(r.get("ts_code") or "")
+        name = str(r.get("name") or "").strip()
+        if not code or not name:
             continue
-        amount_100m = _f(r.get("总成交额"))
-        rows.append(
-            (
-                "industry",
-                name,
-                f"THS:{code_map.get(name, '')}",
-                _f(r.get("涨跌幅")),
-                int(amount_100m * 1e8) if amount_100m is not None else None,
-                None,
-                str(r.get("领涨股") or "").strip() or None,
-                _f(r.get("领涨股-涨跌幅")),
-            )
-        )
-    logger.info(f"ths industry fallback: {len(rows)} boards")
+        d = latest.get(code, {})
+        rows.append((
+            "concept",
+            name,
+            code,
+            _f(d.get("pct_change")),
+            _i(d.get("total_mv")),
+            _f(d.get("turnover_rate")),
+            None,  # leader_stock：findb 板块日线无领涨股，置空
+            None,  # leader_change：同上
+        ))
+    logger.info(f"findb concept boards: {len(rows)}")
+    return rows
+
+
+async def _fetch_industry_rows() -> list[tuple]:
+    """申万行业（sw_industry 目录 + sw_daily 最新行情）。"""
+    boards = await findb_source.fetch_table(
+        "sw_industry", cols="ts_code,name", limit=5000
+    )
+    if not boards:
+        logger.warning("findb sw_industry 行业目录为空")
+        return []
+
+    codes = [str(r["ts_code"]) for r in boards if r.get("ts_code") and r.get("name")]
+    latest = await _latest_daily_by_code(
+        "sw_daily", codes=codes,
+        daily_cols="ts_code,pct_change,total_mv",
+    )
+
+    rows = []
+    for r in boards:
+        code = str(r.get("ts_code") or "")
+        name = str(r.get("name") or "").strip()
+        if not code or not name:
+            continue
+        d = latest.get(code, {})
+        rows.append((
+            "industry",
+            name,
+            code,
+            _f(d.get("pct_change")),
+            _i(d.get("total_mv")),
+            None,  # turnover_rate：sw_daily 无换手率，置空
+            None,  # leader_stock：findb 行业日线无领涨股，置空
+            None,  # leader_change：同上
+        ))
+    logger.info(f"findb industry boards: {len(rows)}")
     return rows
 
 
 async def fetch_and_store_boards(board_type: str) -> int:
     """拉一类板块（concept/industry）行情，全量覆盖写入。返回写入条数。"""
-    import akshare as ak
-
-    def fetch():
-        if board_type == "industry":
-            return ak.stock_board_industry_name_em()
-        return ak.stock_board_concept_name_em()
-
-    try:
-        df = await call_akshare(fetch)
-    except Exception as e:
-        logger.warning(f"akshare boards {board_type} failed: {e}")
-        df = None
-
-    if df is not None and not df.empty:
-        rows = [
-            (
-                board_type,
-                str(r.get("板块名称") or ""),
-                str(r.get("板块代码") or "") or None,
-                _f(r.get("涨跌幅")),
-                _i(r.get("总市值")),
-                _f(r.get("换手率")),
-                str(r.get("领涨股票") or "") or None,
-                _f(r.get("领涨股票-涨跌幅")),
-            )
-            for _, r in df.iterrows()
-            if r.get("板块名称")
-        ]
-    elif board_type == "industry":
-        rows = await _fetch_ths_industry_rows()
+    if board_type == "industry":
+        rows = await _fetch_industry_rows()
     else:
-        rows = []
+        rows = await _fetch_concept_rows()
 
     if not rows:
         logger.warning(f"No boards data for {board_type}")

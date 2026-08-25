@@ -44,7 +44,7 @@ if settings.DATA_MODE == "mock":
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动：连 DB 并校验数据库身份（不绑定、不写库）；关闭：释放连接池。"""
-    logger.info("tradeck data-api starting in %s mode...", settings.DATA_MODE)
+    logger.info("tradb data-api starting in %s mode...", settings.DATA_MODE)
 
     pool = await get_pool()
     try:
@@ -54,14 +54,14 @@ async def lifespan(app: FastAPI):
             logger.info(f"connected to PostgreSQL: {version[:50]}...")
             logger.info("database DATA_MODE marker verified: %s", database_mode)
 
-        logger.info("tradeck data-api ready")
+        logger.info("tradb data-api ready")
         yield
     finally:
-        logger.info("tradeck data-api shutting down...")
+        logger.info("tradb data-api shutting down...")
         await close_pool()
 
 
-app = FastAPI(title="tradeck data-api", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="tradb data-api", version="0.1.0", lifespan=lifespan)
 
 # CORS（前端同源访问不需要，但 dev 环境跨端口要）
 app.add_middleware(

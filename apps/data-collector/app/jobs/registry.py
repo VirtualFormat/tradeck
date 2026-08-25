@@ -12,6 +12,7 @@ from numbers import Real
 from typing import Awaitable, Callable, Literal
 
 from app.jobs import progress
+from app.jobs.adjust_factors import run_adjust_factors_job
 from app.jobs.akshare_news import run_akshare_news_job
 from app.jobs.analyst_consensus import run_analyst_consensus_job
 from app.jobs.announcements import run_announcements_job
@@ -208,6 +209,15 @@ JOB_DEFINITIONS = (
         run_macro_job,
     ),
     JobDefinition(
+        "adjust_factors",
+        "复权因子",
+        "findb 前/后复权因子（跟踪标的最近约 250 个交易日）",
+        "findb",
+        "每日",
+        ("adjust_factors",),
+        run_adjust_factors_job,
+    ),
+    JobDefinition(
         "minute_kline",
         "分钟K 采集（冷层）",
         "US/HK 当日 1m 分钟K → quality_gate → 冷层 Parquet（year/market/date 分区）；A股待付费源",
@@ -262,7 +272,7 @@ JOB_DEFINITIONS = (
         "board_heat",
         "板块行情热度",
         "A 股概念与行业板块行情",
-        "akshare",
+        "findb",  # 同花顺概念指数（ths_index）+ 申万行业（sw_industry/sw_daily）
         "每 30 分钟",
         ("board_heat",),
         run_board_heat_job,
@@ -289,7 +299,7 @@ JOB_DEFINITIONS = (
         "fund_flow",
         "个股资金流向",
         "A 股主力资金流即时榜",
-        "akshare",
+        "findb",  # stock_fund_flow 主力净流入榜（原 akshare 东财即时榜退役）
         "每 5 分钟",
         ("fund_flow",),
         run_fund_flow_job,

@@ -1,15 +1,16 @@
 """分钟K 采集 job（4.2a-0 冷层先行）：每日拉当日分钟K，直写冷层 Parquet。
 
-链路：yfinance 1m（库直调）→ quality_gate（minute_bars 质量闸）→
+链路：findb 1min（findb_source）→ quality_gate（minute_bars 质量闸）→
       ColdStorage 写 Parquet 落冷层（year/market 分区 + 文件内 (symbol,ts) 排序）。
 
-范围与现状（D1 实测 2026-08-22）：
-- US/HK：yfinance 1m（仅近 7 天窗口）——每日采当日，漏采即永久丢失，缺口检测是生死线。
-- A股：免费源（TickFlow 分钟K 付费档 / akshare 东财分钟接口本地被封）暂不可采，
-  待付费档或 QMT/iFinD（D2/D3/D4）后接入。
+数据源（2026-08-25 起 yfinance → findb）：
+- findb：A股/港股/美股 1min 全市场 + 全历史（A股 2002 年起）+ amount 成交额，
+  无 yfinance 的 7 天窗口限制（历史缺口可补）。findb bars 为单 code 接口，
+  逐标的拉取。复权默认原始价（adjust 空，复权经 adj_factor 另算）。
+- A股分钟K 由此接入（此前 yfinance 不支持 A股、akshare 东财本地被封）。
 
-纪律：ts 统一存 UTC epoch 秒；每日幂等（重跑覆盖同分区文件）；本地 yfinance
-常被限流（已知坑 #5）——限流时优雅降级记日志，环境正常（VPS）时正常采集。
+纪律：ts 统一存 UTC epoch 秒；每日幂等（重跑覆盖同分区文件）；
+findb 限流/写锁自动退避（findb_source 内置）；失败优雅降级记日志。
 """
 from __future__ import annotations
 
@@ -23,24 +24,22 @@ from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
-# 缺口检测窗口（天）：yfinance 1m 仅近 7 天可拉，超出即永久丢失。
-# 每日采集当日后，顺带检测近 N 天缺口并补拉（窗口内可救）。
+# 缺口检测窗口（天）：每日采集当日后，顺带检测近 N 天缺口并补拉。
+# findb 全历史可拉（无 yfinance 的 7 天窗口），窗口设为采集效率与及时性的平衡。
 _GAP_LOOKBACK_DAYS = 7
 
 
 def _minute_symbols() -> dict[str, list[str]]:
-    """按市场分组待采标的（仅 US/HK，A股待付费源）。"""
+    """按市场分组待采标的（US/HK/CN 三市场，findb 均支持）。"""
     from app.constants import TRACKED_SYMBOLS
     from app.markets import pick_market
 
-    groups: dict[str, list[str]] = {"US": [], "HK": []}
+    groups: dict[str, list[str]] = {"US": [], "HK": [], "CN": []}
     for s in TRACKED_SYMBOLS:
         m = pick_market(s)
         if m not in groups:
             continue
-        # 健壮性：港股规范码须为 5 位（不足 5 位的原始码经 to_yahoo_symbol 的
-        # lstrip('0').zfill(4) 可能产生非法 yahoo ticker，导致查询不到数据）。
-        # 规范约定港股 5 位补零，这里断言兜底，异常代码记日志跳过。
+        # 健壮性：港股规范码须为 5 位（findb 用 5 位补零，与规范一致）。
         if m == "HK":
             code = s.split(".")[0]
             if len(code) != 5:
@@ -50,83 +49,91 @@ def _minute_symbols() -> dict[str, list[str]]:
     return groups
 
 
-def _fetch_1m(symbols: list[str], day: date | None = None) -> Any:
-    """同步拉多只标的 1m（yfinance 库直调）。限流/失败抛异常由调用方降级。
+# 各市场交易所时区（findb datetime 为交易所本地时间，转 UTC epoch 用）
+_MARKET_TZ = {
+    "CN": "Asia/Shanghai",
+    "HK": "Asia/Hong_Kong",
+    "US": "America/New_York",
+}
 
-    day=None 拉当日（period='1d'）；指定 day 拉该天（start/end 区间，补拉缺口用，
-    仅近 7 天窗口内有效）。auto_adjust=False 保留原始 OHLC（复权另算）。
+
+def _to_findb_code(symbol: str, market: str) -> str:
+    """规范 symbol → findb code。findb 用：A股 600036.SH/000001.SZ/920839.BJ、
+    港股 00700.HK（5 位补零）、美股 AAPL.US（裸码 + .US 后缀）。"""
+    if market == "US" and "." not in symbol:
+        return f"{symbol}.US"
+    return symbol  # CN（.SH/.SZ/.BJ）与 HK（5 位）与规范一致
+
+
+async def _fetch_1m_symbol(
+    symbol: str, market: str, day: date | None
+) -> list[dict[str, Any]]:
+    """拉单标的 findb 1min，返回 findb 原始行（含 datetime/ohlc/volume/amount）。
+
+    findb bars 单 code；day=None 拉最近（order=desc limit=当日分钟数上限），
+    指定 day 拉该天（start=end=day，findb 全历史可拉，无 7 天窗口限制）。
     """
-    import yfinance as yf
-    from app.markets import to_yahoo_symbol
+    from app.datasource import findb_source
 
-    yahoo = [to_yahoo_symbol(s) for s in symbols]
-    kwargs: dict[str, Any] = {
-        "interval": "1m",
-        "progress": False,
-        "auto_adjust": False,
-    }
+    code = _to_findb_code(symbol, market)
     if day is None:
-        kwargs["period"] = "1d"
-    else:
-        # yfinance end 为开区间，+1 天才含当日
-        kwargs["start"] = day.isoformat()
-        kwargs["end"] = (day + timedelta(days=1)).isoformat()
-    return yf.download(yahoo, **kwargs)
+        # 当日：拉最近一批（A股 240 根/日、美股 390 根/日，取上限 400 覆盖）
+        return await findb_source.fetch_bars(
+            code, freq="1min", order="desc", limit=400
+        )
+    return await findb_source.fetch_bars(
+        code,
+        freq="1min",
+        start=day.isoformat(),
+        end=day.isoformat(),
+        order="asc",
+        limit=400,
+    )
 
 
-def _df_to_rows(df: Any, symbols: list[str], market: str, day: date) -> list[dict[str, Any]]:
-    """yfinance 多标的 MultiIndex DataFrame → 分钟K dict 行（ts 为 UTC epoch 秒）。"""
-    import pandas as pd
+def _v(x: Any) -> float | None:
+    """NaN/None → None，否则转 float（避免 NaN 进 Parquet）。"""
+    if x is None:
+        return None
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
 
-    from app.markets import to_yahoo_symbol
 
-    if df is None or len(df) == 0:
-        return []
+def _findb_rows_to_minute(
+    bars: list[dict[str, Any]], symbol: str, market: str
+) -> list[dict[str, Any]]:
+    """findb 1min 行（datetime 交易所本地时间）→ 分钟K dict 行（ts UTC epoch 秒）。"""
+    from zoneinfo import ZoneInfo
 
+    tz = ZoneInfo(_MARKET_TZ.get(market, "UTC"))
     rows: list[dict[str, Any]] = []
-    is_multi = isinstance(df.columns, pd.MultiIndex)
-
-    def _v(x: Any) -> float | None:
-        """NaN/None → None，否则转 float（对齐 amount 的 None 语义，避免 NaN 进 Parquet）。"""
-        if x is None:
-            return None
-        try:
-            f = float(x)
-        except (TypeError, ValueError):
-            return None
-        return None if pd.isna(f) else f
-
-    # DataFrame 列是 yahoo 格式（港股 4 位、.SH→.SS），需转换后取数；
-    # 写库的 symbol 仍是规范格式（行内 sym），仅取数时用 yahoo 格式定位列
-    for sym in symbols:
-        yahoo_sym = to_yahoo_symbol(sym)
-        try:
-            sub = df.xs(yahoo_sym, level=1, axis=1) if is_multi else df
-        except (KeyError, ValueError):
+    for b in bars:
+        close = _v(b.get("close"))
+        if close is None:
             continue
-        for ts, r in sub.iterrows():
-            close = _v(r.get("Close"))
-            if close is None:  # 无 close 的分钟K 行无意义，跳过
-                continue
-            # 时间戳统一 UTC epoch 秒（yfinance 返回带交易所时区的 DatetimeIndex）
-            if hasattr(ts, "tz_convert"):
-                ts_utc = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
-                epoch = int(ts_utc.timestamp())
-            else:
-                epoch = int(pd.Timestamp(ts, tz="UTC").timestamp())
-            rows.append(
-                {
-                    "symbol": sym,
-                    "market": market,
-                    "ts": epoch,
-                    "open": _v(r.get("Open")),
-                    "high": _v(r.get("High")),
-                    "low": _v(r.get("Low")),
-                    "close": close,
-                    "volume": _v(r.get("Volume")),
-                    "amount": None,  # yfinance 1m 无成交额，留 None
-                }
-            )
+        # findb datetime 如 2026-08-24T15:00:00（交易所本地，无 tz）→ UTC epoch
+        dt_str = b.get("datetime") or b.get("date")
+        try:
+            naive = datetime.fromisoformat(str(dt_str).replace("Z", ""))
+            epoch = int(naive.replace(tzinfo=tz).timestamp())
+        except (ValueError, TypeError):
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "market": market,
+                "ts": epoch,
+                "open": _v(b.get("open")),
+                "high": _v(b.get("high")),
+                "low": _v(b.get("low")),
+                "close": close,
+                "volume": _v(b.get("volume")),
+                "amount": _v(b.get("amount")),  # findb 有成交额（yfinance 无）
+            }
+        )
     return rows
 
 
@@ -140,15 +147,19 @@ async def fetch_and_store_minute_kline(
     if not symbols:
         return 0
 
-    # ① 拉取（限流/失败优雅降级：记日志返回 0，不抛）。day 传给 _fetch_1m
-    # 决定拉当日还是历史某天（补拉）。
-    try:
-        df = await asyncio.to_thread(_fetch_1m, symbols, day)
-    except Exception as e:  # noqa: BLE001 — yfinance 限流/网络，优雅降级
-        logger.warning(f"minute_kline {market} 拉取失败（{type(e).__name__}: {e}）")
-        return 0
+    # ① 拉取（findb 逐标的并发；单标的失败不影响其他，优雅降级）。
+    # day 传给 _fetch_1m_symbol 决定拉当日还是历史某天（补拉，findb 全历史可拉）。
+    rows: list[dict[str, Any]] = []
+    fetch_results = await asyncio.gather(
+        *(_fetch_1m_symbol(sym, market, day) for sym in symbols),
+        return_exceptions=True,
+    )
+    for sym, res in zip(symbols, fetch_results):
+        if isinstance(res, Exception):
+            logger.warning(f"minute_kline {market} {sym} 拉取失败: {res}")
+            continue
+        rows.extend(_findb_rows_to_minute(res, sym, market))
 
-    rows = _df_to_rows(df, symbols, market, day)
     if not rows:
         logger.warning(f"minute_kline {market} {day} 无数据（{len(symbols)} 只）")
         return 0

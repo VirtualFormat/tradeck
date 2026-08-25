@@ -122,9 +122,15 @@ TTL ts + INTERVAL 1 YEAR DELETE;              -- 在线窗口 1 年（CVM 单盘
 - 存储级别用**标准存储**，不用低频——回测读取频率可能不低，低频有取回费。
 - 备选：本地文件系统（最简，但容量有墙、无冗余）；自建 MinIO（单 CVM 场景是纯开销，放弃）。
 
-**DuckDB（查询引擎）**：嵌入式，回测进程内 `read_parquet()` 向量化扫描，一年全市场分钟K 秒级；零服务运维。
+**DuckDB（冷层查询引擎，内嵌在数据服务侧，不对外）**：嵌入式，**由 data-api/collector
+进程内 `read_parquet()` 使用**，对外只经 REST 暴露结果（一年全市场分钟K 秒级扫描）；
+零服务运维。
 - 备选：Polars（DataFrame API 偏好场景可互换/共存——读的都是同一批 Parquet）。
-- 读 COS 用 httpfs 扩展 + S3 兼容配置；**实务上推荐先拉本次要跑的 year/market 分片到本地工作缓存再算**，比 httpfs 直读更稳。
+- 读 COS 用 httpfs 扩展 + S3 兼容配置；数据服务侧可先把要扫的 year/market 分片拉到
+  本地工作缓存再算（比 httpfs 直读稳）。
+- **铁律边界（2026-08-25 更正）**：DuckDB/Parquet 是数据服务的**内部实现**，
+  业务方（web/量化/回测）**不直接读 Parquet 文件、不持有 COS 凭据**——
+  与「DB 永不对外」同一纪律；消费方唯一入口是 data-api 统一端口。
 
 **Parquet 分区布局（COS bucket：tradeck-lake）**：
 
@@ -154,13 +160,16 @@ s3://tradeck-lake/
 | 文件内按 (symbol,ts) 排序（row group 裁剪） | ~5-15s（只读目标字节范围） | <500ms |
 | 多标的批量（in 列表一次扫） | 与单只相同（一次扫全分区） | 同左 |
 
-实务约定：回测先拉本次要跑的 `year/market` 分片到本地工作缓存再算（比 httpfs
-直读稳）；多标的回测用 `symbol IN (...)` 一次扫全分区，不要逐只查（逐只=重复扫全分区）。
+实务约定（数据服务侧）：data-api/collector 读冷层时可先把要扫的 `year/market` 分片
+拉到本地工作缓存再算（比 httpfs 直读稳）；多标的批量查询用 `symbol IN (...)` 一次
+扫全分区，不逐只查（逐只=重复扫全分区）。**业务方不直接做这些——它只调 data-api
+的批量接口（如 `/api/bars/minute`），由数据服务侧完成冷层扫描并返回结果。**
 
 **归档管道**：collector 侧定时 job 把 CH 中超窗口的数据导出为 Parquet 写 COS，再让 CH TTL 清除。归档产物是可校验的文件资产。**分钟K/tick 全量永久保留在 COS，任何层不做滑窗删除。**
 
 **逐笔 tick 的存储定位**：tick 不进 PG、不进 CH，采集后**直接以 Parquet 落 COS**
-（按 `year/market/date/symbol` 分区），消费方只有回测/研究进程经 DuckDB 读。
+（按 `year/market/date/symbol` 分区）。**tick 的读取同样只经 data-api**（数据服务侧
+DuckDB 扫冷层，REST 返回给回测/研究），业务方不直读文件。
 tick 是「写入即归档」的数据，没有在线查询价值——这是它与分钟K 的本质区别。
 
 ## 单机部署适配（CVM 1TB + COS）
@@ -172,7 +181,7 @@ tick 是「写入即归档」的数据，没有在线查询价值——这是它
 | 系统 + Docker 镜像 + 日志 | 100 GB | OpenBB 镜像不小，留足 |
 | PG（热层） | 50 GB | 现 ~1 GB，10 年 ~15 GB，奢侈冗余 |
 | ClickHouse（温层） | 250 GB | 分钟K 在线 **1 年**（压缩后 ~100-150 GB）+ 指标宽表 + 余量 |
-| Parquet 本地工作缓存 | 100 GB | 回测拉取分片的临时区，**可清空**，不是存储层 |
+| Parquet 本地工作缓存 | 100 GB | 数据服务侧扫冷层时拉分片的临时区，**可清空**，不是存储层 |
 | 机动余量 | 400 GB | 备份暂存、导出、事故缓冲 |
 
 **本地盘总占用锁死在 ~400-500 GB，永远健康**——COS 决策的最大红利：
@@ -196,9 +205,9 @@ tick 是「写入即归档」的数据，没有在线查询价值——这是它
 
 ## 三条铁律在新拓扑下的映射
 
-1. **DB 永不对外**：PG/CH 的凭据与网络仅 collector、data-api 可见；COS 密钥仅 collector（写）与回测进程（读）持有。
+1. **DB 永不对外**：PG/CH 的凭据与网络仅 collector、data-api 可见；**COS 密钥仅 collector（写）与 data-api（读）持有，业务方（web/量化/回测）一律不持有、不直读冷层文件**。
 2. **单一写者**：写 PG、写 CH、Parquet 归档 COS 全部收敛在 collector 进程，沿用 datasource 门面限流与单进程纪律，不引入第二个写者。
-3. **消费方只认 API**：data-api 路由屏蔽 PG/CH 分布。唯一例外是回测侧 DuckDB 直读 Parquet 文件资产——读的是 collector 归档产出物，不是数据库连接，不违反铁律一。
+3. **消费方只认 API**：data-api 路由屏蔽 PG/CH/Parquet 分布。**无例外**——回测/量化读冷层历史数据同样经 data-api（数据服务侧用 DuckDB 扫 Parquet 后 REST 返回），业务方不直读 Parquet、不持有 COS 凭据。DuckDB 是数据服务内部的冷层查询引擎，不是业务方的直连工具。
 
 ## 三层读实现与性能评估（2026-08-22 定，量化系统选型依据）
 
@@ -233,7 +242,7 @@ tick 是「写入即归档」的数据，没有在线查询价值——这是它
 
 - **日K 及以下频率**（日K/报价/宏观/基本面/榜单）→ 热层 PG，永久，唯一归宿。
 - **分钟K** → 温层 CH（近期在线读，量化策略）+ 冷层 Parquet（全量永久 + 回测批扫），双写。
-- **tick 逐笔** → 仅冷层 Parquet（写入即归档，无在线查询价值），只回测 DuckDB 读。
+- **tick 逐笔** → 仅冷层 Parquet（写入即归档，无在线查询价值），回测经 data-api 读（数据服务侧 DuckDB 扫冷层，不直读文件）。
 
 ## 落地顺序（对应任务卡阶段四）
 

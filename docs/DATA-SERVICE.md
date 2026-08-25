@@ -1,7 +1,19 @@
-# 数据服务拆分 — 技术方案
+# tradb — 金融数据库服务技术方案
 
+> **tradb**（trading database）：独立金融数据库服务，为 web 看板、量化服务、量化回测
+> 提供统一数据源能力。由 tradeck 的数据层拆分独立而成。
 > 目标：把数据层从 web backend 拆为独立服务，为 web 看板、量化服务、量化回测提供统一数据源能力。
 > 配套文件：任务拆解与验收见 `plans/TASKS-DATA-SERVICE.md`。
+
+## 命名与定位
+
+- **服务名**：tradb（金融数据库服务）。
+- **组成**：data-collector（唯一写者）+ data-api（唯一读出口 / 统一对外端口）+
+  PostgreSQL（热层）+ ClickHouse（温层，规划）+ Parquet/COS（冷层）。
+- **对外契约**：唯一入口是 data-api REST；消费方（web/量化/回测）不直连 DB、
+  不直读 Parquet、不持有任何存储凭据（三条铁律，见下）。
+- **与 tradeck 的关系**：tradb 是 tradeck 数据层独立的产物；tradeck web 是 tradb
+  的第一个消费方。量化业务是另一个独立项目（独立仓库），同样只经 data-api 取数。
 
 ## 三条铁律
 

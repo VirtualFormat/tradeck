@@ -1,7 +1,12 @@
-"""个股资金流向榜（东财即时榜，直调 akshare，写入 fund_flow）
+"""个股资金流向榜（findb stock_fund_flow 全市场主力净流入榜，写入 fund_flow）
 
-一次调用返回全市场排行（按主力净额排序），非交易时段/封 IP 返回空时
-不写库，保留最后有效快照。
+数据源：findb /api/table?name=stock_fund_flow（A 股全市场，稳定），
+按主力净流入（main_net）绝对额最大的一批（正/负各 Top N）写当天快照。
+原 akshare 东财即时榜已退役：本地常被东财断连/封 IP，findb 为主数据源、
+链路更稳，不再保留东财兜底（单一源语义更清晰）。
+
+单位口径：findb pct_chg 与东财涨跌幅同为百分数；main_net（主力净流入）
+为元，与东财即时榜净额口径一致，直接写入。
 """
 from __future__ import annotations
 
@@ -9,12 +14,15 @@ import logging
 from datetime import date
 from typing import Any
 
-from app.datasource import call_akshare
+from app.datasource import findb_source
 from app.db import get_pool
 from app.jobs.board_map import _to_symbol
 from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
+
+# 榜两端各取 Top N（主力净流入最大 + 净流出最大），合计至多 2N 行
+_TOP_N = 500
 
 
 def _f(v: Any) -> float | None:
@@ -32,46 +40,49 @@ def _i(v: Any) -> int | None:
 
 
 async def run_fund_flow_job() -> int:
-    """定时任务：拉个股主力资金流向即时榜（每 5 分钟）"""
+    """定时任务：拉个股主力资金流向榜（每 5 分钟）"""
     logger.info("=== fund flow job start ===")
-    import akshare as ak
 
-    def fetch():
-        return ak.stock_fund_flow_individual(symbol="即时")
+    # 净流入 Top N（主力净流入降序）
+    data = await findb_source.fetch_table(
+        "stock_fund_flow", sort="main_net", order="desc", limit=_TOP_N
+    )
+    if not data:
+        logger.warning("findb stock_fund_flow 为空，保留旧快照")
+        return 0
 
-    try:
-        df = await call_akshare(fetch)
-    except Exception as e:
-        logger.warning(f"akshare fund flow failed: {e}")
-        return 0
-    if df is None or df.empty:
-        logger.warning("fund flow 为空（非交易时段或接口受限），保留旧快照")
-        return 0
+    # 净流出 Top N（升序取尾部），去重合并，保证榜两端都有数据
+    bottom = await findb_source.fetch_table(
+        "stock_fund_flow", sort="main_net", order="asc", limit=_TOP_N
+    )
+    if bottom:
+        seen = {str(r.get("code") or "") for r in data}
+        data += [r for r in bottom if str(r.get("code") or "") not in seen]
 
     rows = []
-    for _, r in df.iterrows():
-        sym = _to_symbol(str(r.get("股票代码") or ""))
+    for r in data:
+        sym = _to_symbol(str(r.get("code") or ""))
         if not sym:
             continue
         rows.append((
             sym,
-            str(r.get("股票简称") or "") or None,
-            _f(r.get("最新价")),
-            _f(r.get("涨跌幅")),
-            _f(r.get("换手率")),
-            _i(r.get("流入资金")),
-            _i(r.get("流出资金")),
-            _i(r.get("净额")),
-            _i(r.get("成交额")),
+            str(r.get("name") or "") or None,
+            _f(r.get("price")),
+            _f(r.get("pct_chg")),
+            None,  # turnover_rate：findb 无此字段，置空
+            None,  # amount_in：findb 只给主力净额，无流入/流出拆分
+            None,  # amount_out：同上
+            _i(r.get("main_net")),
+            _i(r.get("amount_total")),
         ))
     if not rows:
         return 0
 
-    # 非交易时段东财只返回个位数有效净额——此时不写库，保留最近交易日快照
+    # 有效净额行数过少视为源异常（保留最近交易日快照，不覆盖）
     valid_count = sum(1 for r in rows if r[7] is not None)
     if valid_count < 100:
         logger.warning(
-            f"fund flow 有效净额仅 {valid_count} 行（非交易时段），保留旧快照"
+            f"fund flow 有效净额仅 {valid_count} 行（findb 数据异常），保留旧快照"
         )
         return 0
 
