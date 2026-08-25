@@ -111,6 +111,39 @@
 
 ## 验收记录
 
+### 阶段 E review 明细（2026-08-25）
+
+分工：E1 quant HTTP API（主 agent）/ E2 web 代理路由（Feynman）/ E3 前端工作台页（Anscombe）/
+E4 每日信号 job（主 agent）。
+
+端到端验证（宿主机 web→quant 代理实测，curl）：
+
+- `/api/quant/strategies` 返回 6 个内置策略（含 params schema）。
+- `/api/quant/backtest` ma_golden_cross 600519.SH+AAPL 26 天，range 正确。
+- `/api/quant/screen` 选股 as_of 正确；`/api/quant/ai-generate` 未配置优雅降级；
+  `/api/quant/mining` 候选库可读。
+- 前端 `/quant` 页 4 Tab 渲染（策略选择/参数表单/空态/统计卡片骨架），检查清单全绿
+  （无裸元素/手搓/recharts 未包裹）。
+
+Review 修复（3 处提交前必改）：
+
+- preset Select `onValueChange` 签名为 `(value: string | null, eventDetails)`，Anscombe 按
+  标准 shadcn 写的 `(id: string) => void` 两处 tsc 报错 → 包一层 null 归一。
+- mining-tab `setState-in-effect` eslint 报错 → 收进 async 回调。
+- dev compose 漏配 `QUANT_API_URL`（web 容器内 localhost:8083 不通）→ 补 `http://quant:8083`。
+
+环境障碍（非代码问题，已处置）：
+
+- colima docker daemon 两次卡死 + 端口映射失效，重启后恢复。
+- dev 容器 `up -d --force-recreate` 不重跑 post-create.sh 导致 node 丢失 → 容器内重装 node24+pnpm9.15。
+- 宿主机 3000 被 VS Code 失效端口转发占用 → 释放后 docker 映射恢复。
+
+已知边界：
+
+- AI 真实生成未端到端（无 AI_API_KEY），降级路径已验；保存 AI 策略到库属后续（E3 已留口）。
+- E4 每日信号 cron 的调度注册（APScheduler 定时触发）未接入 quant lifespan——job 函数已验，
+  定时触发待 quant 服务加 lifespan 时一并做（列入阶段 F）。
+
 ### 阶段 D review 明细（2026-08-25）
 
 分工：D1 选股执行器（子 agent Carver，28dcf3d）/ D2 因子挖掘（主 agent 本地做核心算法，ec0cae9）。
@@ -244,5 +277,5 @@ Review 处置（2 项）：
 | B 矩阵与回测引擎 | ✅ 验收通过 | 见下 | 已处置 | **9 项撮合验证 + 指标对账全绿** | 2026-08-25 |
 | C 策略体系与 AI 生成 | ✅ 验收通过 | 见下 | 已处置 | **联动验收全绿（加载→策略→安全闸→回测）** | 2026-08-25 |
 | D 选股与挖掘 | ✅ 验收通过 | 见下 | 已处置 | **选股复核全绿 + 挖掘闭环含发布纪律实测** | 2026-08-25 |
-| E 服务化与 web 集成 | 未开始 | 无 | 无 | 无 | 无 |
+| E 服务化与 web 集成 | ✅ 验收通过 | 见下 | 已处置 | **HTTP API + 代理 + 前端页端到端全绿（宿主机实测）** | 2026-08-25 |
 | F 加固 | 未开始 | 无 | 无 | 无 | 无 |
