@@ -138,7 +138,7 @@ export function ScreenTab({
               id="quant-sc-symbols"
               placeholder="600519.SH,000001.SZ,AAPL"
               value={symbolsInput}
-              onChange={(e) => setSymbolsInput(e.target.value)}
+              onValueChange={(v) => setSymbolsInput(v)}
               disabled={loading}
             />
           </div>

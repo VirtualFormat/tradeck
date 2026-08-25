@@ -163,7 +163,7 @@ export function StrategyParamsForm({
               min={p.min}
               max={p.max}
               step={p.step ?? (p.type === "int" ? 1 : "any")}
-              onChange={(e) => setValue(p.id, e.target.value)}
+              onValueChange={(v) => setValue(p.id, v)}
               disabled={disabled}
             />
           </div>
