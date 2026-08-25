@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import findb, ondemand, system
+from app.api import ondemand, system
 from app.config import settings
 from app.database_mode import ensure_database_mode
 from app.db import close_pool, get_pool
@@ -108,7 +108,6 @@ app.add_middleware(
 # ondemand 是唯一写者侧的按需回源入口（data-api 经 HTTP 调用，见 api/ondemand.py）。
 app.include_router(system.router)
 app.include_router(ondemand.router)
-app.include_router(findb.router)
 
 
 @app.get("/health")

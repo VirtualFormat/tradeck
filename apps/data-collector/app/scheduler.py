@@ -26,7 +26,9 @@ _DAILY_MARKET_JOB_OPTIONS = {
 
 # cron 错峰包装（APScheduler 只识别 coroutine function，lambda 返回协程不会被 await，必须用 async def）
 async def _daily_kline_cn_hk() -> None:
-    await run_registered_job("daily_kline", markets=("CN", "HK"))
+    # CN 日K 主源为同花顺 dump（一次请求全市场近 10 交易日），HK 仍走 TickFlow
+    await run_registered_job("hithink_daily_k_dump")
+    await run_registered_job("daily_kline", markets=("HK",))
     await run_registered_job("movers_cn")
 
 
@@ -458,17 +460,30 @@ async def _initial_fetch() -> None:
 
 
 async def _initial_daily_kline_fetch(full_markets: tuple[str, ...]) -> None:
-    """启动预热：健康市场增量与缺口市场全量均不遗漏。"""
-    incremental_markets = tuple(
-        market for market in _KLINE_MARKETS if market not in full_markets
+    """启动预热：健康市场增量与缺口市场全量均不遗漏。
+
+    CN 日K 主源为同花顺 dump（健康 → 10 日增量；缺口 → 10 年全量），
+    HK/US 仍走 TickFlow（增量 5 天 / 全量 250 天）。
+    """
+    # CN 由同花顺覆盖，从 TickFlow 的 markets 里剥出来单独走 hithink dump
+    tf_incremental = tuple(
+        market for market in _KLINE_MARKETS
+        if market not in full_markets and market != "CN"
     )
-    if incremental_markets:
+    tf_full = tuple(market for market in full_markets if market != "CN")
+
+    if "CN" in full_markets:
+        await run_registered_job("hithink_daily_k_dump_full", trigger="startup")
+    else:
+        await run_registered_job("hithink_daily_k_dump", trigger="startup")
+
+    if tf_incremental:
         await run_registered_job(
-            "daily_kline", trigger="startup", markets=incremental_markets
+            "daily_kline", trigger="startup", markets=tf_incremental
         )
-    if full_markets:
+    if tf_full:
         await run_registered_job(
-            "daily_kline_full", trigger="startup", markets=full_markets
+            "daily_kline_full", trigger="startup", markets=tf_full
         )
 
 

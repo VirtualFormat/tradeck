@@ -25,6 +25,7 @@ from app.jobs.earnings_calendar import run_earnings_calendar_job
 from app.jobs.economic_calendar import run_economic_calendar_job
 from app.jobs.fund_flow import run_fund_flow_job
 from app.jobs.fundamentals import run_fundamentals_job
+from app.jobs.hithink_dump import run_hithink_daily_k_dump_job
 from app.jobs.indices import run_indices_job
 from app.jobs.macro import run_macro_job
 from app.jobs.macro_assets import run_macro_assets_job
@@ -75,6 +76,11 @@ class JobDefinition:
 
 async def _movers_cn() -> int:
     return await fetch_and_store_cn_movers()
+
+
+async def _hithink_daily_k_dump_full() -> int:
+    """同花顺全量日K 包装（registry 无参 runner 约定；APScheduler 友好）。"""
+    return await run_hithink_daily_k_dump_job(full=True)
 
 
 JOB_DEFINITIONS = (
@@ -216,6 +222,33 @@ JOB_DEFINITIONS = (
         "每日",
         ("adjust_factors",),
         run_adjust_factors_job,
+    ),
+    JobDefinition(
+        "hithink_daily_k_dump_full",
+        "同花顺 A 股日K 全量",
+        "同花顺 Market Dump 全市场约 10 年日K（~945 万行/170MB），耗时数分钟；"
+        "首次全量初始化（启动缺口检测或手动触发），此后每日增量由 "
+        "hithink_daily_k_dump 补齐",
+        "hithink-finance",
+        "启动缺口自动 / 手动",
+        ("daily_prices",),
+        _hithink_daily_k_dump_full,
+        allow_manual=True,
+        concurrency_group="daily_kline",
+    ),
+    JobDefinition(
+        "hithink_daily_k_dump",
+        "同花顺 A 股日K 增量",
+        "同花顺 Market Dump 全市场近 10 交易日日K UPSERT（原始未复权价）；"
+        "CN 日K 每日主源（TickFlow 仅覆盖 HK/US）",
+        "hithink-finance",
+        "A/港盘后 08:30 UTC",
+        ("daily_prices",),
+        run_hithink_daily_k_dump_job,
+        concurrency_group="daily_kline",
+        health_queries=(
+            JobHealthQuery("A 股日K", "daily_prices", "market = 'CN'"),
+        ),
     ),
     JobDefinition(
         "minute_kline",

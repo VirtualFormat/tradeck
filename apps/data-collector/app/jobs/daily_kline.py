@@ -1,7 +1,11 @@
-"""盘后拉日 K 线（TickFlow universe 全市场批量，写入 daily_prices）
+"""盘后拉日 K 线（TickFlow universe 批量，写入 daily_prices）
+
+分工（2026-08 起）：CN 日K 主源为同花顺 Market Dump（hithink_dump job，
+一次请求全市场近 10 交易日，远快于 TickFlow 分片拉取）；本 job 只覆盖
+HK/US 两个 universe，CN 相关 universe 保留但 cron/预热已不再调度。
 
 策略借鉴 TickFlow SDK：universe 拿清单 → 100 只/片批量拉 → 并发闸 + 分片失败隔离。
-- 每日增量：近 5 天 UPSERT（A/港 08:30 UTC、美股 21:30 UTC，各自收盘后）
+- 每日增量：近 5 天 UPSERT（港 08:30 UTC、美股 21:30 UTC，各自收盘后）
 - 首次全量初始化：近 250 天（约一年），启动时检测到数据量不足自动触发一次
 进度经 app.jobs.progress 上报，前端轮询 /api/system/jobs 展示。
 """

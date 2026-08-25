@@ -16,6 +16,8 @@ class Settings:
     DATA_SYNC_TOKEN: str
     FINDB_KEY: str
     FINDB_BASE_URL: str
+    HITHINK_FINANCE_API_KEY: str
+    HITHINK_FINANCE_BASE_URL: str
     COLD_STORAGE_BACKEND: str
     COLD_STORAGE_LOCAL_ROOT: str
     COLD_S3_BUCKET: str
@@ -50,6 +52,13 @@ class Settings:
         self.FINDB_KEY = os.getenv("FINDB_KEY", "")
         self.FINDB_BASE_URL = os.getenv(
             "FINDB_BASE_URL", "https://api.jiucaicat.icu"
+        )
+        # 同花顺金融数据服务（hithink-finance）：A 股官方源（行情快照/日K/估值/
+        # 财务/涨停池等）。REST + X-api-key 鉴权；为空则本源不可用（优雅降级）。
+        # Key 申请：https://fuyao.aicubes.cn/admin
+        self.HITHINK_FINANCE_API_KEY = os.getenv("HITHINK_FINANCE_API_KEY", "")
+        self.HITHINK_FINANCE_BASE_URL = os.getenv(
+            "HITHINK_FINANCE_BASE_URL", "https://fuyao.aicubes.cn"
         )
         # 数据中心手动同步令牌。仅 Next.js 服务端代理持有，避免公网直接触发重任务。
         # mock 模式强制禁用，避免通过 API 启动任何真实数据任务。

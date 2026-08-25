@@ -19,7 +19,7 @@
 
 ## 消费方取数规则（铁律）
 
-1. **在线读 / 点查 / 近期窗口** → data-api REST（`/api/bars`、`/api/findb/*` 等）。
+1. **在线读 / 点查 / 近期窗口** → data-api REST（`/api/bars`、`/api/historical` 等）。
 2. **历史批量扫 / 回测** → 冷层 Parquet（DuckDB 直读，见下「冷层消费约定」）。
 3. **禁止**：
    - 直连 PostgreSQL（凭据仅 collector / data-api 持有）。
@@ -38,8 +38,6 @@
 | `POST /api/bars` | 批量日K（PG 原始价 × 复权因子） | `symbols[]`、`start_date`、`end_date`、`adjust`（空/qfq/hfq）、`limit` |
 | `GET /api/historical` | 单标的日K（原始价） | `symbol`、`start_date`、`end_date` |
 | `GET /api/quotes` | 实时报价快照 | `symbols`（逗号分隔） |
-| `GET /api/findb/bars` | findb 直连 K 线（复权 + 分钟K + A股全市场） | `code`、`freq`（1min…/daily）、`adjust`、`start`、`end`、`order`、`limit` |
-| `GET /api/findb/table` | findb 通用取数（85 表：基本面/资金流/复权因子 adj_factor 等） | `name`、`col`+`val`、`order`、`limit` |
 
 ### 基本面 / 资讯 / 宏观
 

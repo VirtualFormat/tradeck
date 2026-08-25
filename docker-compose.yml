@@ -33,11 +33,11 @@ services:
 
   # ── 数据源代理 ────────────────────────────────────
   openbb:
-    image: ghcr.io/virtualformat/tradeck-openbb:latest
-    # 断网/无 registry 兜底：注释上面的 image、启用下面的 build 本地构建
-    # build:
-    #   context: .
-    #   dockerfile: ./docker/openbb/Dockerfile
+    # GHCR 镜像（需 ghcr 登录/公开发布）：image: ghcr.io/virtualformat/tradeck-openbb:latest
+    # 断网/无 registry 兜底：本地构建（当前默认，VPS 有 GHCR 凭据可改回 image）
+    build:
+      context: .
+      dockerfile: ./docker/openbb/Dockerfile
     container_name: tradeck-openbb
     ports:
       - "6900:6900"
@@ -76,6 +76,8 @@ services:
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
       # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
       FINDB_KEY: ${FINDB_KEY:-}
+      # 同花顺金融数据服务（A 股官方源；留空则该源不可用，优雅降级）
+      HITHINK_FINANCE_API_KEY: ${HITHINK_FINANCE_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -141,6 +143,7 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      target: prod
     container_name: tradeck-web
     ports:
       - "3000:3000"
@@ -156,7 +159,6 @@ services:
       openbb:
         condition: service_healthy
     restart: unless-stopped
-    command: ["pnpm", "start", "-H", "0.0.0.0"]
 
 volumes:
   openbb-config:
