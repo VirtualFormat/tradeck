@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.mining import load_candidates, publish_candidate, run_mining
 from app.mining.runtime import save_candidate
-from app.runner import _default_strategy_dirs, run_backtest
+from app.runner import _default_strategy_dirs, run_backtest_async
 from app.screener import screen
 from app.strategy import StrategyRegistry
 
@@ -94,7 +94,7 @@ class BacktestRequest(_SymbolRequest):
 
 
 @app.post("/api/backtest")
-def api_backtest(req: BacktestRequest) -> dict:
+async def api_backtest(req: BacktestRequest) -> dict:
     """回测：数据→矩阵→复权→策略→撮合→统计。"""
     from app.engine import MatcherConfig
     reg = _registry()
@@ -102,8 +102,8 @@ def api_backtest(req: BacktestRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
     cfg = MatcherConfig(initial_capital=req.initial_capital, max_positions=req.max_positions)
     end = req.end or date.today()
-    return run_backtest(req.symbols, req.strategy_id, req.start, end,
-                        params=req.params or None, config=cfg, registry=reg)
+    return await run_backtest_async(req.symbols, req.strategy_id, req.start, end,
+                                    params=req.params or None, config=cfg, registry=reg)
 
 
 class AIGenerateRequest(BaseModel):

@@ -29,6 +29,10 @@ def compute(result: SimResult) -> dict:
     ann_vol = float(rets.std(ddof=0) * np.sqrt(252))
     sharpe = float(rets.mean() / rets.std(ddof=0) * np.sqrt(252)) if rets.std(ddof=0) > 0 else 0.0
     calmar = float(ann_ret / abs(max_dd)) if max_dd < 0 else 0.0
+    # 索提诺：均值 / 下行偏差 × √252（只惩罚负收益波动）
+    downside = rets[rets < 0]
+    downside_std = float(downside.std(ddof=0)) if downside.size > 0 else 0.0
+    sortino = float(rets.mean() / downside_std * np.sqrt(252)) if downside_std > 0 else 0.0
 
     wins = [t for t in result.trades if t.pnl > 0]
     losses = [t for t in result.trades if t.pnl <= 0]
@@ -40,6 +44,28 @@ def compute(result: SimResult) -> dict:
     turnover_value = sum(t.shares * (t.entry_price + t.exit_price) for t in result.trades)
     avg_equity = float(equity.mean())
     turnover = (turnover_value / avg_equity) if avg_equity > 0 else 0.0
+    # 平均持仓天数（交易日）
+    durations = [(t.exit_date - t.entry_date).days for t in result.trades]
+    avg_hold_days = float(np.mean(durations)) if durations else 0.0
+    # 卖出归因：按 exit_reason 分组统计（胜率/平均盈亏/笔数/总盈亏）
+    exit_breakdown: dict[str, dict] = {}
+    for t in result.trades:
+        b = exit_breakdown.setdefault(
+            t.exit_reason, {"count": 0, "wins": 0, "total_pnl": 0.0, "pnls": []}
+        )
+        b["count"] += 1
+        b["wins"] += 1 if t.pnl > 0 else 0
+        b["total_pnl"] += t.pnl
+        b["pnls"].append(t.pnl)
+    exit_stats = {
+        reason: {
+            "count": b["count"],
+            "win_rate": b["wins"] / b["count"] if b["count"] else 0.0,
+            "total_pnl": float(b["total_pnl"]),
+            "avg_pnl": float(np.mean(b["pnls"])) if b["pnls"] else 0.0,
+        }
+        for reason, b in exit_breakdown.items()
+    }
 
     return {
         "total_return": float(total_ret),
@@ -47,11 +73,14 @@ def compute(result: SimResult) -> dict:
         "max_drawdown": max_dd,
         "annual_volatility": ann_vol,
         "sharpe": sharpe,
+        "sortino": sortino,
         "calmar": calmar,
         "trades": len(result.trades),
         "win_rate": float(win_rate),
         "profit_loss_ratio": float(pl_ratio),
         "turnover": float(turnover),
+        "avg_hold_days": avg_hold_days,
+        "exit_stats": exit_stats,
         "days": n_days,
         "final_value": float(equity[-1]),
         "unadjusted": result.unadjusted,
@@ -62,8 +91,9 @@ def compute(result: SimResult) -> dict:
 def _empty(result: SimResult) -> dict:
     return {
         "total_return": 0.0, "annual_return": 0.0, "max_drawdown": 0.0,
-        "annual_volatility": 0.0, "sharpe": 0.0, "calmar": 0.0,
+        "annual_volatility": 0.0, "sharpe": 0.0, "sortino": 0.0, "calmar": 0.0,
         "trades": len(result.trades), "win_rate": 0.0, "profit_loss_ratio": 0.0,
-        "turnover": 0.0, "days": len(result.equity), "final_value": result.final_value,
+        "turnover": 0.0, "avg_hold_days": 0.0, "exit_stats": {},
+        "days": len(result.equity), "final_value": result.final_value,
         "unadjusted": result.unadjusted, "risk_free_rate": 0.0,
     }

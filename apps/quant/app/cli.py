@@ -70,14 +70,14 @@ def _cmd_list(_args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     """运行策略回测（数据→矩阵→复权→策略→撮合→统计）。"""
     import json
-    from app.runner import run_backtest
+    from app.runner import run_backtest_async
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     if not symbols:
         print("未指定有效 symbol")
         return 1
     end = _parse_date(args.end) if args.end else date.today()
     params = json.loads(args.params) if args.params else None
-    out = run_backtest(symbols, args.strategy, _parse_date(args.start), end, params)
+    out = asyncio.run(run_backtest_async(symbols, args.strategy, _parse_date(args.start), end, params))
     st = out["stats"]
     print(f"策略 {out['strategy']} | {len(out['symbols'])} 只 | {out['range'][0]} ~ {out['range'][1]}")
     print(f"交易 {st['trades']} 笔 | 总收益 {st['total_return']:+.2%} | 年化 {st['annual_return']:+.2%} | "
