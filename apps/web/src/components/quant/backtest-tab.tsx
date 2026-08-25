@@ -33,6 +33,7 @@ import { EquityChart } from "./equity-chart";
 import { MetricCard } from "./metric-card";
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
 import { TradesTable } from "./trades-table";
+import { DateField } from "./date-field";
 import {
   buildParamsPayload,
   exitReasonLabel,
@@ -150,15 +151,10 @@ export function BacktestTab({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="quant-bt-start">开始日期</Label>
-              <Input
+              <DateField
                 id="quant-bt-start"
-                // base-ui Input 对 type="date" 的受控处理与标准 input 不一致，
-                // 日期值进不了 React state 导致按钮永久 disabled——用 text + 格式校验
-                type="text"
-                placeholder="YYYY-MM-DD"
-                inputMode="numeric"
                 value={startDate}
-                onValueChange={(v) => setStartDate(v)}
+                onChange={setStartDate}
                 disabled={loading}
               />
             </div>
