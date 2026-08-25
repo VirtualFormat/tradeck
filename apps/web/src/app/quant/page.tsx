@@ -4,8 +4,10 @@
  * 量化工作台
  * 路由：/quant
  * 数据全部经 Next 代理路由（/api/quant/*），不直连 quant 容器
+ * Tab 经 ?tab= URL 参数驱动（侧边栏二级入口 deep-link 到指定 Tab）
  */
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { EmptyState } from "@/components/empty-state";
 import { AIGenerateTab } from "@/components/quant/ai-generate-tab";
@@ -20,7 +22,22 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-export default function QuantPage() {
+// 合法 Tab 值（URL 参数白名单，非法值回退 backtest）
+const TAB_VALUES = ["backtest", "screen", "ai", "mining"] as const;
+type TabValue = (typeof TAB_VALUES)[number];
+
+function normalizeTab(raw: string | null): TabValue {
+  return (TAB_VALUES as readonly string[]).includes(raw ?? "")
+    ? (raw as TabValue)
+    : "backtest";
+}
+
+function QuantPageInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const tab = normalizeTab(searchParams.get("tab"));
+
   const [strategies, setStrategies] = useState<StrategyDef[]>([]);
   const [strategiesLoading, setStrategiesLoading] = useState(true);
   // 回测 / 扫描各自维护策略选择与参数值，互不干扰
@@ -68,6 +85,14 @@ export default function QuantPage() {
     [strategies]
   );
 
+  /** 切换 Tab 时写回 URL（侧边栏 deep-link 与页内 Tab 保持同步，可分享/后退） */
+  const handleTabChange = useCallback(
+    (value: string) => {
+      router.replace(`${pathname}?tab=${value}`, { scroll: false });
+    },
+    [router, pathname]
+  );
+
   return (
     <main className="mx-auto w-full max-w-7xl space-y-4 p-4 md:p-6">
       <div className="space-y-1">
@@ -77,7 +102,7 @@ export default function QuantPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="backtest">
+      <Tabs value={tab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="backtest">策略回测</TabsTrigger>
           <TabsTrigger value="screen">选股扫描</TabsTrigger>
@@ -136,5 +161,14 @@ export default function QuantPage() {
         </TabsContent>
       </Tabs>
     </main>
+  );
+}
+
+export default function QuantPage() {
+  // useSearchParams 需 Suspense 包裹（Next.js App Router 要求）
+  return (
+    <Suspense fallback={<Skeleton className="m-6 h-96 w-full max-w-7xl" />}>
+      <QuantPageInner />
+    </Suspense>
   );
 }

@@ -25,6 +25,11 @@ import {
   CityIcon,
   DatabaseIcon,
   SparkleIcon,
+  ChartLineUpIcon,
+  PlayIcon,
+  FunnelIcon,
+  RobotIcon,
+  MagnifyingGlassIcon,
 } from "@phosphor-icons/react"
 
 const navMain: NavItem[] = [
@@ -39,6 +44,17 @@ const navMain: NavItem[] = [
     ],
   },
   { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
+  {
+    title: "量化工作台",
+    url: "/quant",
+    icon: <ChartLineUpIcon />,
+    items: [
+      { title: "策略回测", url: "/quant?tab=backtest", icon: <PlayIcon /> },
+      { title: "选股扫描", url: "/quant?tab=screen", icon: <FunnelIcon /> },
+      { title: "AI 策略生成", url: "/quant?tab=ai", icon: <RobotIcon /> },
+      { title: "因子挖掘", url: "/quant?tab=mining", icon: <MagnifyingGlassIcon /> },
+    ],
+  },
   { title: "AI 分析", url: "/ai-analysis", icon: <SparkleIcon /> },
   { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
   { title: "宏观", url: "/macro", icon: <ChartBarIcon /> },
