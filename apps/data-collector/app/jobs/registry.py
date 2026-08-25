@@ -272,7 +272,7 @@ JOB_DEFINITIONS = (
         "board_heat",
         "板块行情热度",
         "A 股概念与行业板块行情",
-        "akshare",
+        "findb",  # 同花顺概念指数（ths_index）+ 申万行业（sw_industry/sw_daily）
         "每 30 分钟",
         ("board_heat",),
         run_board_heat_job,
@@ -299,7 +299,7 @@ JOB_DEFINITIONS = (
         "fund_flow",
         "个股资金流向",
         "A 股主力资金流即时榜",
-        "akshare",
+        "findb",  # stock_fund_flow 主力净流入榜（原 akshare 东财即时榜退役）
         "每 5 分钟",
         ("fund_flow",),
         run_fund_flow_job,

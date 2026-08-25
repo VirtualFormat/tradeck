@@ -1,6 +1,7 @@
 """盘中轮询报价（A 股经 call_akshare 批量直调，港美股走 yfinance，写入 quote_snapshots）"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import date, datetime, time, timezone
@@ -166,6 +167,64 @@ async def _fetch_akshare_quotes(symbols: list[str]) -> list[dict]:
     return quotes
 
 
+async def _fetch_findb_cn_quotes(symbols: list[str]) -> list[dict]:
+    """findb 拉 A股报价：盘中用 1min 最新一根（近实时），日级用当日 daily 兜底。
+
+    双源策略（findb 优先）：findb 拉取失败的标的返回空，由调用方回落 akshare。
+    change_percent 存小数（与 akshare 口径一致：findb pct_chg 为百分数，转小数）。
+    """
+    from app.datasource import findb_source
+
+    def _findb_code(sym: str) -> str:
+        # A股规范码与 findb 一致（600036.SH/000001.SZ/920839.BJ）；无需美股 .US 映射
+        return sym
+
+    quotes: list[dict] = []
+
+    async def _one(sym: str) -> dict | None:
+        code = _findb_code(sym)
+        # ① 盘中实时：1min 最新一根（order=desc 取最新）
+        bars = await findb_source.fetch_bars(code, freq="1min", order="desc", limit=2)
+        # ② 日级兜底：当日 daily（含昨收可算涨跌）
+        daily = await findb_source.fetch_bars(code, freq="daily", order="desc", limit=2)
+        last_price = None
+        prev_close = None
+        name = None
+        volume = None
+        if bars:
+            last_price = _f(bars[0].get("close"))
+            volume = _i(bars[0].get("volume"))
+            # 1min 次一根作参考价（盘中涨跌基准近似）
+            if len(bars) > 1:
+                prev_close = _f(bars[1].get("close"))
+        if last_price is None and daily:
+            last_price = _f(daily[0].get("close"))
+            volume = _i(daily[0].get("volume"))
+        if len(daily) > 1:
+            prev_close = _f(daily[1].get("close"))  # 昨收（日级涨跌基准）
+        if last_price is None:
+            return None
+        change = None
+        change_percent = None
+        if prev_close:
+            change = round(last_price - prev_close, 4)
+            change_percent = (last_price - prev_close) / prev_close
+        return {
+            "symbol": sym,
+            "name": name,
+            "last_price": last_price,
+            "change": change,
+            "change_percent": change_percent,
+            "volume": volume,
+        }
+
+    results = await asyncio.gather(*(_one(s) for s in symbols), return_exceptions=True)
+    for r in results:
+        if isinstance(r, dict):
+            quotes.append(r)
+    return quotes
+
+
 async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]:
     """批量拉报价并写库，返回各市场实际写入条数。"""
     # 按 provider 分组
@@ -175,7 +234,19 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
     all_quotes: list[dict] = []
 
     if akshare_syms:
-        all_quotes.extend(await _fetch_akshare_quotes(akshare_syms))
+        # A股报价双源：findb 优先（稳定），akshare 兜底（东财本地常被封）。
+        # findb 未覆盖/失败的标的回落 akshare。
+        findb_quotes = await _fetch_findb_cn_quotes(akshare_syms)
+        findb_symbols = {q["symbol"] for q in findb_quotes}
+        all_quotes.extend(findb_quotes)
+
+        fallback_syms = [s for s in akshare_syms if s not in findb_symbols]
+        if fallback_syms:
+            logger.info(
+                f"realtime_quotes A股 {len(findb_symbols)} 只走 findb，"
+                f"{len(fallback_syms)} 只回落 akshare"
+            )
+            all_quotes.extend(await _fetch_akshare_quotes(fallback_syms))
 
     if yfinance_syms:
         # 出向映射：yfinance 用 Yahoo 格式（.SH→.SS、港股 5→4 位），
