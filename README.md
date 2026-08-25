@@ -12,8 +12,11 @@
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/PIPELINE.md`](docs/PIPELINE.md) | 数据管道架构：拓扑、存储（24 表）、定时任务、API 端点、dev 假数据 |
+| [`docs/`](docs/README.md) | 文档总览（索引） |
+| [`docs/PIPELINE.md`](docs/PIPELINE.md) | 数据管道架构：拓扑、存储（24 表）、定时任务、API 端点、live/mock 模式 |
 | [`docs/DATA-LAYER.md`](docs/DATA-LAYER.md) | 数据层特性：三源分工、薄门面（限流/重试/降级）、symbol 规范、调度错峰 |
+| [`docs/DATA-SERVICE.md`](docs/DATA-SERVICE.md) · [`docs/DATA-STORAGE-TIERED.md`](docs/DATA-STORAGE-TIERED.md) | 数据服务拆分与分层存储设计 |
+| [`docs/QUANT-BACKTEST.md`](docs/QUANT-BACKTEST.md) | 量化引擎与策略开发：Polars 矩阵引擎、AI 策略生成、因子挖掘 |
 | [`docs/OVERSEAS-NODE.md`](docs/OVERSEAS-NODE.md) | 海外节点部署：韩国瘦 OpenBB、token 生成与配置、分流/回滚/排查 |
 | [`CODEBUDDY.md`](CODEBUDDY.md) · [`AGENTS.md`](AGENTS.md) | 开发规范：UI 强制规则、devcontainer |
 

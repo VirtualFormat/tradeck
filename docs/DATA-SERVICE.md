@@ -1,7 +1,7 @@
 # 数据服务拆分 — 技术方案
 
 > 目标：把数据层从 web backend 拆为独立服务，为 web 看板、量化服务、量化回测提供统一数据源能力。
-> 配套文件：任务拆解与验收见 `docs/TASKS-DATA-SERVICE.md`。
+> 配套文件：任务拆解与验收见 `plans/TASKS-DATA-SERVICE.md`。
 
 ## 三条铁律
 

@@ -2,7 +2,7 @@
 
 > 阶段四「加固」的正式设计。前提：数据服务拆分（阶段一~三）已完成验收，
 > 本文档定义全市场全频率数据落地时的存储拓扑。PG 不被替换，只做加法。
-> 上游方案见 `docs/DATA-SERVICE.md`；任务卡见 `docs/TASKS-DATA-SERVICE.md` 阶段四。
+> 上游方案见 `docs/DATA-SERVICE.md`；任务卡见 `plans/TASKS-DATA-SERVICE.md` 阶段四。
 
 ## 设计前提与量级测算
 

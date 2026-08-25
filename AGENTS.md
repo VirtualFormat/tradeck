@@ -57,7 +57,8 @@ tradeck/
 │       ├── app/datasource/      ← 数据层薄门面（call_akshare 限流闸 / fetch_openbb / tickflow_source）
 │       └── init.sql             ← 24 张表 DDL（postgres 容器首次启动自动执行）
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
-├── docs/                        ← PIPELINE.md（管道架构）、DATA-LAYER.md（数据层特性）、OVERSEAS-NODE.md（海外节点）
+├── docs/                        ← 长期设计文档（PIPELINE/DATA-LAYER/DATA-SERVICE/QUANT-BACKTEST 等，索引见 docs/README.md）
+├── plans/                       ← 过程性施工文件（任务拆解与验收记录，不入 docs）
 ├── docker-compose.yml           ← prod 用 compose（仅 prod 部署 + 部署前本地验证）
 └── CODEBUDDY.md                 ← 开发规范（devcontainer 强制等）
 ```
@@ -304,8 +305,10 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 ## 相关文档
 
 - `CODEBUDDY.md` — 开发规范（devcontainer 强制、prod compose 用途）
+- `docs/README.md` — 文档索引（docs/ 只保留长期有效的架构与设计文档）
 - `docs/PIPELINE.md` — 数据管道架构（拓扑、24 表存储、定时任务、API 端点、live/mock 模式）
 - `docs/DATA-LAYER.md` — 数据层特性（三源分工、薄门面限流降级、symbol 规范、调度错峰）
 - `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）
 - `docs/DATA-SERVICE.md` — 数据服务拆分技术方案（三条铁律、分层、容量、对外接口）
-- `docs/TASKS-DATA-SERVICE.md` — 拆分任务拆解与验收记录（进行中项目，含 review 门禁）
+- `docs/QUANT-BACKTEST.md` — 量化引擎与策略开发技术方案（Polars 矩阵引擎、AI 策略生成、因子挖掘）
+- `plans/` — 过程性施工文件目录（任务拆解/验收记录，如 TASKS-DATA-SERVICE.md、TASKS-QUANT-BACKTEST.md）；过程性计划不入 docs
