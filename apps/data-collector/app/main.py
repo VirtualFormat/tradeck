@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_dq_metrics_date ON data_quality_metrics(date DESC
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动：连 DB、校验数据库身份并按模式起调度器；关闭：停调度器、释放连接池。"""
-    logger.info("tradeck data-collector starting in %s mode...", settings.DATA_MODE)
+    logger.info("tradb data-collector starting in %s mode...", settings.DATA_MODE)
 
     # 1. 连 PostgreSQL，并在 scheduler 启动前校验数据库身份（与 backend 共享同一 marker）。
     pool = await get_pool()
@@ -85,16 +85,16 @@ async def lifespan(app: FastAPI):
             await start_scheduler()
             scheduler_started = True
 
-        logger.info("tradeck data-collector ready")
+        logger.info("tradb data-collector ready")
         yield
     finally:
-        logger.info("tradeck data-collector shutting down...")
+        logger.info("tradb data-collector shutting down...")
         if scheduler_started:
             await stop_scheduler()
         await close_pool()
 
 
-app = FastAPI(title="tradeck data-collector", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="tradb data-collector", version="0.1.0", lifespan=lifespan)
 
 # CORS（collector 只被内部运维入口访问，与 backend 保持一致的宽松策略）
 app.add_middleware(
