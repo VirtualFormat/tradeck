@@ -12,6 +12,7 @@ from numbers import Real
 from typing import Awaitable, Callable, Literal
 
 from app.jobs import progress
+from app.jobs.adjust_factors import run_adjust_factors_job
 from app.jobs.akshare_news import run_akshare_news_job
 from app.jobs.analyst_consensus import run_analyst_consensus_job
 from app.jobs.announcements import run_announcements_job
@@ -206,6 +207,15 @@ JOB_DEFINITIONS = (
         "每天 06:00 UTC",
         ("macro_indicators",),
         run_macro_job,
+    ),
+    JobDefinition(
+        "adjust_factors",
+        "复权因子",
+        "findb 前/后复权因子（跟踪标的最近约 250 个交易日）",
+        "findb",
+        "每日",
+        ("adjust_factors",),
+        run_adjust_factors_job,
     ),
     JobDefinition(
         "minute_kline",

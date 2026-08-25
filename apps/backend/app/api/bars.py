@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
@@ -34,6 +34,8 @@ class BarsRequest(BaseModel):
     start_date: date
     end_date: date
     limit: int = Field(default=100000, ge=1, le=500000)  # 防 OOM 上限
+    # 复权：""=原始 / qfq 前复权 / hfq 后复权（PG 原始价 × adjust_factors 因子）
+    adjust: Literal["", "qfq", "hfq"] = ""
 
     @field_validator("end_date")
     @classmethod
@@ -51,25 +53,48 @@ async def post_bars(
 ):
     """批量获取日 K 线，按 symbol, date 升序；被 limit 截断时 truncated=true。
 
+    adjust="" 返回原始价；adjust=qfq/hfq 返回对应复权价（PG 原始 OHLC ×
+    adjust_factors 因子；volume/amount 不复权）。无因子数据的标的/日期按原始价返回。
+
     重操作接口：已配置 SERVICE_TOKENS 时强制有效 X-Service-Token（未配置则
     内网放行，见 _service_auth.quant_access）。identity 用于消费方审计。
     """
+    # 复权：qfq/hfq 时 LEFT JOIN 因子表，原始价不 JOIN（零开销）
+    factor_col = f"f.{req.adjust}" if req.adjust in ("qfq", "hfq") else None
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT symbol, date, open, high, low, close, volume, amount
-                FROM daily_prices
-                WHERE symbol = ANY($1::text[]) AND date BETWEEN $2 AND $3
-                ORDER BY symbol ASC, date ASC
-                LIMIT $4
-                """,
-                req.symbols,
-                req.start_date,
-                req.end_date,
-                req.limit,
-            )
+            if factor_col:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT p.symbol, p.date, p.open, p.high, p.low, p.close,
+                           p.volume, p.amount, {factor_col} AS factor
+                    FROM daily_prices p
+                    LEFT JOIN adjust_factors f
+                      ON f.symbol = p.symbol AND f.date = p.date
+                    WHERE p.symbol = ANY($1::text[]) AND p.date BETWEEN $2 AND $3
+                    ORDER BY p.symbol ASC, p.date ASC
+                    LIMIT $4
+                    """,
+                    req.symbols,
+                    req.start_date,
+                    req.end_date,
+                    req.limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT symbol, date, open, high, low, close, volume, amount
+                    FROM daily_prices
+                    WHERE symbol = ANY($1::text[]) AND date BETWEEN $2 AND $3
+                    ORDER BY symbol ASC, date ASC
+                    LIMIT $4
+                    """,
+                    req.symbols,
+                    req.start_date,
+                    req.end_date,
+                    req.limit,
+                )
     except Exception:  # noqa: BLE001 — 优雅降级：DB 异常返回空 bars，不 500
         logger.exception(
             "/api/bars 查询失败（consumer=%s，symbols=%d 只，%s ~ %s）",
@@ -86,14 +111,21 @@ async def post_bars(
         len(req.symbols),
         len(rows),
     )
+
+    def _adj(value, factor):
+        """原始价 × 因子（qfq/hfq）；无因子或空值返回原始值。"""
+        if value is None or factor is None:
+            return value
+        return round(float(value) * float(factor), 4)
+
     bars = [
         {
             "symbol": r["symbol"],
             "date": r["date"].isoformat() if r["date"] else None,
-            "open": float(r["open"]) if r["open"] is not None else None,
-            "high": float(r["high"]) if r["high"] is not None else None,
-            "low": float(r["low"]) if r["low"] is not None else None,
-            "close": float(r["close"]) if r["close"] is not None else None,
+            "open": _adj(float(r["open"]) if r["open"] is not None else None, r.get("factor")),
+            "high": _adj(float(r["high"]) if r["high"] is not None else None, r.get("factor")),
+            "low": _adj(float(r["low"]) if r["low"] is not None else None, r.get("factor")),
+            "close": _adj(float(r["close"]) if r["close"] is not None else None, r.get("factor")),
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "amount": float(r["amount"]) if r["amount"] is not None else None,
         }

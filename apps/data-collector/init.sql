@@ -383,6 +383,18 @@ CREATE TABLE IF NOT EXISTS data_quality_rejects (
 CREATE INDEX IF NOT EXISTS idx_dq_rejects_table_time
     ON data_quality_rejects(source_table, rejected_at DESC);
 
+-- 复权因子（findb adj_factor 同步，collector 独占写）：
+-- 支撑「存原始价 + 复权因子、参数返回 qfq/hfq」的复权体系
+CREATE TABLE IF NOT EXISTS adjust_factors (
+    symbol VARCHAR(20) NOT NULL,
+    date DATE NOT NULL,
+    qfq NUMERIC(20,8),                  -- 前复权因子（以最新日基准）
+    hfq NUMERIC(20,8),                  -- 后复权因子（以最早日基准）
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS idx_adjust_factors_symbol_date ON adjust_factors(symbol, date DESC);
+
 -- 质量度量（按表按日聚合）：总数/合格/拦截/修复/质量分，供可观测
 CREATE TABLE IF NOT EXISTS data_quality_metrics (
     table_name VARCHAR(50) NOT NULL,

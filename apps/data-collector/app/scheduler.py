@@ -70,6 +70,10 @@ async def _macro() -> None:
     await run_registered_job("macro")
 
 
+async def _adjust_factors() -> None:
+    await run_registered_job("adjust_factors")
+
+
 async def _economic_calendar() -> None:
     await run_registered_job("economic_calendar")
 
@@ -233,6 +237,17 @@ async def start_scheduler() -> None:
         CronTrigger(hour=6, minute=0, timezone="UTC"),
         id="macro",
         replace_existing=True,
+    )
+
+    # 复权因子：每天 09:30 UTC（日K job 08:30 之后跑——因子基准随最新交易日变动，
+    # 须待当日日K 落库后再同步；findb 单 code 逐标的拉取，失败单标的降级）
+    _scheduler.add_job(
+        _adjust_factors,
+        CronTrigger(hour=9, minute=30, timezone="UTC"),
+        id="adjust_factors",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
     )
 
     # 宏观数据日历：每天 06:30 UTC（FRED → 百度兜底，两源都允许失败）
