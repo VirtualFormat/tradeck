@@ -27,6 +27,8 @@ services:
       - BACKEND_API_URL=http://data-api:8080
       # collector 内部运维 API（手动同步触发等，备用）
       - COLLECTOR_API_URL=http://collector:8080
+      # 量化引擎 HTTP 服务（/api/quant/* 代理的目标；web 容器经 dev-net 主机名访问）
+      - QUANT_API_URL=http://quant:8083
       - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       # Vibe-Trading AI 研究引擎（独立 devcontainer，宿主机 8899；web 容器经 host.docker.internal 访问）
       - VIBE_TRADING_API_URL=${VIBE_TRADING_API_URL:-http://host.docker.internal:8899}
