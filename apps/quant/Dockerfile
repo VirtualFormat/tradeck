@@ -12,5 +12,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# 阶段 A1 占位入口：HTTP 服务（uvicorn app.api）在后续阶段接入，先以 CLI 自检作为 CMD。
-CMD ["python", "-m", "app.cli", "--help"]
+EXPOSE 8083
+
+# 单进程纪律：策略注册表/缓存为进程内存，多 worker 会重复加载。
+# CLI 用 docker compose run --rm quant python -m app.cli ... 覆盖本 CMD。
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8083", "--workers", "1"]
