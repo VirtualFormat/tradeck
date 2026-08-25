@@ -33,11 +33,8 @@ services:
 
   # ── 数据源代理 ────────────────────────────────────
   openbb:
-    # GHCR 镜像（需 ghcr 登录/公开发布）：image: ghcr.io/virtualformat/tradeck-openbb:latest
-    # 断网/无 registry 兜底：本地构建（当前默认，VPS 有 GHCR 凭据可改回 image）
-    build:
-      context: .
-      dockerfile: ./docker/openbb/Dockerfile
+    # GHCR 镜像（CI 构建发布；服务器只 pull，不 build）
+    image: ghcr.io/virtualformat/tradeck-openbb:latest
     container_name: tradeck-openbb
     ports:
       - "6900:6900"
@@ -61,7 +58,7 @@ services:
   # ── 数据管道（写者：定时拉取数据源写库 + 内部运维 API）──
   # 不对外映射端口，仅内网可达
   collector:
-    build: ./apps/data-collector
+    image: ghcr.io/virtualformat/tradeck-collector:latest
     container_name: tradeck-collector
     environment:
       DATA_MODE: ${DATA_MODE:-live}
@@ -87,7 +84,7 @@ services:
 
   # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
   data-api:
-    build: ./apps/backend
+    image: ghcr.io/virtualformat/tradeck-data-api:latest
     container_name: tradeck-data-api
     environment:
       DATA_MODE: ${DATA_MODE:-live}
@@ -113,7 +110,7 @@ services:
   # 默认不启动，按需显式启用 quant profile：
   #   --profile quant run --rm quant ...（一次性任务）或 --profile quant up -d quant（HTTP 服务）
   quant:
-    build: ./apps/quant
+    image: ghcr.io/virtualformat/tradeck-quant:latest
     container_name: tradeck-quant
     profiles: ["quant"]
     environment:
@@ -140,10 +137,7 @@ services:
 
   # ── 前端 ──────────────────────────────────────────
   web:
-    build:
-      context: ./apps/web
-      dockerfile: Dockerfile
-      target: prod
+    image: ghcr.io/virtualformat/tradeck-web:latest
     container_name: tradeck-web
     ports:
       # 仅绑 localhost：对外由宿主机 nginx（host 网络 80/443，CF 橙云回源）

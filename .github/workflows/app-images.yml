@@ -1,0 +1,130 @@
+name: Build App Images
+
+# 构建并发布 tradeck 应用镜像到 GHCR（org: virtualformat）：
+#   web / collector / data-api / quant（openbb 镜像由 openbb-images.yml 单独构建）。
+# 正式服只 docker compose pull && up，不在服务器拉源码构建。
+#
+# 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
+#   amd64 -> ubuntu-24.04，arm64 -> ubuntu-24.04-arm（public repo 免费）。
+# 每架构 push-by-digest，再由 merge job 用 imagetools 合成 manifest list。
+#
+# tag 策略：v* tag -> 语义版本 + latest；push develop -> latest（主部署分支）。
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["develop"]
+    paths:
+      - "apps/web/**"
+      - "apps/data-collector/**"
+      - "apps/backend/**"
+      - "apps/quant/**"
+      - ".github/workflows/app-images.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: virtualformat
+
+jobs:
+  build:
+    runs-on: ${{ matrix.arch.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: tradeck-web, dockerfile: apps/web/Dockerfile, context: apps/web, target: prod }
+          - { name: tradeck-collector, dockerfile: apps/data-collector/Dockerfile, context: apps/data-collector, target: "" }
+          - { name: tradeck-data-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
+          - { name: tradeck-quant, dockerfile: apps/quant/Dockerfile, context: apps/quant, target: "" }
+        arch:
+          - { platform: linux/amd64, runner: ubuntu-24.04, suffix: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, suffix: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          target: ${{ matrix.image.target }}
+          platforms: ${{ matrix.arch.platform }}
+          # 同 openbb-images.yml：push-by-digest 需关 attestation
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image.name }}
+        run: |
+          mkdir -p "/tmp/digests/${IMAGE}"
+          touch "/tmp/digests/${IMAGE}/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch.suffix }}-${{ matrix.image.name }}
+          path: /tmp/digests/${{ matrix.image.name }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tradeck-web, tradeck-collector, tradeck-data-api, tradeck-quant]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*-${{ matrix.image }}
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_REF}@sha256:%s " *)
+
+      - name: Inspect
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"
