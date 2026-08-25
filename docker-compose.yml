@@ -146,7 +146,9 @@ services:
       target: prod
     container_name: tradeck-web
     ports:
-      - "3000:3000"
+      # 仅绑 localhost：对外由宿主机 nginx（host 网络 80/443，CF 橙云回源）
+      # 反代到 127.0.0.1:3000，web 不直接暴露公网。
+      - "127.0.0.1:3000:3000"
     environment:
       # 从 data-api 读（data-api 从 DB 读，<50ms）
       - BACKEND_API_URL=http://data-api:8080
