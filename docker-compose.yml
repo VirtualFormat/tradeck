@@ -156,10 +156,14 @@ services:
       - BACKEND_API_URL=http://data-api:8080
       # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
       - OPENBB_API_URL=http://openbb:6900
+      # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
+      - QUANT_API_URL=http://quant:8083
       - NODE_ENV=production
     depends_on:
       data-api:
         condition: service_started
       openbb:
         condition: service_healthy
+      quant:
+        condition: service_started
     restart: unless-stopped
