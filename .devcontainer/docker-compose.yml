@@ -186,6 +186,8 @@ services:
       - quant-cache:/data/cache
       # dev 热挂载（与 collector 同模式）
       - ../apps/quant:/app
+    ports:
+      - "8083:8083"  # HTTP 服务（web 经 Next 代理消费；CLI 用 run --rm 覆盖 CMD）
     depends_on:
       data-api:
         condition: service_started
