@@ -36,7 +36,7 @@ services:
   openbb:
     # GHCR 镜像（CI 构建发布；服务器只 pull，不 build）。
     # openbb CI tag 策略：master → edge、v* tag → latest（尚未打 tag，故钉 edge）
-    image: ghcr.io/virtualformat/tradeck-openbb:edge
+    image: ghcr.nju.edu.cn/virtualformat/tradeck-openbb:edge
     container_name: tradeck-openbb
     ports:
       - "6900:6900"
@@ -63,7 +63,7 @@ services:
   # ── 数据管道（写者：定时拉取数据源写库 + 内部运维 API）──
   # 不对外映射端口，仅内网可达
   collector:
-    image: ghcr.io/virtualformat/tradeck-collector:latest
+    image: ghcr.nju.edu.cn/virtualformat/tradeck-collector:latest
     container_name: tradeck-collector
     # 全量导入（170MB Parquet 解析 + 近千万行）峰值较高，给足但防雪崩
     mem_limit: 2g
@@ -91,7 +91,7 @@ services:
 
   # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
   data-api:
-    image: ghcr.io/virtualformat/tradeck-data-api:latest
+    image: ghcr.nju.edu.cn/virtualformat/tradeck-data-api:latest
     container_name: tradeck-data-api
     mem_limit: 512m
     environment:
@@ -115,13 +115,11 @@ services:
     restart: unless-stopped
 
   # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
-  # 默认不启动，按需显式启用 quant profile：
-  #   --profile quant run --rm quant ...（一次性任务）或 --profile quant up -d quant（HTTP 服务）
+  # 默认随全栈启动（HTTP 服务，web 经 Next 代理消费 8083）。
   quant:
-    image: ghcr.io/virtualformat/tradeck-quant:latest
+    image: ghcr.nju.edu.cn/virtualformat/tradeck-quant:latest
     container_name: tradeck-quant
     mem_limit: 1g
-    profiles: ["quant"]
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
       BACKEND_API_URL: http://data-api:8080
@@ -146,7 +144,7 @@ services:
 
   # ── 前端 ──────────────────────────────────────────
   web:
-    image: ghcr.io/virtualformat/tradeck-web:latest
+    image: ghcr.nju.edu.cn/virtualformat/tradeck-web:latest
     container_name: tradeck-web
     mem_limit: 512m
     ports:
