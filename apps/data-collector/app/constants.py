@@ -12,7 +12,8 @@ TRACKED_SYMBOLS = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "NFLX",
     "AMD", "INTC", "AVGO", "QCOM", "ADBE", "CRM", "ORCL", "CSCO",
     "ACN", "IBM", "NOW", "UBER", "LYFT", "SNAP", "PINS", "SHOP",
-    "SQ", "PYPL", "COIN", "PLTR", "SNOW", "ZM",
+    # Block, Inc. 2025 更名 ticker：SQ → XYZ（SQ 已失效，yfinance 404）
+    "XYZ", "PYPL", "COIN", "PLTR", "SNOW", "ZM",
     # ── 美股金融/消费/医疗（20）──
     "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "V", "MA", "AXP",
     "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "DIS", "KO", "PEP", "PG",

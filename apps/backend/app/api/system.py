@@ -35,18 +35,38 @@ router = APIRouter()
 _CATALOG: list[dict] = [
     {
         "id": "daily_kline",
+        "source": "TickFlow",
         "label": "日 K 每日更新",
         "schedule": "A/港 08:30；美股 21:30 UTC",
         "tables": ["daily_prices", "equity_profiles"],
     },
     {
         "id": "daily_kline_full",
+        "source": "TickFlow",
         "label": "日 K 全量初始化",
         "schedule": "启动时按市场缺口自动触发",
         "tables": ["daily_prices", "equity_profiles"],
     },
     {
+        "id": "hithink_daily_k_dump",
+        "source": "hithink-finance",
+        "label": "同花顺 A 股日K 增量",
+        "schedule": "A 股盘后 08:30 UTC",
+        "tables": ["daily_prices"],
+        "health_queries": [
+            {"name": "A 股日K", "table": "daily_prices", "where": "market = 'CN'"},
+        ],
+    },
+    {
+        "id": "hithink_daily_k_dump_full",
+        "source": "hithink-finance",
+        "label": "同花顺 A 股日K 全量",
+        "schedule": "启动缺口自动 / 手动",
+        "tables": ["daily_prices"],
+    },
+    {
         "id": "realtime_quotes",
+        "source": "akshare / yfinance",
         "label": "实时报价",
         "schedule": "每 30 分钟",
         "tables": ["quote_snapshots"],
@@ -58,12 +78,14 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "indices",
+        "source": "yfinance",
         "label": "指数与商品历史",
         "schedule": "各市场收盘后分批更新",
         "tables": ["index_prices"],
     },
     {
         "id": "movers",
+        "source": "yfinance",
         "label": "美股涨跌榜",
         "schedule": "每 5 分钟",
         "tables": ["movers_cache"],
@@ -73,6 +95,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "movers_cn",
+        "source": "本地计算",
         "label": "A 股涨跌榜",
         "schedule": "每天 09:10 UTC",
         "tables": ["movers_cache"],
@@ -82,6 +105,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "news",
+        "source": "yfinance",
         "label": "海外新闻",
         "schedule": "每 30 分钟",
         "tables": ["news_articles"],
@@ -95,6 +119,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "akshare_news",
+        "source": "akshare",
         "label": "A 股新闻",
         "schedule": "每 30 分钟",
         "tables": ["news_articles"],
@@ -108,6 +133,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "news_score",
+        "source": "本地规则",
         "label": "新闻情绪打分",
         "schedule": "每 30 分钟",
         "tables": ["news_articles"],
@@ -125,12 +151,28 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "macro",
+        "source": "OECD / Federal Reserve",
         "label": "宏观指标",
         "schedule": "每天 06:00 UTC",
         "tables": ["macro_indicators"],
     },
     {
+        "id": "adjust_factors",
+        "source": "findb",
+        "label": "复权因子",
+        "schedule": "每天 09:30 UTC",
+        "tables": ["adjust_factors"],
+    },
+    {
+        "id": "minute_kline",
+        "source": "yfinance 1m",
+        "label": "分钟K 采集（冷层）",
+        "schedule": "每交易日盘后",
+        "tables": [],
+    },
+    {
         "id": "fundamentals",
+        "source": "SEC / yfinance",
         "label": "公司与财务数据",
         "schedule": "每周一 07:00 UTC",
         "tables": [
@@ -143,60 +185,70 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "analyst_consensus",
+        "source": "yfinance",
         "label": "分析师共识",
         "schedule": "每天 21:00 UTC",
         "tables": ["analyst_consensus"],
     },
     {
         "id": "earnings_calendar",
+        "source": "yfinance",
         "label": "财报日历",
         "schedule": "每天 12:00 UTC",
         "tables": ["earnings_calendar"],
     },
     {
         "id": "economic_calendar",
+        "source": "FRED / akshare",
         "label": "宏观数据日历",
         "schedule": "每天 06:30 UTC",
         "tables": ["economic_calendar"],
     },
     {
         "id": "board_heat",
+        "source": "findb",
         "label": "板块行情热度",
         "schedule": "每 30 分钟",
         "tables": ["board_heat"],
     },
     {
         "id": "board_map",
+        "source": "akshare",
         "label": "板块归属映射",
         "schedule": "每周一 08:00 UTC",
         "tables": ["symbol_board_map"],
     },
     {
         "id": "board_sentiment",
+        "source": "本地计算",
         "label": "板块舆情聚合",
         "schedule": "每 30 分钟",
         "tables": ["board_sentiment"],
     },
     {
         "id": "fund_flow",
+        "source": "findb",
         "label": "个股资金流向",
         "schedule": "每 5 分钟",
         "tables": ["fund_flow"],
     },
     {
         "id": "announcements",
+        "source": "akshare",
         "label": "A 股公告",
         "schedule": "每天 10:30 UTC",
         "tables": ["announcements"],
     },
     {
         "id": "research_reports",
+        "source": "akshare",
         "label": "A 股券商研报",
         "schedule": "每周一 09:00 UTC",
         "tables": ["research_reports"],
     },
     {
         "id": "market_breadth",
+        "source": "akshare",
         "label": "A 股市场宽度",
         "schedule": "每 30 分钟",
         "tables": ["market_breadth"],
@@ -210,6 +262,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "market_breadth_global",
+        "source": "本地计算",
         "label": "美港市场宽度",
         "schedule": "每天 09:05 / 22:05 UTC",
         "tables": ["market_breadth"],
@@ -228,18 +281,21 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "macro_assets",
+        "source": "yfinance / Federal Reserve",
         "label": "宏观资产与收益率曲线",
         "schedule": "每天 21:30 UTC",
         "tables": ["macro_asset_prices", "yield_curve_rates"],
     },
     {
         "id": "technical_indicators",
+        "source": "本地计算",
         "label": "技术指标",
         "schedule": "每天 09:00 / 22:00 UTC",
         "tables": ["technical_indicators"],
     },
     {
         "id": "cleanup",
+        "source": "本地维护",
         "label": "过期数据清理",
         "schedule": "每天 03:00 UTC",
         "tables": [
