@@ -35,6 +35,7 @@ router = APIRouter()
 _CATALOG: list[dict] = [
     {
         "id": "daily_kline",
+        "allow_manual": True,
         "source": "TickFlow",
         "label": "日 K 每日更新",
         "schedule": "A/港 08:30；美股 21:30 UTC",
@@ -42,6 +43,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "daily_kline_full",
+        "allow_manual": False,
         "source": "TickFlow",
         "label": "日 K 全量初始化",
         "schedule": "启动时按市场缺口自动触发",
@@ -49,6 +51,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "hithink_daily_k_dump",
+        "allow_manual": True,
         "source": "hithink-finance",
         "label": "同花顺 A 股日K 增量",
         "schedule": "A 股盘后 08:30 UTC",
@@ -59,6 +62,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "hithink_daily_k_dump_full",
+        "allow_manual": True,
         "source": "hithink-finance",
         "label": "同花顺 A 股日K 全量",
         "schedule": "启动缺口自动 / 手动",
@@ -66,6 +70,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "realtime_quotes",
+        "allow_manual": True,
         "source": "akshare / yfinance",
         "label": "实时报价",
         "schedule": "每 30 分钟",
@@ -78,6 +83,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "indices",
+        "allow_manual": True,
         "source": "yfinance",
         "label": "指数与商品历史",
         "schedule": "各市场收盘后分批更新",
@@ -85,6 +91,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "movers",
+        "allow_manual": True,
         "source": "yfinance",
         "label": "美股涨跌榜",
         "schedule": "每 5 分钟",
@@ -95,6 +102,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "movers_cn",
+        "allow_manual": True,
         "source": "本地计算",
         "label": "A 股涨跌榜",
         "schedule": "每天 09:10 UTC",
@@ -105,6 +113,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "news",
+        "allow_manual": True,
         "source": "yfinance",
         "label": "海外新闻",
         "schedule": "每 30 分钟",
@@ -119,6 +128,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "akshare_news",
+        "allow_manual": True,
         "source": "akshare",
         "label": "A 股新闻",
         "schedule": "每 30 分钟",
@@ -133,6 +143,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "news_score",
+        "allow_manual": True,
         "source": "本地规则",
         "label": "新闻情绪打分",
         "schedule": "每 30 分钟",
@@ -151,6 +162,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "macro",
+        "allow_manual": True,
         "source": "OECD / Federal Reserve",
         "label": "宏观指标",
         "schedule": "每天 06:00 UTC",
@@ -158,6 +170,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "adjust_factors",
+        "allow_manual": True,
         "source": "findb",
         "label": "复权因子",
         "schedule": "每天 09:30 UTC",
@@ -165,6 +178,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "minute_kline",
+        "allow_manual": True,
         "source": "yfinance 1m",
         "label": "分钟K 采集（冷层）",
         "schedule": "每交易日盘后",
@@ -172,6 +186,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "fundamentals",
+        "allow_manual": True,
         "source": "SEC / yfinance",
         "label": "公司与财务数据",
         "schedule": "每周一 07:00 UTC",
@@ -185,6 +200,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "analyst_consensus",
+        "allow_manual": True,
         "source": "yfinance",
         "label": "分析师共识",
         "schedule": "每天 21:00 UTC",
@@ -192,6 +208,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "earnings_calendar",
+        "allow_manual": True,
         "source": "yfinance",
         "label": "财报日历",
         "schedule": "每天 12:00 UTC",
@@ -199,6 +216,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "economic_calendar",
+        "allow_manual": True,
         "source": "FRED / akshare",
         "label": "宏观数据日历",
         "schedule": "每天 06:30 UTC",
@@ -206,6 +224,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "board_heat",
+        "allow_manual": True,
         "source": "findb",
         "label": "板块行情热度",
         "schedule": "每 30 分钟",
@@ -213,6 +232,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "board_map",
+        "allow_manual": True,
         "source": "akshare",
         "label": "板块归属映射",
         "schedule": "每周一 08:00 UTC",
@@ -220,6 +240,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "board_sentiment",
+        "allow_manual": True,
         "source": "本地计算",
         "label": "板块舆情聚合",
         "schedule": "每 30 分钟",
@@ -227,6 +248,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "fund_flow",
+        "allow_manual": True,
         "source": "findb",
         "label": "个股资金流向",
         "schedule": "每 5 分钟",
@@ -234,6 +256,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "announcements",
+        "allow_manual": True,
         "source": "akshare",
         "label": "A 股公告",
         "schedule": "每天 10:30 UTC",
@@ -241,6 +264,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "research_reports",
+        "allow_manual": True,
         "source": "akshare",
         "label": "A 股券商研报",
         "schedule": "每周一 09:00 UTC",
@@ -248,6 +272,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "market_breadth",
+        "allow_manual": True,
         "source": "akshare",
         "label": "A 股市场宽度",
         "schedule": "每 30 分钟",
@@ -262,6 +287,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "market_breadth_global",
+        "allow_manual": True,
         "source": "本地计算",
         "label": "美港市场宽度",
         "schedule": "每天 09:05 / 22:05 UTC",
@@ -281,6 +307,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "macro_assets",
+        "allow_manual": True,
         "source": "yfinance / Federal Reserve",
         "label": "宏观资产与收益率曲线",
         "schedule": "每天 21:30 UTC",
@@ -288,6 +315,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "technical_indicators",
+        "allow_manual": True,
         "source": "本地计算",
         "label": "技术指标",
         "schedule": "每天 09:00 / 22:00 UTC",
@@ -295,6 +323,7 @@ _CATALOG: list[dict] = [
     },
     {
         "id": "cleanup",
+        "allow_manual": False,
         "source": "本地维护",
         "label": "过期数据清理",
         "schedule": "每天 03:00 UTC",
