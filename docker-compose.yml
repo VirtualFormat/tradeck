@@ -154,6 +154,8 @@ services:
     environment:
       # 从 data-api 读（data-api 从 DB 读，<50ms）
       - BACKEND_API_URL=http://data-api:8080
+      # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
+      - COLLECTOR_API_URL=http://collector:8080
       # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
       - OPENBB_API_URL=http://openbb:6900
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
