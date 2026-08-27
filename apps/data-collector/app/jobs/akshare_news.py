@@ -18,18 +18,6 @@ def _parse_time(s: object) -> datetime | None:
     """东财时间格式：2026-07-19 12:30:00"""
     if not s:
         return None
-
-
-def _patch_akshare_arrow_string_regex() -> None:
-    r"""规避 akshare 1.18 + pandas 3 ArrowString 的 ``r"\u3000"`` 正则 bug。
-
-    ``stock_news_em`` 内部以 ``regex=True`` 替换字面量 ``\u3000``，pyarrow
-    RE2 不接受 ``\u`` 转义，导致所有 A 股新闻确定性失败。切换 pandas 的
-    string storage 到 python 后端，让同一 akshare 代码走 Python re。
-    """
-    import pandas as pd
-
-    pd.options.mode.string_storage = "python"
     try:
         # 东财发布时间是中国本地时间；先赋上海时区，再统一转 UTC 入库。
         return (
@@ -39,6 +27,29 @@ def _patch_akshare_arrow_string_regex() -> None:
         )
     except (ValueError, TypeError):
         return None
+
+
+def _patch_akshare_arrow_string_regex() -> None:
+    r"""规避 akshare 1.18 + pandas 3 ArrowString 的 ``r"\u3000"`` 正则 bug。
+
+    ``stock_news_em`` 内部以 ``regex=True`` 替换字面量 ``\u3000``，pyarrow
+    RE2 不接受 ``\u`` 转义。akshare 的 DataFrame 已显式落到 ArrowString，单改
+    pandas option 无法生效；仅在调用期间把这一条固定模式改为字面量替换。
+    """
+    import pandas as pd
+
+    accessor = pd.core.strings.accessor.StringMethods
+    if getattr(accessor.replace, "_tradeck_akshare_patch", False):
+        return
+    original = accessor.replace
+
+    def replace(self, pat, repl, n=-1, case=None, flags=0, regex=False):
+        if pat == r"\u3000" and regex is True:
+            regex = False
+        return original(self, pat, repl, n=n, case=case, flags=flags, regex=regex)
+
+    replace._tradeck_akshare_patch = True  # type: ignore[attr-defined]
+    accessor.replace = replace
 
 
 async def fetch_and_store_akshare_news(symbol: str) -> int:
