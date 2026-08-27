@@ -467,7 +467,7 @@ async def _initial_daily_kline_fetch(full_markets: tuple[str, ...]) -> None:
     """启动预热：健康市场增量与缺口市场全量均不遗漏。
 
     CN 日K 主源为同花顺 dump（健康 → 10 日增量；缺口 → 10 年全量），
-    HK/US 仍走 TickFlow（增量 5 天 / 全量 250 天）。
+    HK/US 用 TickFlow universe + OpenBB/yfinance（增量 5 天 / 全量 250 天）。
     """
     # CN 由同花顺覆盖，从 TickFlow 的 markets 里剥出来单独走 hithink dump
     tf_incremental = tuple(
