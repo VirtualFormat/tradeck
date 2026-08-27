@@ -60,12 +60,16 @@ async def run_fund_flow_job() -> int:
         data += [r for r in bottom if str(r.get("code") or "") not in seen]
 
     rows = []
+    seen_symbols: set[str] = set()
     for r in data:
         raw_code = str(r.get("code") or "").strip().upper()
         # findb 返回已规范化 thscode（688825.SH），旧 akshare 返回裸 6 位码。
         sym = raw_code if raw_code.endswith((".SH", ".SZ", ".BJ")) else _to_symbol(raw_code)
-        if not sym:
+        # findb 表可能含同一 symbol 的多个历史日期；榜单快照只保留排序后的首条，
+        # 避免同批 executemany 触发 (symbol,snapshot_date) 唯一键冲突。
+        if not sym or sym in seen_symbols:
             continue
+        seen_symbols.add(sym)
         rows.append((
             sym,
             str(r.get("name") or "") or None,
