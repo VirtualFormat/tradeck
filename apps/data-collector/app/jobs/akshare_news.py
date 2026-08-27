@@ -54,6 +54,7 @@ def _patch_akshare_arrow_string_regex() -> None:
 
 async def fetch_and_store_akshare_news(symbol: str) -> int:
     """拉单只 A 股的东财新闻，UPSERT。返回新增/更新条数。"""
+    _patch_akshare_arrow_string_regex()
     import akshare as ak
 
     code = symbol.split(".")[0]
