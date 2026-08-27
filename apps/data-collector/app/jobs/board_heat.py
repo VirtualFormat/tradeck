@@ -1,10 +1,10 @@
 """板块行情热度（findb 同花顺概念指数 + 申万行业，写入 board_heat）
 
-数据源（findb /api/table，A 股全市场稳定源，替代原 akshare 东财板块接口）：
+数据源（findb /api/table，A 股板块目录/行情，替代原 akshare 东财板块接口）：
 - 概念：ths_index（type=N 概念指数目录）+ ths_index_daily（指数日线，
   按 ts_code 聚合取最新一根的涨跌幅）。
-- 行业：sw_industry（申万行业目录，2021 版一级行业）+ sw_daily
-  （申万行业指数日行情，按 ts_code 聚合取最新一根）。
+- 行业：sw_industry（申万行业目录，2021 版）；findb 当前未开放 sw_daily，
+  因此只写目录、行情字段留空。
 
 原 akshare 东财概念/行业板块接口已退役：本地常被东财断连/封 IP。
 
@@ -107,34 +107,27 @@ async def _fetch_concept_rows() -> list[tuple]:
 
 
 async def _fetch_industry_rows() -> list[tuple]:
-    """申万行业（sw_industry 目录 + sw_daily 最新行情）。"""
+    """申万行业目录（findb sw_industry，字段 index_code/industry_name）。"""
     boards = await findb_source.fetch_table(
-        "sw_industry", cols="ts_code,name", limit=5000
+        "sw_industry", cols="index_code,industry_name", limit=5000
     )
     if not boards:
         logger.warning("findb sw_industry 行业目录为空")
         return []
 
-    codes = [str(r["ts_code"]) for r in boards if r.get("ts_code") and r.get("name")]
-    latest = await _latest_daily_by_code(
-        "sw_daily", codes=codes,
-        daily_cols="ts_code,pct_change,total_mv",
-    )
-
     rows = []
     for r in boards:
-        code = str(r.get("ts_code") or "")
-        name = str(r.get("name") or "").strip()
+        code = str(r.get("index_code") or "")
+        name = str(r.get("industry_name") or "").strip()
         if not code or not name:
             continue
-        d = latest.get(code, {})
         rows.append((
             "industry",
             name,
             code,
-            _f(d.get("pct_change")),
-            _i(d.get("total_mv")),
-            None,  # turnover_rate：sw_daily 无换手率，置空
+            None,  # findb 未开放 sw_daily，行业行情暂留空
+            None,
+            None,
             None,  # leader_stock：findb 行业日线无领涨股，置空
             None,  # leader_change：同上
         ))

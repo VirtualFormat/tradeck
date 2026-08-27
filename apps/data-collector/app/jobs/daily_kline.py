@@ -39,6 +39,14 @@ FULL_KLINE_MIN_ROWS = {
     "HK": 500_000,
     "US": 1_500_000,
 }
+# 仅靠行数会把「部分标的已有较长历史」误判为全市场完成（例如 US 已写
+# 7,000 只 × 250 天即可越过 150 万行，但 universe 实际约 12,000 只）。
+# 同时校验 distinct symbol 覆盖，允许少量退市/无 Yahoo 数据标的缺失。
+FULL_KLINE_MIN_SYMBOLS = {
+    "CN": 5_000,
+    "HK": 2_500,
+    "US": 10_000,
+}
 FULL_KLINE_MAX_AGE_DAYS = {
     "CN": 2,
     "HK": 2,
@@ -238,19 +246,23 @@ async def markets_needing_full_init() -> tuple[str, ...]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT market, count(*) AS rows, max(date) AS latest_date
+            SELECT market,
+                   count(*) AS rows,
+                   count(DISTINCT symbol) AS symbols,
+                   max(date) AS latest_date
             FROM daily_prices
             GROUP BY market
             """
         )
     stats = {
-        r["market"]: (int(r["rows"]), r["latest_date"])
+        r["market"]: (int(r["rows"]), int(r["symbols"]), r["latest_date"])
         for r in rows
     }
     return tuple(
         market
         for market, minimum in FULL_KLINE_MIN_ROWS.items()
-        if stats.get(market, (0, None))[0] < minimum
-        or stats.get(market, (0, None))[1] is None
-        or (date.today() - stats[market][1]).days > FULL_KLINE_MAX_AGE_DAYS[market]
+        if stats.get(market, (0, 0, None))[0] < minimum
+        or stats.get(market, (0, 0, None))[1] < FULL_KLINE_MIN_SYMBOLS[market]
+        or stats.get(market, (0, 0, None))[2] is None
+        or (date.today() - stats[market][2]).days > FULL_KLINE_MAX_AGE_DAYS[market]
     )

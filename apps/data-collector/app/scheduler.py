@@ -437,10 +437,10 @@ async def _initial_fetch() -> None:
     await run_registered_job("economic_calendar", trigger="startup")
     await run_registered_job("earnings_calendar", trigger="startup")
     await run_registered_job("news", trigger="startup")
-    await run_registered_job("board_heat", trigger="startup")
+    # findb 板块日线为逐板块请求，启动即跑会与报价/资金流争抢配额；按每日 cron 即可。
     await run_registered_job("akshare_news", trigger="startup")
     await run_registered_job("news_score", trigger="startup")
-    await run_registered_job("fund_flow", trigger="startup")
+    # findb 资金流按小时 cron；启动预热不额外抢占配额。
     await run_registered_job("board_map", trigger="startup")
     await run_registered_job("board_sentiment", trigger="startup")
     await run_registered_job("fundamentals", trigger="startup")
