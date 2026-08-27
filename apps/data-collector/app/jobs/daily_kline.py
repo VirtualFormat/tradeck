@@ -191,19 +191,33 @@ async def run_daily_kline_job(
         progress.job_set_total(job_id, total, run_started_at)
         for universe_id, market, syms in universe_symbols:
             base = processed
+            market_written = 0
+            symbols_with_data = 0
 
             def on_chunk(done: int, _total: int, _base: int = base) -> None:
                 progress.job_update(job_id, _base + done, run_started_at)
 
-            klines = await openbb_kline_source.get_daily_klines_batch(
-                syms, market=market, count=count, on_chunk=on_chunk
+            async def on_data(chunk_klines: dict[str, list[dict]]) -> None:
+                """分片到达即写库，避免 US 全量约 300 万行常驻内存。"""
+                nonlocal market_written, symbols_with_data
+                market_written += await _upsert_klines(chunk_klines, market)
+                symbols_with_data += len(chunk_klines)
+
+            await openbb_kline_source.get_daily_klines_batch(
+                syms,
+                market=market,
+                count=count,
+                on_chunk=on_chunk,
+                on_data=on_data,
             )
-            written += await _upsert_klines(klines, market)
+            written += market_written
             await _backfill_names(syms, market)
             processed += len(syms)
             progress.job_update(job_id, processed, run_started_at)
             logger.info(
-                f"{label}: {universe_id} done ({len(syms)} symbols, {len(klines)} with data)"
+                f"{label}: {universe_id} done "
+                f"({len(syms)} symbols, {symbols_with_data} with data, "
+                f"{market_written} rows)"
             )
         progress.job_done(job_id, f"写入 {written} 行", run_started_at)
         logger.info(f"=== {label} done: {written} rows ===")

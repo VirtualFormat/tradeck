@@ -156,7 +156,8 @@ async def start_scheduler() -> None:
 
     _scheduler = AsyncIOScheduler()
 
-    # 日 K 线（TickFlow universe 全市场批量）：A 股/港股 08:30 UTC、美股 21:30 UTC。
+    # 日 K 线：CN 同花顺 dump；HK/US 用 TickFlow universe + Oracle OpenBB/yfinance。
+    # A 股/港股 08:30 UTC、美股 21:30 UTC。
     _scheduler.add_job(
         _daily_kline_cn_hk,
         CronTrigger(hour=8, minute=30, timezone="UTC"),

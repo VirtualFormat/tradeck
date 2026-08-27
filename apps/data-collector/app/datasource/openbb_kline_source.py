@@ -13,13 +13,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, timedelta
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from app.datasource.openbb_source import fetch_openbb
 from app.markets import to_yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
+# Oracle ARM 节点实测 50 只/批 × 一年约 46 秒；并发 4 时约 1 小时可扫完
+# US 1.2 万标的。批量过大容易触发 Yahoo 单请求失败，50 是稳定上限。
 _BATCH_SIZE = 50
 _CONCURRENCY = 4
 
@@ -54,11 +56,15 @@ async def get_daily_klines_batch(
     market: str,
     count: int,
     on_chunk: Callable[[int, int], Any] | None = None,
+    on_data: Callable[[dict[str, list[dict]]], Awaitable[None]] | None = None,
 ) -> dict[str, list[dict]]:
     """批量拉 HK/US 日K，返回 ``{canonical_symbol: rows}``。
 
     ``count`` 转为自然日窗口（交易日 × 1.7 + 缓冲），请求后按日期升序保留
     最近 count 根。OpenBB 响应每行含 symbol，支持多 symbol 一次请求。
+
+    传入 ``on_data`` 时，每个 50-symbol 分片解析完立即交给调用方写库，不在
+    内存累计整个市场（US 全量约 300 万行）；此时返回值仅用于兼容，恒为空。
     """
     if not symbols:
         return {}
@@ -108,9 +114,16 @@ async def get_daily_klines_batch(
                     "amount": row.get("amount"),
                 }
             )
+        chunk_data: dict[str, list[dict]] = {}
         for symbol, rows in grouped.items():
             rows.sort(key=lambda item: item["date"])
-            out[symbol] = rows[-count:]
+            chunk_data[symbol] = rows[-count:]
+
+        if chunk_data:
+            if on_data:
+                await on_data(chunk_data)
+            else:
+                out.update(chunk_data)
 
         if not grouped:
             logger.warning(
