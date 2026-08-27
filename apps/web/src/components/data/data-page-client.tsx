@@ -272,6 +272,11 @@ function MarketCoverage({ snapshot }: { snapshot: DataSystemSnapshot }) {
     HK: "港股",
     US: "美股",
   };
+  const sources: Record<"CN" | "HK" | "US", string> = {
+    CN: "同花顺",
+    HK: "OpenBB / Yahoo",
+    US: "OpenBB / Yahoo",
+  };
   const dailyTable = snapshot.tables.find(
     (item) => item.name === "daily_prices"
   );
@@ -293,7 +298,7 @@ function MarketCoverage({ snapshot }: { snapshot: DataSystemSnapshot }) {
               <CardHeader>
                 <CardTitle>{names[market]}</CardTitle>
                 <CardAction>
-                  <Badge variant="secondary">TickFlow</Badge>
+                  <Badge variant="secondary">{sources[market]}</Badge>
                 </CardAction>
                 <CardDescription>
                   最新交易日 {formatDate(stat?.latest_date)}
@@ -740,7 +745,7 @@ export function DataPageClient() {
         <div>
           <h1 className="text-xl font-semibold">数据中心</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            查看 TickFlow 与其他数据源的拉取状态、库表规模和调度计划。
+            查看各数据源的拉取状态、库表规模和调度计划。
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -827,7 +832,7 @@ export function DataPageClient() {
 
       <section className="space-y-3">
         <div>
-          <h2 className="text-sm font-medium">TickFlow 日 K 覆盖</h2>
+          <h2 className="text-sm font-medium">日 K 市场覆盖</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             全市场批量拉取，按 CN / HK / US 分市场展示当前入库规模与最新交易日。
           </p>

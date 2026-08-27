@@ -1,8 +1,8 @@
-"""盘后拉日 K 线（TickFlow universe 批量，写入 daily_prices）
+"""盘后拉日 K 线（TickFlow universe + 分市场行情源，写入 daily_prices）
 
-分工（2026-08 起）：CN 日K 主源为同花顺 Market Dump（hithink_dump job，
-一次请求全市场近 10 交易日，远快于 TickFlow 分片拉取）；本 job 只覆盖
-HK/US 两个 universe，CN 相关 universe 保留但 cron/预热已不再调度。
+分工（2026-08 起）：CN 日K 主源为同花顺 Market Dump（hithink_dump job）；
+HK/US 用 TickFlow universe 获取标的目录、OpenBB/yfinance（Oracle ARM 海外节点）
+批量拉行情。TickFlow Key 无 batch K线权限，不能再用于 HK/US 行情本身。
 
 策略借鉴 TickFlow SDK：universe 拿清单 → 100 只/片批量拉 → 并发闸 + 分片失败隔离。
 - 每日增量：近 5 天 UPSERT（港 08:30 UTC、美股 21:30 UTC，各自收盘后）
@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from app.datasource import tickflow_source
+from app.datasource import openbb_kline_source, tickflow_source
 from app.db import get_pool
 from app.jobs import progress
 from app.quality import quality_gate
@@ -195,8 +195,8 @@ async def run_daily_kline_job(
             def on_chunk(done: int, _total: int, _base: int = base) -> None:
                 progress.job_update(job_id, _base + done, run_started_at)
 
-            klines = await tickflow_source.get_daily_klines_batch(
-                syms, count=count, on_chunk=on_chunk
+            klines = await openbb_kline_source.get_daily_klines_batch(
+                syms, market=market, count=count, on_chunk=on_chunk
             )
             written += await _upsert_klines(klines, market)
             await _backfill_names(syms, market)

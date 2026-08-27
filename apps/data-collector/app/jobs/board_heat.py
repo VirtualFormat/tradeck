@@ -78,9 +78,11 @@ async def _fetch_concept_rows() -> list[tuple]:
         return []
 
     codes = [str(r["ts_code"]) for r in boards if r.get("ts_code") and r.get("name")]
+    # ths_index_daily 实际列无 total_mv（此前请求未知列导致所有日线为空）；
+    # 只请求真实存在字段，market_cap 置空。
     latest = await _latest_daily_by_code(
         "ths_index_daily", codes=codes,
-        daily_cols="ts_code,pct_change,total_mv,turnover_rate",
+        daily_cols="ts_code,pct_change,turnover_rate",
     )
 
     rows = []

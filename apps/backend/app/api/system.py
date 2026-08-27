@@ -36,7 +36,7 @@ _CATALOG: list[dict] = [
     {
         "id": "daily_kline",
         "allow_manual": True,
-        "source": "TickFlow",
+        "source": "hithink / OpenBB-yfinance",
         "label": "日 K 每日更新",
         "schedule": "A/港 08:30；美股 21:30 UTC",
         "tables": ["daily_prices", "equity_profiles"],
@@ -44,7 +44,7 @@ _CATALOG: list[dict] = [
     {
         "id": "daily_kline_full",
         "allow_manual": False,
-        "source": "TickFlow",
+        "source": "OpenBB-yfinance",
         "label": "日 K 全量初始化",
         "schedule": "启动时按市场缺口自动触发",
         "tables": ["daily_prices", "equity_profiles"],
@@ -227,7 +227,7 @@ _CATALOG: list[dict] = [
         "allow_manual": True,
         "source": "findb",
         "label": "板块行情热度",
-        "schedule": "每 30 分钟",
+        "schedule": "每天 09:05 UTC",
         "tables": ["board_heat"],
     },
     {
@@ -251,7 +251,7 @@ _CATALOG: list[dict] = [
         "allow_manual": True,
         "source": "findb",
         "label": "个股资金流向",
-        "schedule": "每 5 分钟",
+        "schedule": "每小时 25 分",
         "tables": ["fund_flow"],
     },
     {

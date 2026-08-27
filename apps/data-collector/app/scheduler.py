@@ -287,7 +287,9 @@ async def start_scheduler() -> None:
     # 板块行情热度：每 30 分钟（错峰 5,35）
     _scheduler.add_job(
         _board_heat,
-        CronTrigger(minute="5,35", timezone="UTC"),
+        # findb 逐板块拉日线，原每 30 分钟会产生约 400 请求并持续 429；
+        # 板块日线盘中无需高频，降为每日 A 股盘后一次。
+        CronTrigger(hour=9, minute=5, timezone="UTC"),
         id="board_heat",
         replace_existing=True,
     )
@@ -327,7 +329,8 @@ async def start_scheduler() -> None:
     # 个股资金流向榜：每 5 分钟（交易时段有效，空结果不写库）
     _scheduler.add_job(
         _fund_flow,
-        CronTrigger(minute="*/5", timezone="UTC"),
+        # findb 免费/个人配额无法承受每 5 分钟；降为每小时，避免与板块任务互相挤占。
+        CronTrigger(minute=25, timezone="UTC"),
         id="fund_flow",
         replace_existing=True,
     )

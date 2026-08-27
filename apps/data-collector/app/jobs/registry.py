@@ -87,8 +87,8 @@ JOB_DEFINITIONS = (
     JobDefinition(
         "daily_kline",
         "日 K 每日更新",
-        "TickFlow 全市场近 5 个交易日增量 UPSERT",
-        "TickFlow",
+        "CN 同花顺增量；HK/US 用 TickFlow universe + OpenBB/yfinance 近 5 日 UPSERT",
+        "hithink / OpenBB-yfinance",
         "A/港 08:30；美股 21:30 UTC",
         ("daily_prices", "equity_profiles"),
         run_daily_kline_job,
@@ -98,8 +98,8 @@ JOB_DEFINITIONS = (
     JobDefinition(
         "daily_kline_full",
         "日 K 全量初始化",
-        "TickFlow 全市场近 250 个交易日全量补齐，耗时较长",
-        "TickFlow",
+        "HK/US 用 TickFlow universe + OpenBB/yfinance 补齐近 250 个交易日",
+        "OpenBB-yfinance",
         "启动时按市场缺口自动触发",
         ("daily_prices", "equity_profiles"),
         run_daily_kline_job,
@@ -306,7 +306,7 @@ JOB_DEFINITIONS = (
         "板块行情热度",
         "A 股概念与行业板块行情",
         "findb",  # 同花顺概念指数（ths_index）+ 申万行业（sw_industry/sw_daily）
-        "每 30 分钟",
+        "每天 09:05 UTC",
         ("board_heat",),
         run_board_heat_job,
     ),
@@ -333,7 +333,7 @@ JOB_DEFINITIONS = (
         "个股资金流向",
         "A 股主力资金流即时榜",
         "findb",  # stock_fund_flow 主力净流入榜（原 akshare 东财即时榜退役）
-        "每 5 分钟",
+        "每小时 25 分",
         ("fund_flow",),
         run_fund_flow_job,
     ),
