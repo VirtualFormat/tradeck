@@ -61,7 +61,9 @@ async def run_fund_flow_job() -> int:
 
     rows = []
     for r in data:
-        sym = _to_symbol(str(r.get("code") or ""))
+        raw_code = str(r.get("code") or "").strip().upper()
+        # findb 返回已规范化 thscode（688825.SH），旧 akshare 返回裸 6 位码。
+        sym = raw_code if raw_code.endswith((".SH", ".SZ", ".BJ")) else _to_symbol(raw_code)
         if not sym:
             continue
         rows.append((
