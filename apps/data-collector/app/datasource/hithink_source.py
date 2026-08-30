@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from typing import Any
 
 import httpx
@@ -177,6 +178,103 @@ async def get_limit_up_pool(
     if date_ms is not None:
         qs += f"&date_ms={date_ms}"
     return await hithink_get(qs)
+
+
+async def get_adjustment_events(
+    thscode: str,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict[str, Any]] | None:
+    """获取单只 A 股公司行为事件；失败返回 None，成功空结果返回 []。"""
+    qs = (
+        "/api/a-share/corporate-actions/adjustment-factors"
+        f"?thscode={thscode}"
+    )
+    if date_from:
+        qs += f"&from={date_from.isoformat()}"
+    if date_to:
+        qs += f"&to={date_to.isoformat()}"
+    data = await hithink_get(qs)
+    if data is None:
+        return None
+    return data.get("item") or []
+
+
+async def scan_adjustment_events(
+    thscodes: list[str],
+    *,
+    date_from: date,
+    date_to: date,
+    concurrency: int = 8,
+    on_progress: Any | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """并发扫描多只 A 股最近事件，返回 ``({symbol: events}, failed)``。
+
+    REST 暂无全市场增量端点，因此每日只扫短时间窗。使用一个共享 HTTP 客户端，
+    避免为约 5,500 只标的反复建 TLS 连接；4001/5xxx 有界退避。
+    """
+    if not _available() or not thscodes:
+        return {}, len(thscodes)
+
+    base = settings.HITHINK_FINANCE_BASE_URL.rstrip("/")
+    headers = {"X-api-key": settings.HITHINK_FINANCE_API_KEY}
+    sem = asyncio.Semaphore(concurrency)
+    events_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    failed = 0
+    done = 0
+
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        headers=headers,
+        limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency),
+    ) as client:
+
+        async def fetch_one(symbol: str) -> None:
+            nonlocal failed, done
+            params = {
+                "thscode": symbol,
+                "from": date_from.isoformat(),
+                "to": date_to.isoformat(),
+            }
+            delay = _BASE_DELAY
+            async with sem:
+                for attempt in range(_RETRIES + 1):
+                    try:
+                        res = await client.get(
+                            f"{base}/api/a-share/corporate-actions/adjustment-factors",
+                            params=params,
+                        )
+                        body = res.json() if res.status_code == 200 else {}
+                        code = body.get("code")
+                        if res.status_code == 200 and code == 0:
+                            items = (body.get("data") or {}).get("item") or []
+                            if items:
+                                events_by_symbol[symbol] = items
+                            break
+                        retryable = (
+                            res.status_code in (429, 500, 502, 503, 504)
+                            or code in _RETRY_CODES
+                        )
+                        if retryable and attempt < _RETRIES:
+                            await asyncio.sleep(delay)
+                            delay *= 2
+                            continue
+                        failed += 1
+                        break
+                    except (httpx.HTTPError, ValueError):
+                        if attempt < _RETRIES:
+                            await asyncio.sleep(delay)
+                            delay *= 2
+                            continue
+                        failed += 1
+                done += 1
+                if on_progress:
+                    on_progress(done, len(thscodes))
+
+        await asyncio.gather(*(fetch_one(symbol) for symbol in thscodes))
+
+    return events_by_symbol, failed
 
 
 # ---------------------------------------------------------------------------

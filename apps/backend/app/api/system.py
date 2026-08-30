@@ -1,7 +1,7 @@
 """系统数据 API（data-api 侧）：仅保留库表扫描概览 /api/system/data。
 
 拆分后职责划分：
-- /api/system/data 留在 data-api——纯库表统计（24 张表行数/体积/新鲜度、
+- /api/system/data 留在 data-api——纯库表统计（业务表行数/体积/新鲜度、
   daily_prices 市场覆盖），不依赖任何进程内调度状态。
 - /api/system/jobs 与手动触发 /run 已归位 collector（唯一写者持有
   scheduler / registry / progress，见 apps/data-collector/app/api/system.py）。
@@ -171,10 +171,18 @@ _CATALOG: list[dict] = [
     {
         "id": "adjust_factors",
         "allow_manual": True,
-        "source": "findb",
-        "label": "复权因子",
+        "source": "hithink-finance / 本地计算",
+        "label": "复权因子每日增量",
         "schedule": "每天 09:30 UTC",
-        "tables": ["adjust_factors"],
+        "tables": ["corporate_action_events", "adjust_factors"],
+    },
+    {
+        "id": "adjust_factors_full",
+        "allow_manual": True,
+        "source": "hithink-finance / 本地计算",
+        "label": "复权因子全量初始化",
+        "schedule": "仅手动触发一次",
+        "tables": ["corporate_action_events", "adjust_factors"],
     },
     {
         "id": "minute_kline",
@@ -417,6 +425,8 @@ _TABLE_RULES: dict[str, TableFreshnessRule] = {
     "earnings_calendar": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "日历抓取时间"),
     "economic_calendar": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "日历抓取时间"),
     "technical_indicators": TableFreshnessRule("computed_at", "datetime", timedelta(days=4), "指标计算时间"),
+    "corporate_action_events": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "公司行为同步时间"),
+    "adjust_factors": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "因子计算时间"),
     "announcements": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "公告抓取时间"),
     "research_reports": TableFreshnessRule("fetched_at", "datetime", timedelta(days=10), "研报抓取时间"),
     "market_breadth": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "宽度计算时间"),
@@ -715,7 +725,7 @@ async def _get_database_stats(
 
 @router.get("/api/system/data")
 async def get_system_data():
-    """数据页聚合快照：任务目录、运行状态、下次调度与 24 张表统计。
+    """数据页聚合快照：任务目录、运行状态、下次调度与业务表统计。
 
     库表扫描在 data-api 本地完成；last_run / next_run_at 经 collector
     HTTP 聚合，collector 不可达时优雅降级为 null（不报错）。

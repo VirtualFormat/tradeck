@@ -12,7 +12,10 @@ from numbers import Real
 from typing import Awaitable, Callable, Literal
 
 from app.jobs import progress
-from app.jobs.adjust_factors import run_adjust_factors_job
+from app.jobs.adjust_factors import (
+    run_adjust_factors_full_job,
+    run_adjust_factors_job,
+)
 from app.jobs.akshare_news import run_akshare_news_job
 from app.jobs.analyst_consensus import run_analyst_consensus_job
 from app.jobs.announcements import run_announcements_job
@@ -216,12 +219,23 @@ JOB_DEFINITIONS = (
     ),
     JobDefinition(
         "adjust_factors",
-        "复权因子",
-        "findb 前/后复权因子（跟踪标的最近约 250 个交易日）",
-        "findb",
-        "每日",
-        ("adjust_factors",),
+        "复权因子每日增量",
+        "同花顺公司行为短窗口 REST 增量；仅局部重算受影响标的并补新交易日因子",
+        "hithink-finance / 本地计算",
+        "每天 09:30 UTC",
+        ("corporate_action_events", "adjust_factors"),
         run_adjust_factors_job,
+        concurrency_group="adjust_factors",
+    ),
+    JobDefinition(
+        "adjust_factors_full",
+        "复权因子全量初始化",
+        "一次性导入同花顺全市场公司行为 dump，并生成全 A 股日频 qfq/hfq 因子",
+        "hithink-finance / 本地计算",
+        "仅手动触发一次",
+        ("corporate_action_events", "adjust_factors"),
+        run_adjust_factors_full_job,
+        concurrency_group="adjust_factors",
     ),
     JobDefinition(
         "hithink_daily_k_dump_full",

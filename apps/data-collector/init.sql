@@ -383,7 +383,23 @@ CREATE TABLE IF NOT EXISTS data_quality_rejects (
 CREATE INDEX IF NOT EXISTS idx_dq_rejects_table_time
     ON data_quality_rejects(source_table, rejected_at DESC);
 
--- 复权因子（findb adj_factor 同步，collector 独占写）：
+-- A 股公司行为原始事件（同花顺 adjustment-factors；首次 dump + 每日 REST 增量）
+CREATE TABLE IF NOT EXISTS corporate_action_events (
+    symbol VARCHAR(20) NOT NULL,
+    ex_date DATE NOT NULL,
+    dividend_per_share NUMERIC(20,8) NOT NULL DEFAULT 0,
+    per_share_bonus NUMERIC(20,8) NOT NULL DEFAULT 0,
+    allotment_ratio NUMERIC(20,8) NOT NULL DEFAULT 0,
+    allotment_price NUMERIC(20,8) NOT NULL DEFAULT 0,
+    currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    source VARCHAR(20) NOT NULL DEFAULT 'hithink',
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, ex_date)
+);
+CREATE INDEX IF NOT EXISTS idx_corporate_events_date
+    ON corporate_action_events(ex_date DESC);
+
+-- 日频复权因子（A 股由同花顺公司行为 + 原始日K本地计算；collector 独占写）：
 -- 支撑「存原始价 + 复权因子、参数返回 qfq/hfq」的复权体系
 CREATE TABLE IF NOT EXISTS adjust_factors (
     symbol VARCHAR(20) NOT NULL,

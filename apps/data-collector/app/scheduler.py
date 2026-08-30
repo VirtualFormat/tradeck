@@ -242,8 +242,8 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 复权因子：每天 09:30 UTC（日K job 08:30 之后跑——因子基准随最新交易日变动，
-    # 须待当日日K 落库后再同步；findb 单 code 逐标的拉取，失败单标的降级）
+    # 复权因子每日增量：09:30 UTC（日K 08:30 之后）。只通过同花顺单标的
+    # REST 扫短窗口，局部重算受影响标的；全市场事件 dump 仅手动初始化一次。
     _scheduler.add_job(
         _adjust_factors,
         CronTrigger(hour=9, minute=30, timezone="UTC"),

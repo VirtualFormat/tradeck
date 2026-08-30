@@ -54,7 +54,8 @@ async def post_bars(
     """批量获取日 K 线，按 symbol, date 升序；被 limit 截断时 truncated=true。
 
     adjust="" 返回原始价；adjust=qfq/hfq 返回对应复权价（PG 原始 OHLC ×
-    adjust_factors 因子；volume/amount 不复权）。无因子数据的标的/日期按原始价返回。
+    adjust_factors 因子；volume/amount 不复权）。缺因子的行仍返回原始价，但响应
+    ``adjustment`` 会明确标记覆盖率和缺失标的，不再静默冒充完整复权结果。
 
     重操作接口：已配置 SERVICE_TOKENS 时强制有效 X-Service-Token（未配置则
     内网放行，见 _service_auth.quant_access）。identity 用于消费方审计。
@@ -131,4 +132,33 @@ async def post_bars(
         }
         for r in rows
     ]
-    return {"bars": bars, "count": len(bars), "truncated": len(rows) >= req.limit}
+    adjustment = {
+        "requested": req.adjust or "none",
+        "complete": True,
+        "factor_rows": 0,
+        "missing_rows": 0,
+        "missing_symbols": [],
+    }
+    if factor_col:
+        factor_rows = sum(1 for row in rows if row.get("factor") is not None)
+        missing_symbols = sorted(
+            {
+                row["symbol"]
+                for row in rows
+                if row.get("factor") is None
+            }
+        )
+        adjustment.update(
+            {
+                "complete": factor_rows == len(rows),
+                "factor_rows": factor_rows,
+                "missing_rows": len(rows) - factor_rows,
+                "missing_symbols": missing_symbols,
+            }
+        )
+    return {
+        "bars": bars,
+        "count": len(bars),
+        "truncated": len(rows) >= req.limit,
+        "adjustment": adjustment,
+    }

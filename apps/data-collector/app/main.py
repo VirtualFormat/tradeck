@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS data_quality_metrics (
 CREATE INDEX IF NOT EXISTS idx_dq_metrics_date ON data_quality_metrics(date DESC);
 """
 
+# 同花顺全市场公司行为事件 + 本地日频复权因子。init.sql 仅空卷执行，
+# prod 存量卷需要启动迁移；IF NOT EXISTS 幂等。
+_CORPORATE_ACTION_MIGRATION = """
+CREATE TABLE IF NOT EXISTS corporate_action_events (
+    symbol VARCHAR(20) NOT NULL,
+    ex_date DATE NOT NULL,
+    dividend_per_share NUMERIC(20,8) NOT NULL DEFAULT 0,
+    per_share_bonus NUMERIC(20,8) NOT NULL DEFAULT 0,
+    allotment_ratio NUMERIC(20,8) NOT NULL DEFAULT 0,
+    allotment_price NUMERIC(20,8) NOT NULL DEFAULT 0,
+    currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    source VARCHAR(20) NOT NULL DEFAULT 'hithink',
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (symbol, ex_date)
+);
+CREATE INDEX IF NOT EXISTS idx_corporate_events_date
+    ON corporate_action_events(ex_date DESC);
+"""
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -74,6 +93,7 @@ async def lifespan(app: FastAPI):
             # init.sql 只在空卷执行；存量卷必须在任何 job 前补齐字段。
             await conn.execute(_QUOTE_DATA_AS_OF_MIGRATION)
             await conn.execute(_DATA_QUALITY_MIGRATION)
+            await conn.execute(_CORPORATE_ACTION_MIGRATION)
             logger.info(f"connected to PostgreSQL: {version[:50]}...")
             logger.info("database DATA_MODE marker verified: %s", database_mode)
 
