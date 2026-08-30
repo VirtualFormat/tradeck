@@ -252,6 +252,10 @@ async def scan_adjustment_events(
                             if items:
                                 events_by_symbol[symbol] = items
                             break
+                        # 公司行为端点用 3002 表示该标的在请求窗口内没有事件，
+                        # 属正常空结果，不应计入失败或把每日任务标成 partial。
+                        if res.status_code == 200 and code == 3002:
+                            break
                         retryable = (
                             res.status_code in (429, 500, 502, 503, 504)
                             or code in _RETRY_CODES
