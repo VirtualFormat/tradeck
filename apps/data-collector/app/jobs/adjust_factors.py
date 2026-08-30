@@ -344,8 +344,11 @@ async def run_adjust_factors_job() -> dict[str, int]:
         appended,
         failed,
     )
-    return {
+    result = {
         "events": len(records),
         "factors": rebuilt + appended,
-        "failed_symbols": -failed if failed else 0,
     }
+    # 任务分类器把值为 0 的数据分项视为 partial；仅真实失败时附带负值。
+    if failed:
+        result["failed_symbols"] = -failed
+    return result
