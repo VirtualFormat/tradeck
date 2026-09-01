@@ -71,7 +71,7 @@ _CATALOG: list[dict] = [
     {
         "id": "realtime_quotes",
         "allow_manual": True,
-        "source": "akshare / yfinance",
+        "source": "hithink / akshare / yfinance",
         "label": "实时报价",
         "schedule": "每 30 分钟",
         "tables": ["quote_snapshots"],

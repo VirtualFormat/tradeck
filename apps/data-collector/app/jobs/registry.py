@@ -113,7 +113,7 @@ JOB_DEFINITIONS = (
         "realtime_quotes",
         "实时报价",
         "跟踪标的最新报价快照",
-        "akshare / yfinance",
+        "hithink / akshare / yfinance",
         "每 30 分钟",
         ("quote_snapshots",),
         run_realtime_quotes_job,

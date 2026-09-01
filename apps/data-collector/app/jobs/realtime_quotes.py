@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.datasource import call_akshare, fetch_openbb
+from app.datasource import call_akshare, fetch_openbb, hithink_source
 from app.db import get_pool
 from app.constants import TRACKED_SYMBOLS
 from app.markets import pick_market, pick_provider, to_yahoo_symbol
@@ -166,6 +166,30 @@ async def _fetch_akshare_quotes(symbols: list[str]) -> list[dict]:
     return quotes
 
 
+async def _fetch_hithink_quotes(symbols: list[str]) -> list[dict]:
+    """同花顺批量 A 股行情快照（30 tracked 一次请求）。
+
+    返回无名称字段（契约明确需另查）；change_percent 存小数。
+    失败返回 []，调用方回落 akshare 东财全市场 spot。
+    """
+    rows = await hithink_source.get_quotes_snapshot(symbols)
+    quotes: list[dict] = []
+    for row in rows:
+        symbol = str(row.get("thscode") or "").strip().upper()
+        if symbol not in symbols:
+            continue
+        pct = _f(row.get("price_change_ratio_pct"))
+        quotes.append({
+            "symbol": symbol,
+            "name": None,
+            "last_price": _f(row.get("last_price")),
+            "change": _f(row.get("price_change")),
+            "change_percent": pct / 100 if pct is not None else None,
+            "volume": _i(row.get("volume")),
+        })
+    return quotes
+
+
 async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]:
     """批量拉报价并写库，返回各市场实际写入条数。"""
     # 按 provider 分组
@@ -175,9 +199,19 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
     all_quotes: list[dict] = []
 
     if akshare_syms:
-        # A股报价只用 akshare 全市场一次拉取（1 请求）。findb 逐标的 1min+daily
-        # 兜底会产生 60 请求/半小时，挤占板块/资金流共享配额并持续 429；取消该兜底。
-        all_quotes.extend(await _fetch_akshare_quotes(akshare_syms))
+        # A股报价主源切同花顺官方快照（东财 spot 在 prod 被持续断连）。
+        # 同花顺失败/部分缺失时，仅对缺失标的回落 akshare 全市场 spot。
+        hithink_quotes = await _fetch_hithink_quotes(akshare_syms)
+        hithink_symbols = {q["symbol"] for q in hithink_quotes}
+        all_quotes.extend(hithink_quotes)
+        fallback_syms = [s for s in akshare_syms if s not in hithink_symbols]
+        if fallback_syms:
+            logger.info(
+                "realtime_quotes A股 %d 只走同花顺，%d 只回落 akshare",
+                len(hithink_symbols),
+                len(fallback_syms),
+            )
+            all_quotes.extend(await _fetch_akshare_quotes(fallback_syms))
 
     if yfinance_syms:
         # 出向映射：yfinance 用 Yahoo 格式（.SH→.SS、港股 5→4 位），
