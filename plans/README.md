@@ -12,3 +12,4 @@ review 门禁 → 修复 → 验收 → 回填记录。
 |---|---|---|
 | [TASKS-DATA-SERVICE.md](TASKS-DATA-SERVICE.md) | [../docs/DATA-SERVICE.md](../docs/DATA-SERVICE.md) | 阶段一~三.五已验收，阶段四进行中 |
 | [TASKS-QUANT-BACKTEST.md](TASKS-QUANT-BACKTEST.md) | [../docs/QUANT-BACKTEST.md](../docs/QUANT-BACKTEST.md) | 未开始 |
+| [TASKS-AMAZINGDATA-CN.md](TASKS-AMAZINGDATA-CN.md) | [../docs/DATA-LAYER.md](../docs/DATA-LAYER.md) | 未开始（阶段 0 x86 冒烟验证待做） |
