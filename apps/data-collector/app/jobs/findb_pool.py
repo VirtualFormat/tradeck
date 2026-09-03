@@ -418,7 +418,9 @@ async def _import_module(
         )
         os.replace(converted, version)
         _publish(module_root, version)
-        _materialize_market_module(root, module, version, overwrite=True)
+        # 供应商 full 快照是初始化基线；统一 bars 可能已包含更新的每日增量，
+        # 因此这里只填缺失文件，不用较旧快照覆盖自有池。
+        _materialize_market_module(root, module, version, overwrite=False)
         await _record_state(
             module, manifest, digest, version, file_count, row_count
         )
