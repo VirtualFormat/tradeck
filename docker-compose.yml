@@ -80,8 +80,26 @@ services:
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
       # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
       FINDB_KEY: ${FINDB_KEY:-}
+      # 银河星耀数智 AmazingData（真实值只放同目录 .env）。wheel 需在
+      # collector 镜像构建期注入；未安装时 provider 自动禁用并降级。
+      AMAZINGDATA_ENABLED: ${AMAZINGDATA_ENABLED:-0}
+      AD_USERNAME: ${AD_USERNAME:-}
+      AD_PASSWORD: ${AD_PASSWORD:-}
+      AD_HOST: ${AD_HOST:-}
+      AD_PORT: ${AD_PORT:-}
       # 同花顺金融数据服务（A 股官方源；留空则该源不可用，优雅降级）
       HITHINK_FINANCE_API_KEY: ${HITHINK_FINANCE_API_KEY:-}
+      # findb COS full 分发包（仅手动任务使用）。prod 通过 CVM 角色临时凭证。
+      FINDB_ARCHIVE_BUCKET: ${FINDB_ARCHIVE_BUCKET:-thudata-1472715722}
+      FINDB_ARCHIVE_REGION: ${FINDB_ARCHIVE_REGION:-ap-shanghai}
+      FINDB_ARCHIVE_PREFIX: ${FINDB_ARCHIVE_PREFIX:-dist/full}
+      DATA_POOL_ROOT: /data/market-pool
+      FINDB_COS_ROLE: ${FINDB_COS_ROLE:-tradeck-app}
+      # 分钟K与其他冷层统一写入自有 data pool，不落容器临时文件系统。
+      COLD_STORAGE_BACKEND: local
+      COLD_STORAGE_LOCAL_ROOT: /data/market-pool
+    volumes:
+      - ./data-pool:/data/market-pool
     depends_on:
       postgres:
         condition: service_healthy

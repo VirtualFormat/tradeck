@@ -106,6 +106,8 @@ async def fetch_bars(
     end: str | None = None,
     order: str = "asc",
     limit: int | None = None,
+    timeout: float = 60.0,
+    retries: int = _RETRIES,
 ) -> list[dict]:
     """取 K 线（/api/bars）。失败/无数据返回空 list。
 
@@ -122,7 +124,7 @@ async def fetch_bars(
         qs += f"&end={end}"
     if limit:
         qs += f"&limit={limit}"
-    data = await findb_get(qs)
+    data = await findb_get(qs, timeout=timeout, retries=retries)
     if not isinstance(data, dict):
         return []
     return data.get("data") or []

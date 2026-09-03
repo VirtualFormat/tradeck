@@ -1,6 +1,8 @@
 """同花顺 Market Dumps 导入 job：全市场 A 股日K → PG（CN 日K 主源）。
 
-链路：签名 URL → 流式下载落盘缓存（可复用）→ pyarrow 分批解析 → 分批 UPSERT。
+链路：签名 URL → 流式下载落盘缓存 → pyarrow 分批解析 → PG UPSERT +
+自有年度 Parquet。增量 dump 不可用时，仅用 findb 补 tracked A 股，避免
+单-code API 全市场扫描触发 429。
 
 全量 daily-k 约 945 万行/170MB。两个关键设计（小内存 prod 机 7.5GB 必备）：
 - **下载落盘缓存**：先存容器本地文件，已下载且未过期直接复用，进程重启/导入
@@ -24,6 +26,7 @@ dump 类型（契约见 Financial-API/docs/api/endpoints-market-dumps.md）：
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -34,6 +37,9 @@ from typing import Any
 import httpx
 
 from app.datasource import hithink_source
+from app.datasource import findb_source
+from app.config import settings
+from app.constants import TRACKED_SYMBOLS
 from app.db import get_pool
 from app.quality import quality_gate
 
@@ -74,6 +80,95 @@ def _to_int(x: Any) -> int | None:
 
 def _cache_path(dump_type: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"hithink_dump_{dump_type}.parquet")
+
+
+def _pool_daily_path(year: int) -> str:
+    return os.path.join(
+        settings.DATA_POOL_ROOT,
+        "bars",
+        "daily",
+        "asset=stock",
+        "market=CN",
+        f"year={year}.parquet",
+    )
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+async def _merge_pool_daily(records: list[tuple], *, source: str = "hithink") -> int:
+    """把标准化日K合并进自有 Parquet data pool（按 symbol/date 幂等）。"""
+    if not records:
+        return 0
+
+    def merge(year: int, year_records: list[tuple]) -> int:
+        import duckdb
+
+        target = _pool_daily_path(year)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        temporary = f"{target}.part"
+        connection = duckdb.connect()
+        try:
+            connection.execute(
+                """
+                CREATE TABLE incoming (
+                    symbol VARCHAR, market VARCHAR, date DATE,
+                    open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
+                    volume BIGINT, amount DOUBLE, source VARCHAR
+                )
+                """
+            )
+            connection.executemany(
+                "INSERT INTO incoming VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(*row, source) for row in year_records],
+            )
+            target_sql = _sql_literal(target)
+            temporary_sql = _sql_literal(temporary)
+            if os.path.exists(target):
+                query = f"""
+                    SELECT symbol, market, date, open, high, low, close,
+                           volume, amount, source
+                    FROM (
+                        SELECT *, row_number() OVER (
+                            PARTITION BY symbol, date ORDER BY priority DESC
+                        ) AS rank
+                        FROM (
+                            SELECT symbol, market, date, open, high, low, close,
+                                   volume, amount, source, 1 AS priority
+                            FROM read_parquet({target_sql}, union_by_name=true)
+                            UNION ALL
+                            SELECT *, 2 AS priority FROM incoming
+                        )
+                    ) WHERE rank = 1 ORDER BY symbol, date
+                """
+                connection.execute(
+                    f"COPY ({query}) TO {temporary_sql} "
+                    "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)"
+                )
+            else:
+                connection.execute(
+                    f"""
+                    COPY (
+                        SELECT * FROM incoming ORDER BY symbol, date
+                    ) TO {temporary_sql}
+                    (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
+                    """
+                )
+            os.replace(temporary, target)
+            return connection.execute("SELECT count(*) FROM incoming").fetchone()[0]
+        finally:
+            connection.close()
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+    by_year: dict[int, list[tuple]] = {}
+    for row in records:
+        by_year.setdefault(row[2].year, []).append(row)
+    total = 0
+    for year, year_records in sorted(by_year.items()):
+        total += await asyncio.to_thread(merge, year, year_records)
+    return total
 
 
 async def _ensure_dump_file(dump_type: str, *, full: bool) -> str | None:
@@ -141,6 +236,89 @@ async def _upsert_batch(conn: Any, records: list[tuple]) -> None:
     )
 
 
+async def _run_findb_tracked_fallback() -> int:
+    """同花顺增量不可用时，仅补 tracked A 股。
+
+    findb bars 是单标的接口，不能在 fallback 中扫描 5500+ 全市场（会触发
+    429 且耗时过长）。这里串行补 30 只 tracked A 股，保证看板不断流；
+    全市场缺口留待下一次同花顺 10d dump 自动覆盖。
+    """
+    symbols = [
+        symbol
+        for symbol in TRACKED_SYMBOLS
+        if symbol.endswith((".SH", ".SZ", ".BJ"))
+    ]
+    start = (date.today() - timedelta(days=14)).isoformat()
+    end = date.today().isoformat()
+    rows: list[tuple] = []
+    for symbol in symbols:
+        bars = await findb_source.fetch_bars(
+            symbol,
+            freq="daily",
+            start=start,
+            end=end,
+            order="asc",
+            limit=20,
+            timeout=15.0,
+            retries=1,
+        )
+        for bar in bars:
+            try:
+                day = date.fromisoformat(str(bar.get("datetime"))[:10])
+            except (TypeError, ValueError):
+                continue
+            close = _to_float(bar.get("close"))
+            if close is None:
+                continue
+            rows.append(
+                (
+                    symbol,
+                    "CN",
+                    day,
+                    _to_float(bar.get("open")),
+                    _to_float(bar.get("high")),
+                    _to_float(bar.get("low")),
+                    close,
+                    _to_int(bar.get("volume")),
+                    _to_float(bar.get("amount")),
+                )
+            )
+        # 平滑单标的请求，避免 fallback 自己制造 429。
+        await asyncio.sleep(0.15)
+
+    if not rows:
+        logger.warning("findb tracked 日K fallback 无数据")
+        return 0
+    accepted = await quality_gate(
+        "daily_prices",
+        [
+            {
+                "symbol": row[0], "market": row[1], "date": row[2],
+                "open": row[3], "high": row[4], "low": row[5],
+                "close": row[6], "volume": row[7], "amount": row[8],
+            }
+            for row in rows
+        ],
+    )
+    normalized = [
+        (
+            item["symbol"], item["market"], item["date"], item["open"],
+            item["high"], item["low"], item["close"], item["volume"],
+            item["amount"],
+        )
+        for item in accepted
+    ]
+    if not normalized:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        for offset in range(0, len(normalized), _UPSERT_BATCH):
+            await _upsert_batch(connection, normalized[offset : offset + _UPSERT_BATCH])
+    await _merge_pool_daily(normalized, source="findb")
+    logger.warning("同花顺日K不可用，findb fallback 补齐 tracked A 股 %d 行", len(normalized))
+    return len(normalized)
+
+
 async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
     """同花顺全市场 A 股日K dump 导入，返回写入条数。
 
@@ -153,6 +331,10 @@ async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
 
     path = await _ensure_dump_file(dump_type, full=full)
     if not path:
+        if not full:
+            fallback = await _run_findb_tracked_fallback()
+            logger.warning("=== %s done: findb fallback %d rows ===", label, fallback)
+            return fallback
         logger.warning("=== %s done: 0 rows（下载失败/未配置 key）===", label)
         return 0
 
@@ -161,11 +343,21 @@ async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
     try:
         parquet = pq.ParquetFile(path)
     except Exception as e:  # noqa: BLE001 — 打不开即降级
+        if not full:
+            fallback = await _run_findb_tracked_fallback()
+            logger.warning(
+                "=== %s done: Parquet 打开失败，findb fallback %d rows（%s）===",
+                label,
+                fallback,
+                e,
+            )
+            return fallback
         logger.warning("=== %s done: 0 rows（Parquet 打开失败: %s）===", label, e)
         return 0
 
     pool = await get_pool()
     written = 0
+    pool_rows: list[tuple] = []
     async with pool.acquire() as conn:
         batch_rows: list[tuple] = []
         for batch in parquet.iter_batches(batch_size=_PARSE_BATCH):
@@ -207,12 +399,27 @@ async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
                 ]
                 for j in range(0, len(rows), _UPSERT_BATCH):
                     await _upsert_batch(conn, rows[j : j + _UPSERT_BATCH])
+                # data pool 按年份分片；每日 10d 增量通常只覆盖当年，跨年时
+                # _merge_pool_daily 会按真实 date 拆入对应年度分片。全量任务
+                # 当前由供应商初始包负责，不重复把十年数据常驻内存。
+                if not full:
+                    pool_rows.extend(rows)
                 written += len(rows)
                 batch_rows = []
             if written and written % 500_000 < _PARSE_BATCH:
                 logger.info("%s 进度：已写 %s 行", label, written)
 
-    # 导入成功后删全量缓存（增量小文件也顺手清），避免占盘
+    if pool_rows:
+        try:
+            pool_written = await _merge_pool_daily(pool_rows)
+            logger.info("%s 自有 data pool 更新：%d 行", label, pool_written)
+        except Exception as e:  # noqa: BLE001 — PG 已成功，冷层失败记错不回滚
+            logger.error("%s 写自有 data pool 失败: %s", label, e)
+
+    if not full and written == 0:
+        written = await _run_findb_tracked_fallback()
+
+    # 导入成功后删下载缓存，避免占盘
     if written > 0 and os.path.exists(path):
         os.remove(path)
 

@@ -16,8 +16,18 @@ class Settings:
     DATA_SYNC_TOKEN: str
     FINDB_KEY: str
     FINDB_BASE_URL: str
+    FINDB_ARCHIVE_BUCKET: str
+    FINDB_ARCHIVE_REGION: str
+    FINDB_ARCHIVE_PREFIX: str
+    DATA_POOL_ROOT: str
+    FINDB_COS_ROLE: str
     HITHINK_FINANCE_API_KEY: str
     HITHINK_FINANCE_BASE_URL: str
+    AMAZINGDATA_ENABLED: bool
+    AD_USERNAME: str
+    AD_PASSWORD: str
+    AD_HOST: str
+    AD_PORT: str
     COLD_STORAGE_BACKEND: str
     COLD_STORAGE_LOCAL_ROOT: str
     COLD_S3_BUCKET: str
@@ -53,6 +63,21 @@ class Settings:
         self.FINDB_BASE_URL = os.getenv(
             "FINDB_BASE_URL", "https://api.jiucaicat.icu"
         )
+        # findb COS 全量分发包（仅手动同步）。prod 使用 CVM 绑定角色获取临时
+        # 凭证，不在环境变量中保存 SecretId/SecretKey。
+        self.FINDB_ARCHIVE_BUCKET = os.getenv(
+            "FINDB_ARCHIVE_BUCKET", "thudata-1472715722"
+        )
+        self.FINDB_ARCHIVE_REGION = os.getenv(
+            "FINDB_ARCHIVE_REGION", "ap-shanghai"
+        )
+        self.FINDB_ARCHIVE_PREFIX = os.getenv(
+            "FINDB_ARCHIVE_PREFIX", "dist/full"
+        ).strip("/")
+        self.DATA_POOL_ROOT = os.getenv(
+            "DATA_POOL_ROOT", "/data/market-pool"
+        )
+        self.FINDB_COS_ROLE = os.getenv("FINDB_COS_ROLE", "tradeck-app")
         # 同花顺金融数据服务（hithink-finance）：A 股官方源（行情快照/日K/估值/
         # 财务/涨停池等）。REST + X-api-key 鉴权；为空则本源不可用（优雅降级）。
         # Key 申请：https://fuyao.aicubes.cn/admin
@@ -60,6 +85,13 @@ class Settings:
         self.HITHINK_FINANCE_BASE_URL = os.getenv(
             "HITHINK_FINANCE_BASE_URL", "https://fuyao.aicubes.cn"
         )
+        # 银河星耀数智 AmazingData（A 股官方源兜底）。当前仿真账号只开放
+        # L1 快照，默认显式禁用；凭证齐全也必须置 AMAZINGDATA_ENABLED=1。
+        self.AMAZINGDATA_ENABLED = os.getenv("AMAZINGDATA_ENABLED", "") == "1"
+        self.AD_USERNAME = os.getenv("AD_USERNAME", "")
+        self.AD_PASSWORD = os.getenv("AD_PASSWORD", "")
+        self.AD_HOST = os.getenv("AD_HOST", "")
+        self.AD_PORT = os.getenv("AD_PORT", "")
         # 数据中心手动同步令牌。仅 Next.js 服务端代理持有，避免公网直接触发重任务。
         # mock 模式强制禁用，避免通过 API 启动任何真实数据任务。
         self.DATA_SYNC_TOKEN = (

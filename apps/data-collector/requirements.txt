@@ -16,3 +16,6 @@ tickflow[all]>=0.1
 # 冷层存储（分钟K/tick Parquet）：pyarrow 写列存、boto3 走 S3 兼容（COS）
 pyarrow>=15.0
 boto3>=1.34
+# findb COS 全量包：zstandard 解压 *.zst，DuckDB 只读校验/抽取 core 元数据。
+zstandard>=0.23
+duckdb>=1.5,<2

@@ -28,6 +28,8 @@ from app.jobs.earnings_calendar import run_earnings_calendar_job
 from app.jobs.economic_calendar import run_economic_calendar_job
 from app.jobs.fund_flow import run_fund_flow_job
 from app.jobs.fundamentals import run_fundamentals_job
+from app.jobs.findb_metadata import run_findb_metadata_full_job
+from app.jobs.findb_pool import run_findb_pool_full_job
 from app.jobs.hithink_dump import run_hithink_daily_k_dump_job
 from app.jobs.indices import run_indices_job
 from app.jobs.macro import run_macro_job
@@ -238,6 +240,39 @@ JOB_DEFINITIONS = (
         concurrency_group="adjust_factors",
     ),
     JobDefinition(
+        "findb_metadata_full",
+        "findb core 元数据全量",
+        "从 COS 下载并校验 core.duckdb；一次性清洗为自有分区 Parquet，"
+        "原始包删除，instrument/coverage/更名/停牌镜像进 PostgreSQL 热层",
+        "findb COS full",
+        "仅手动触发",
+        (
+            "instrument_master",
+            "data_coverage",
+            "instrument_name_history",
+            "trading_suspensions",
+            "data_pool_state",
+        ),
+        run_findb_metadata_full_job,
+        allow_manual=True,
+        concurrency_group="findb_archive",
+        maintenance=True,
+    ),
+    JobDefinition(
+        "findb_pool_full",
+        "findb 全量 data pool 初始化",
+        "逐模块下载 full 档并清洗为自有 ZSTD Parquet；模块级发布、可断点重跑，"
+        "成功后删除供应商压缩包与 DuckDB",
+        "findb COS full",
+        "仅手动触发（重任务）",
+        ("instrument_master", "data_coverage", "data_pool_state"),
+        run_findb_pool_full_job,
+        allow_manual=True,
+        concurrency_group="findb_archive",
+        classify_result=False,
+        maintenance=True,
+    ),
+    JobDefinition(
         "hithink_daily_k_dump_full",
         "同花顺 A 股日K 全量",
         "同花顺 Market Dump 全市场约 10 年日K（~945 万行/170MB），耗时数分钟；"
@@ -254,8 +289,8 @@ JOB_DEFINITIONS = (
         "hithink_daily_k_dump",
         "同花顺 A 股日K 增量",
         "同花顺 Market Dump 全市场近 10 交易日日K UPSERT（原始未复权价）；"
-        "CN 日K 每日主源（TickFlow 仅覆盖 HK/US）",
-        "hithink-finance",
+        "同时更新自有 Parquet；失败时 findb 仅补 tracked 标的",
+        "hithink-finance / findb fallback",
         "A/港盘后 08:30 UTC",
         ("daily_prices",),
         run_hithink_daily_k_dump_job,

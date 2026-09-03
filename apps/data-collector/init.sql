@@ -411,6 +411,67 @@ CREATE TABLE IF NOT EXISTS adjust_factors (
 );
 CREATE INDEX IF NOT EXISTS idx_adjust_factors_symbol_date ON adjust_factors(symbol, date DESC);
 
+-- 自有 data pool 元数据热层。findb 只是初始化来源；供应商原始包转换成功后
+-- 删除，5275 万行复权因子按年转为自有 Parquet。以下小表由手动任务替换。
+CREATE TABLE IF NOT EXISTS instrument_master (
+    symbol VARCHAR(32) NOT NULL,
+    name TEXT,
+    asset VARCHAR(32),
+    market VARCHAR(16),
+    security_type VARCHAR(64),
+    source VARCHAR(32) NOT NULL,
+    source_updated_at TIMESTAMP,
+    PRIMARY KEY (symbol, source)
+);
+CREATE INDEX IF NOT EXISTS idx_instrument_master_asset_market
+    ON instrument_master(asset, market);
+
+CREATE TABLE IF NOT EXISTS data_coverage (
+    symbol VARCHAR(32) NOT NULL,
+    frequency VARCHAR(16) NOT NULL,
+    start_at TIMESTAMP,
+    end_at TIMESTAMP,
+    row_count BIGINT,
+    source VARCHAR(32) NOT NULL,
+    source_updated_at TIMESTAMP,
+    PRIMARY KEY (symbol, frequency, source)
+);
+CREATE INDEX IF NOT EXISTS idx_data_coverage_frequency_end
+    ON data_coverage(frequency, end_at DESC);
+
+CREATE TABLE IF NOT EXISTS instrument_name_history (
+    symbol VARCHAR(32),
+    name TEXT,
+    start_date DATE,
+    end_date DATE,
+    ann_date DATE,
+    change_reason TEXT,
+    source VARCHAR(32) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instrument_name_history_symbol_date
+    ON instrument_name_history(symbol, start_date DESC);
+
+CREATE TABLE IF NOT EXISTS trading_suspensions (
+    symbol VARCHAR(32),
+    trade_date DATE,
+    suspend_timing TEXT,
+    suspend_type VARCHAR(32),
+    source VARCHAR(32) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trading_suspensions_symbol_date
+    ON trading_suspensions(symbol, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS data_pool_state (
+    module VARCHAR(32) PRIMARY KEY,
+    source VARCHAR(32) NOT NULL,
+    tier VARCHAR(16) NOT NULL,
+    built_at TIMESTAMPTZ,
+    sha256 CHAR(64) NOT NULL,
+    local_path TEXT NOT NULL,
+    row_counts JSONB NOT NULL DEFAULT '{}'::jsonb,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 质量度量（按表按日聚合）：总数/合格/拦截/修复/质量分，供可观测
 CREATE TABLE IF NOT EXISTS data_quality_metrics (
     table_name VARCHAR(50) NOT NULL,

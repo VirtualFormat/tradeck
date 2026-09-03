@@ -81,8 +81,13 @@ services:
       # 海外节点 / TickFlow / findb 密钥由上方 env_file（根 .env）注入，
       # 不在此处插值（environment 空串会覆盖 env_file 的值）。
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
+      DATA_POOL_ROOT: /data/market-pool
+      COLD_STORAGE_BACKEND: local
+      COLD_STORAGE_LOCAL_ROOT: /data/market-pool
     volumes:
       - ../apps/data-collector:/app
+      # 自有 data pool（findb 仅作一次性初始化源）；重建 collector 后保留。
+      - dev-market-pool:/data/market-pool
     ports:
       - "8082:8080"  # 调试端口，避免与 dev 8080 / data-api 8081 冲突
     depends_on:
@@ -248,6 +253,7 @@ volumes:
   dev-openbb-config:
   minio-data:
   quant-cache:
+  dev-market-pool:
   dev-postgres-data:
     # DATA_MODE 与数据库 marker 在 backend 启动时强校验；错误卷组合会拒绝启动。
     # live 默认沿用旧卷；mock 命令必须显式指定独立卷。

@@ -165,14 +165,14 @@ apps/data-collector  app/datasource/amazingdata_source.py   ← 唯一接触 SDK
 
 | 阶段 | 日期 | 环境 | 结果 | 遗留 |
 |---|---|---|---|---|
-| 0 冒烟 | 未开始 | — | — | — |
-| 1 门面 | 未开始 | — | — | — |
+| 0 冒烟 | 2026-09-03 | 本地 x86_64 Docker / Python 3.12 | 部分通过：SDK import、TCP、登录、A 股代码表（5555）成功；findb health/日K/1min/复权成功 | 按手册原样调用 `get_calendar`/`get_adj_factor` 时，服务端返回空并触发 SDK `TypeError`；行情查询阻塞，尚不能对拍日K/1min/复权。PDF 未定义试用权限或 PermissionCode 映射，需厂商核查账号授权、服务端状态及 SDK 版本兼容性 |
+| 1 门面 | 2026-09-03 | 本地 x86_64 Docker / Python 3.12 | 已实现进程隔离门面：native SDK 仅在 spawn worker 内加载；超时/崩溃杀 worker，collector 主进程继续；代码表成功、行情权限失败降级已验 | 尚未接入业务 job；等待权限补齐 |
 | 2 报价 | 未开始 | — | — | — |
 | 3 深度数据 | 未开始 | — | — | — |
 | 4 校验/文档 | 未开始 | — | — | — |
 
 ## 5. 待决策项（开工前需拍板）
 
-1. **A 股报价定位**：AmazingData 是取代 akshare 成为主源，还是仅兜底？（默认按「兜底」做，主源切换留阶段 2.2 开关给运维。）
+1. **A 股报价定位**：2026-09-03 暂定维持现有 hithink/findb 主链，AmazingData 不接业务 job。当前环境只验证了代码表，无法证明行情/复权质量；厂商确认试用授权与 SDK 版本、接口恢复并完成逐值对拍后，再评估 AmazingData 主用、findb fallback。
 2. **wheel 分发渠道**：受控 URL 放哪（私有制品库 / GHCR OCI artifact / VPS 固定路径）？需先有一个可拉取的位置才能做阶段 1.4。
 3. **权限覆盖**：阶段 0.5 若财务/两融/行业报权限不足，对应阶段 3 子项降级为「保留 akshare/findb」。

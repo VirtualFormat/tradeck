@@ -111,6 +111,29 @@ TTL ts + INTERVAL 1 YEAR DELETE;              -- 在线窗口 1 年（CVM 单盘
 
 三者各司其职，不是互斥选项：
 
+### findb 一次性初始化与自有 data pool（2026-09-03）
+
+findb 的 `thudata-1472715722/dist/full` 只作为一次性初始化输入，不作为运行时
+数据库，也不保留供应商 DuckDB/tar.zst：collector 手动任务
+`findb_pool_full` 按模块下载、校验、清洗并转换为自有 ZSTD Parquet，成功后删除
+原始文件。prod 自有池位于宿主机 `/data/apps/tradeck/data-pool`（容器内
+`/data/market-pool`）：
+
+```text
+data-pool/
+  pool/                         # 不可变模块版本 + current 软链接
+  bars/daily/asset=.../market=.../year=YYYY.parquet
+  bars/minute/asset=.../market=.../symbol=.../year=YYYY.parquet
+  staging/                      # 下载/解压/转换临时区，任务结束清空
+```
+
+`code/freq/type/...` 在导入时规范为 `symbol/frequency/security_type/...`，并追加
+`source=findb`。复权因子按年分区；小型元数据镜像到 PostgreSQL 的
+`instrument_master`、`data_coverage`、`instrument_name_history`、
+`trading_suspensions`。A 股日K 后续由同花顺 `daily-k-10d` 每日更新 PG 与同一
+Parquet 年分片；同花顺失败时 findb API 仅补 tracked A 股，避免单标的接口扫描
+全市场导致 429。
+
 **Parquet（存储格式）**：列存 + 压缩 + schema 自描述，按 `year=YYYY/market=XX/` 目录分区。回测扫特定年份/市场只读对应目录，天然谓词下推。
 
 **腾讯云 COS（存储底座，主选）**：
