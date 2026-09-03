@@ -119,3 +119,25 @@ def download(key: str, target: Path, expected_sha256: str) -> int:
 def full_manifest() -> dict[str, Any]:
     prefix = settings.FINDB_ARCHIVE_PREFIX
     return read_json(f"{prefix}/MANIFEST.json")
+
+
+def head(key: str) -> dict[str, Any]:
+    """读取 COS 对象头（长度/ETag/更新时间），不下载正文。"""
+    secret_id, secret_key, token = _credentials()
+    bucket = settings.FINDB_ARCHIVE_BUCKET
+    region = settings.FINDB_ARCHIVE_REGION
+    host = f"{bucket}.cos.{region}.myqcloud.com"
+    uri = "/" + urllib.parse.quote(key, safe="/_.-")
+    headers = {"Host": host}
+    request = urllib.request.Request(f"https://{host}{uri}", method="HEAD")
+    request.add_header(
+        "Authorization",
+        _authorization(secret_id, secret_key, "HEAD", uri, headers),
+    )
+    request.add_header("x-cos-security-token", token)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return {
+            "bytes": int(response.headers.get("Content-Length", "0")),
+            "etag": response.headers.get("ETag", "").strip('"'),
+            "last_modified": response.headers.get("Last-Modified"),
+        }

@@ -43,6 +43,24 @@ def _group_files(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return dict(grouped)
 
 
+async def _validate_manifest_objects(
+    files: list[dict[str, Any]],
+) -> None:
+    """启动转换前验证 manifest 与 COS 对象长度一致，避免跑到中途才失败。"""
+    prefix = settings.FINDB_ARCHIVE_PREFIX
+    for item in files:
+        key = f"{prefix}/{item['name']}"
+        metadata = await asyncio.to_thread(findb_archive_source.head, key)
+        expected = int(item["bytes"])
+        if metadata["bytes"] != expected:
+            raise ValueError(
+                "findb MANIFEST 与 COS 对象不一致："
+                f"{item['name']} manifest={expected} bytes, "
+                f"cos={metadata['bytes']} bytes, last_modified={metadata['last_modified']}。"
+                "请先让数据提供方重新生成 MANIFEST.json。"
+            )
+
+
 def _module_digest(files: list[dict[str, Any]]) -> str:
     import hashlib
 
@@ -441,6 +459,9 @@ async def run_findb_pool_full_job() -> dict[str, int]:
     if manifest.get("tier") != "full":
         raise ValueError("findb COS manifest 不是 full 档")
     grouped = _group_files(manifest)
+    await _validate_manifest_objects(
+        [item for files in grouped.values() for item in files]
+    )
     result: dict[str, int] = {
         "core": await run_findb_metadata_full_job(),
     }
