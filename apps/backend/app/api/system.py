@@ -764,6 +764,9 @@ async def get_system_data():
     latest_runs: dict[str, dict] = {}
     for run in runs:
         latest_runs.setdefault(run.get("job"), run)
+    active_job_ids = {
+        run.get("job") for run in runs if run.get("status") == "running"
+    }
 
     jobs = []
     for job in catalog:
@@ -786,7 +789,7 @@ async def get_system_data():
             {
                 **{key: value for key, value in job.items() if key != "health_queries"},
                 "status": _effective_job_status(
-                    active=False,
+                    active=job["id"] in active_job_ids,
                     latest=latest,
                     data_health=data_health,
                     maintenance=job.get("maintenance", False),
