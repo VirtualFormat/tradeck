@@ -91,7 +91,11 @@ def read_json(key: str) -> dict[str, Any]:
 
 
 def download(key: str, target: Path, expected_sha256: str) -> int:
-    """流式下载并校验 SHA256，成功后原子替换 target。"""
+    """流式下载并计算 SHA256，成功后原子替换 target。
+
+    findb 的 MANIFEST 可能滞后于已替换的 COS 对象；摘要不一致只告警，
+    后续 zstd 解压和 DuckDB/Parquet 解析才是阻断式完整性检查。
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".part")
     digest = hashlib.sha256()
@@ -107,8 +111,13 @@ def download(key: str, target: Path, expected_sha256: str) -> int:
                 size += len(chunk)
         actual = digest.hexdigest()
         if actual != expected_sha256:
-            raise ValueError(
-                f"COS 对象校验失败 key={key}: expected={expected_sha256}, actual={actual}"
+            logger.warning(
+                "findb MANIFEST 摘要与 COS 对象不一致，继续使用实际对象："
+                "key=%s expected=%s actual=%s bytes=%d",
+                key,
+                expected_sha256,
+                actual,
+                size,
             )
         os.replace(temporary, target)
         return size

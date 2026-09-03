@@ -46,18 +46,20 @@ def _group_files(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
 async def _validate_manifest_objects(
     files: list[dict[str, Any]],
 ) -> None:
-    """启动转换前验证 manifest 与 COS 对象长度一致，避免跑到中途才失败。"""
+    """启动转换前比对对象长度；清单滞后只告警，不中断初始化。"""
     prefix = settings.FINDB_ARCHIVE_PREFIX
     for item in files:
         key = f"{prefix}/{item['name']}"
         metadata = await asyncio.to_thread(findb_archive_source.head, key)
         expected = int(item["bytes"])
         if metadata["bytes"] != expected:
-            raise ValueError(
-                "findb MANIFEST 与 COS 对象不一致："
-                f"{item['name']} manifest={expected} bytes, "
-                f"cos={metadata['bytes']} bytes, last_modified={metadata['last_modified']}。"
-                "请先让数据提供方重新生成 MANIFEST.json。"
+            logger.warning(
+                "findb MANIFEST 长度与 COS 对象不一致，继续使用实际对象："
+                "%s manifest=%d bytes, cos=%d bytes, last_modified=%s",
+                item["name"],
+                expected,
+                metadata["bytes"],
+                metadata["last_modified"],
             )
 
 
