@@ -172,6 +172,8 @@ async def run_daily_valuation_job() -> int:
         for item in items
         if item.get("thscode")
     ]
+    if not rows:
+        return 0
 
     pool = await get_pool()
     async with pool.acquire() as connection:

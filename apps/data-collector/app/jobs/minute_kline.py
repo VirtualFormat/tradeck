@@ -157,6 +157,21 @@ def _compact_day(staging: Path, target: Path) -> int:
 
 async def _active_symbols(market: str) -> list[str]:
     suffixes = _MARKET_SUFFIX[market]
+    baseline_root = (
+        Path(settings.DATA_POOL_ROOT)
+        / "bars"
+        / "minute"
+        / "asset=stock"
+        / f"market={market}"
+    )
+    baseline_symbols = sorted(
+        path.name.removeprefix("symbol=")
+        for path in baseline_root.glob("symbol=*")
+        if path.is_dir()
+    )
+    if not baseline_symbols:
+        logger.warning("minute_kline %s 无 full 股票基线，跳过增量", market)
+        return []
     pool = await get_pool()
     async with pool.acquire() as connection:
         rows = await connection.fetch(
@@ -166,6 +181,7 @@ async def _active_symbols(market: str) -> list[str]:
                        max(end_at) OVER () AS market_max
                 FROM data_coverage
                 WHERE source='findb' AND frequency='1min'
+                  AND symbol = ANY($3::text[])
                   AND symbol LIKE ANY($1::text[])
             )
             SELECT symbol
@@ -175,6 +191,7 @@ async def _active_symbols(market: str) -> list[str]:
             """,
             [f"%{suffix}" for suffix in suffixes],
             _ACTIVE_MAX_AGE_DAYS,
+            baseline_symbols,
         )
     return [row["symbol"] for row in rows]
 
