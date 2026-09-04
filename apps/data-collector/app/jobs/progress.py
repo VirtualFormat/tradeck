@@ -1,6 +1,7 @@
 """任务进度注册表（进程内存）：job 上报，/api/system/jobs 读取，前端轮询展示。
 
-全量初始化 / 每日增量更新共用同一通道。重启即清空，只保留最近 100 条。
+全量初始化 / 每日增量更新共用同一通道。重启即清空；活跃任务永不因高频
+定时任务被挤出，已结束历史最多保留 100 条。
 """
 from __future__ import annotations
 
@@ -14,6 +15,20 @@ _FINISHED_STATUSES = {"done", "empty", "partial", "error"}
 _lock = threading.Lock()
 _runs: list[dict] = []
 _MAX = 100
+
+
+def _trim_finished() -> None:
+    """只裁剪已结束历史；running 记录必须始终可见。调用方须持有锁。"""
+    finished_seen = 0
+    retained: list[dict] = []
+    for run in _runs:
+        if run["status"] == "running":
+            retained.append(run)
+            continue
+        if finished_seen < _MAX:
+            retained.append(run)
+            finished_seen += 1
+    _runs[:] = retained
 
 
 def _now() -> str:
@@ -44,7 +59,7 @@ def job_start(
                 "finished_at": None,
             },
         )
-        del _runs[_MAX:]
+        _trim_finished()
     return started_at
 
 
@@ -114,6 +129,7 @@ def job_reclassify(
                 run["status"] = status
                 if note:
                     run["note"] = note
+                _trim_finished()
                 return
 
 
@@ -146,6 +162,7 @@ def _finish(
                     r["percent"] = 100.0
                 if note:
                     r["note"] = note
+                _trim_finished()
                 return
 
 

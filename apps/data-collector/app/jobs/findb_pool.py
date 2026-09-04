@@ -24,6 +24,7 @@ from app.config import settings
 from app.datasource import findb_archive_source
 from app.db import get_pool
 from app.jobs.findb_metadata import run_findb_metadata_full_job
+from app.jobs import progress
 
 logger = logging.getLogger(__name__)
 
@@ -461,12 +462,15 @@ async def run_findb_pool_full_job() -> dict[str, int]:
     if manifest.get("tier") != "full":
         raise ValueError("findb COS manifest 不是 full 档")
     grouped = _group_files(manifest)
+    progress.job_set_total("findb_pool_full", len(grouped))
     await _validate_manifest_objects(
         [item for files in grouped.values() for item in files]
     )
     result: dict[str, int] = {
         "core": await run_findb_metadata_full_job(),
     }
+    processed = 1
+    progress.job_update("findb_pool_full", processed)
     modules = [module for module in grouped if module != "core"]
     # 先日线/小型 DuckDB，最后处理百 GB 级分钟线；断点重跑时已发布模块直接复用。
     modules.sort(key=lambda module: ("1min" in module, module))
@@ -474,6 +478,8 @@ async def run_findb_pool_full_job() -> dict[str, int]:
         files = grouped[module]
         logger.info("findb data pool 导入模块 %s（%d 文件）", module, len(files))
         result[module] = await _import_module(module, files, manifest)
+        processed += 1
+        progress.job_update("findb_pool_full", processed)
         logger.info("findb data pool 模块 %s 完成：%d 行", module, result[module])
     logger.info("=== findb data pool full job done: %s ===", result)
     return result
