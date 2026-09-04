@@ -1,14 +1,33 @@
-# 数据层：三源分工 + 薄门面 + 限流降级
+# 数据层：多源分工 + 薄门面 + 限流降级
 
 tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试 / 降级 / symbol 规范 / 路由）集中在 `apps/backend/app/datasource/`。数据流：APScheduler 定时 job 取数写库 → API 只读 DB → 前端读 API。
 
 ## 三源分工（职责零重叠）
+
+> 2026-09 更新：A 股批量日级数据优先同花顺，findb 作为全量历史基线、
+> 分钟K及同花顺未覆盖维度；AmazingData 代码保留但默认禁用。
 
 | 源 | 职责 | 接入 |
 |---|---|---|
 | **TickFlow** | 日K（A/美/港，本地据此算技术指标） | 官方 SDK（自带分片 + 并发闸 + 429 退避），`datasource/tickflow_source.py` |
 | **akshare** | A 股**报价** + 深度数据（板块 / 资金流 / 研报 / 公告 / 龙虎 / 两融 / 北向 / 新闻 / 涨跌家数） | 全部 backend 直调，经 `call_akshare`（报价用 `stock_zh_a_spot_em` 一次全市场→本地过滤） |
 | **OpenBB** | 宏观 / 海外指标（fred/oecd/fed）/ 分析师 / 财报日历 / 财务(yf) / 大宗 / 国债 / 指数 / 美港股报价(yf) | `fetch_openbb`（海外源经韩国节点，见 [`OVERSEAS-NODE.md`](OVERSEAS-NODE.md)） |
+
+### 当前生产路由
+
+| 数据域 | 主源 | fallback / 补充 |
+|---|---|---|
+| A 股日K | 同花顺 `daily-k-10d` 全市场 dump | findb tracked 补缺 |
+| A 股日级估值 | 同花顺 valuation snapshot（100只/批） | 暂无；失败不发布残缺快照 |
+| A 股实时快照 | 同花顺批量 | akshare |
+| A 股板块目录/行情/成分 | 同花顺指数 API | findb / akshare |
+| CN/HK/US 分钟K | findb `codes` 批量 API，全进程节流 | 下一日重叠窗口重试 |
+| A 股资金流 | findb 全市场表 | 保留旧快照 |
+| HK/US 日K | OpenBB/yfinance | findb 历史基线 |
+
+findb API 调用共享进程级 1.05 秒间隔（约 57 次/分钟），避免板块、资金流、
+分钟K等 job 各自并发突破单 key 的限频。分钟K每日使用最多 50 只/批的批量协议，
+不再逐标的并发请求。
 
 ## 薄门面 `datasource/`
 

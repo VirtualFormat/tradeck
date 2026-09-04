@@ -120,6 +120,10 @@ async def _technical_indicators() -> None:
     await run_registered_job("technical_indicators")
 
 
+async def _daily_valuation() -> None:
+    await run_registered_job("daily_valuation")
+
+
 async def _announcements() -> None:
     await run_registered_job("announcements")
 
@@ -248,6 +252,16 @@ async def start_scheduler() -> None:
         _adjust_factors,
         CronTrigger(hour=9, minute=30, timezone="UTC"),
         id="adjust_factors",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # A 股日级估值：同花顺 100 只/批，全市场约 55 请求；错开日K与复权任务。
+    _scheduler.add_job(
+        _daily_valuation,
+        CronTrigger(hour=9, minute=15, timezone="UTC"),
+        id="daily_valuation",
         replace_existing=True,
         coalesce=True,
         max_instances=1,

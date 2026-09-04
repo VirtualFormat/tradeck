@@ -156,7 +156,52 @@ async def get_valuations_snapshot(thscodes: list[str]) -> list[dict[str, Any]]:
     )
     if not data:
         return []
-    return data.get("item") or []
+    timestamp = data.get("timestamp")
+    return [
+        {**item, "_source_timestamp": timestamp}
+        for item in (data.get("item") or [])
+    ]
+
+
+async def get_ticker_list(
+    asset_type: str,
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+) -> dict[str, Any] | None:
+    """分页获取标的列表（A股/指数/ETF等）。"""
+    return await hithink_get(
+        "/api/meta/tickers/list"
+        f"?asset_type={asset_type}&limit={limit}&offset={offset}"
+    )
+
+
+async def get_index_catalog(tag: str) -> list[dict[str, Any]]:
+    """获取同花顺指数目录。tag: cn_concept / industry / region / tszs。"""
+    data = await hithink_get(
+        f"/api/a-share-index/catalog/ths-index-list?tag={tag}"
+    )
+    return (data or {}).get("item") or []
+
+
+async def get_index_snapshot(thscodes: list[str]) -> list[dict[str, Any]]:
+    """批量获取同花顺指数/板块最新行情。"""
+    if not thscodes:
+        return []
+    data = await hithink_get(
+        "/api/a-share-index/prices/snapshot"
+        f"?thscodes={','.join(thscodes)}"
+    )
+    return (data or {}).get("item") or []
+
+
+async def get_index_constituents(thscode: str) -> list[dict[str, Any]]:
+    """获取单个同花顺指数当前成分股。"""
+    data = await hithink_get(
+        "/api/a-share-index/constituents/ths-stock-list"
+        f"?thscode={thscode}"
+    )
+    return (data or {}).get("item") or []
 
 
 async def search_ticker(q: str, *, limit: int = 5) -> list[dict[str, Any]]:

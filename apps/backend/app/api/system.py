@@ -69,6 +69,14 @@ _CATALOG: list[dict] = [
         "tables": ["daily_prices"],
     },
     {
+        "id": "daily_valuation",
+        "allow_manual": True,
+        "source": "hithink-finance",
+        "label": "A 股日级估值",
+        "schedule": "A 股盘后 09:15 UTC",
+        "tables": ["daily_valuations"],
+    },
+    {
         "id": "realtime_quotes",
         "allow_manual": True,
         "source": "hithink / akshare / yfinance",
@@ -211,7 +219,7 @@ _CATALOG: list[dict] = [
     {
         "id": "minute_kline",
         "allow_manual": True,
-        "source": "yfinance 1m",
+        "source": "findb",
         "label": "分钟K 采集（冷层）",
         "schedule": "每交易日盘后",
         "tables": [],
@@ -257,7 +265,7 @@ _CATALOG: list[dict] = [
     {
         "id": "board_heat",
         "allow_manual": True,
-        "source": "findb",
+        "source": "hithink-finance / findb fallback",
         "label": "板块行情热度",
         "schedule": "每天 09:05 UTC",
         "tables": ["board_heat"],
@@ -265,7 +273,7 @@ _CATALOG: list[dict] = [
     {
         "id": "board_map",
         "allow_manual": True,
-        "source": "akshare",
+        "source": "hithink-finance / akshare fallback",
         "label": "板块归属映射",
         "schedule": "每周一 08:00 UTC",
         "tables": ["symbol_board_map"],
@@ -451,6 +459,9 @@ _TABLE_RULES: dict[str, TableFreshnessRule] = {
     "technical_indicators": TableFreshnessRule("computed_at", "datetime", timedelta(days=4), "指标计算时间"),
     "corporate_action_events": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "公司行为同步时间"),
     "adjust_factors": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "因子计算时间"),
+    "daily_valuations": TableFreshnessRule(
+        "source_updated_at", "datetime", timedelta(days=4), "估值更新时间"
+    ),
     "announcements": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "公告抓取时间"),
     "research_reports": TableFreshnessRule("fetched_at", "datetime", timedelta(days=10), "研报抓取时间"),
     "market_breadth": TableFreshnessRule("fetched_at", "datetime", timedelta(days=4), "宽度计算时间"),

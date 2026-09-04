@@ -1,36 +1,27 @@
-"""股票 ↔ 板块归属映射（东财成分股接口反解，写入 symbol_board_map）
-
-拉取范围：board_heat 中的全部行业板块 + 概念板块市值 Top 150（控制拉取量）。
-成分低频变化，job 每周刷新一次，全量覆盖重建。
-"""
+"""股票 ↔ 板块归属映射：同花顺成分股主源，akshare 兜底。"""
 from __future__ import annotations
 
 import logging
 
-from app.datasource import call_akshare
+from app.datasource import call_akshare, hithink_source
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
 
-CONCEPT_LIMIT = 150  # 概念板块只拉市值 Top N
-
-
 def _to_symbol(code: str) -> str | None:
-    """6 位代码 → tradeck symbol 格式"""
     code = code.strip()
     if len(code) != 6 or not code.isdigit():
         return None
     if code.startswith("6"):
-        return f"{code}.SS"
+        return f"{code}.SH"
     if code.startswith(("0", "3")):
         return f"{code}.SZ"
-    if code.startswith(("4", "8")):
+    if code.startswith(("4", "8", "9")):
         return f"{code}.BJ"
     return None
 
 
-async def _fetch_cons(board_type: str, board_name: str) -> list[str]:
-    """拉单板块成分股代码列表。"""
+async def _fetch_akshare_cons(board_type: str, board_name: str) -> list[str]:
     import akshare as ak
 
     def fetch():
@@ -39,63 +30,87 @@ async def _fetch_cons(board_type: str, board_name: str) -> list[str]:
         return ak.stock_board_concept_cons_em(symbol=board_name)
 
     try:
-        df = await call_akshare(fetch)
-    except Exception as e:
-        logger.warning(f"akshare board cons failed for {board_name}: {e}")
+        frame = await call_akshare(fetch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("akshare board cons failed for %s: %s", board_name, exc)
         return []
-    if df is None or df.empty:
+    if frame is None or frame.empty:
         return []
-    symbols = []
-    for _, r in df.iterrows():
-        sym = _to_symbol(str(r.get("代码") or ""))
-        if sym:
-            symbols.append(sym)
-    return symbols
+    return [
+        symbol
+        for _, row in frame.iterrows()
+        if (symbol := _to_symbol(str(row.get("代码") or "")))
+    ]
+
+
+async def _fetch_cons(
+    board_type: str,
+    board_name: str,
+    board_code: str | None,
+) -> list[str]:
+    if board_code:
+        items = await hithink_source.get_index_constituents(board_code)
+        symbols = [
+            str(item.get("thscode") or "").strip().upper()
+            for item in items
+            if item.get("thscode")
+        ]
+        if symbols:
+            return symbols
+    logger.warning("hithink board cons empty for %s, fallback akshare", board_name)
+    return await _fetch_akshare_cons(board_type, board_name)
 
 
 async def run_board_map_job() -> int:
-    """定时任务：重建 symbol_board_map 映射"""
     logger.info("=== board map job start ===")
     pool = await get_pool()
-
-    # 拉取范围：全部行业板块 + 概念板块市值 Top N
-    async with pool.acquire() as conn:
-        boards = await conn.fetch(
+    async with pool.acquire() as connection:
+        boards = await connection.fetch(
             """
-            (SELECT board_type, name, code FROM board_heat WHERE board_type = 'industry')
-            UNION ALL
-            (SELECT board_type, name, code FROM board_heat
-             WHERE board_type = 'concept'
-             ORDER BY market_cap DESC NULLS LAST LIMIT $1)
-            """,
-            CONCEPT_LIMIT,
+            SELECT DISTINCT ON (board_type, code)
+                   board_type, name, code
+            FROM board_heat
+            WHERE code IS NOT NULL
+            ORDER BY board_type, code, snapshot_date DESC
+            """
         )
     if not boards:
-        logger.warning("board_heat 为空，跳过 board map job")
         return 0
 
-    # 逐板块拉成分股，组装映射行
-    map_rows: list[tuple[str, str, str, str | None]] = []
-    for b in boards:
-        symbols = await _fetch_cons(b["board_type"], b["name"])
-        map_rows.extend(
-            (sym, b["board_type"], b["name"], b["code"]) for sym in symbols
+    mapped: list[tuple[str, str, str, str | None]] = []
+    boards_with_data = 0
+    for board in boards:
+        symbols = await _fetch_cons(
+            board["board_type"], board["name"], board["code"]
         )
-
-    if not map_rows:
-        logger.warning("=== board map job done: 0 rows（akshare 全部失败） ===")
+        mapped.extend(
+            (symbol, board["board_type"], board["name"], board["code"])
+            for symbol in symbols
+        )
+        if symbols:
+            boards_with_data += 1
+    if not mapped:
+        logger.warning("=== board map job done: 0 rows ===")
+        return 0
+    if boards_with_data < int(len(boards) * 0.8):
+        logger.warning(
+            "board map 覆盖不足: %d/%d 板块有成分，保留旧映射",
+            boards_with_data,
+            len(boards),
+        )
         return 0
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("DELETE FROM symbol_board_map")
-            await conn.executemany(
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute("DELETE FROM symbol_board_map")
+            await connection.executemany(
                 """
-                INSERT INTO symbol_board_map (symbol, board_type, board_name, board_code)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO symbol_board_map
+                    (symbol, board_type, board_name, board_code)
+                VALUES ($1,$2,$3,$4)
                 ON CONFLICT (symbol, board_type, board_name) DO NOTHING
                 """,
-                map_rows,
+                mapped,
             )
-    logger.info(f"=== board map job done: {len(map_rows)} rows ===")
-    return len(map_rows)
+    logger.info("=== board map job done: %d rows ===", len(mapped))
+    return len(mapped)

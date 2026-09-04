@@ -24,6 +24,7 @@ from app.jobs.board_map import run_board_map_job
 from app.jobs.board_sentiment import run_board_sentiment_job
 from app.jobs.cleanup import run_cleanup_job
 from app.jobs.daily_kline import run_daily_kline_job
+from app.jobs.daily_valuation import run_daily_valuation_job
 from app.jobs.earnings_calendar import run_earnings_calendar_job
 from app.jobs.economic_calendar import run_economic_calendar_job
 from app.jobs.fund_flow import run_fund_flow_job
@@ -300,10 +301,19 @@ JOB_DEFINITIONS = (
         ),
     ),
     JobDefinition(
+        "daily_valuation",
+        "A 股日级估值",
+        "同花顺全市场估值快照（PE/PB/PS/PCF）写入 PG 与自有 Parquet",
+        "hithink-finance",
+        "A 股盘后 09:15 UTC",
+        ("daily_valuations",),
+        run_daily_valuation_job,
+    ),
+    JobDefinition(
         "minute_kline",
         "分钟K 采集（冷层）",
-        "US/HK 当日 1m 分钟K → quality_gate → 冷层 Parquet（year/market/date 分区）；A股待付费源",
-        "yfinance 1m",
+        "findb tracked 标的当日 1m → 限速请求 → 合并全量历史 symbol/year Parquet",
+        "findb",
         "每交易日盘后",
         (),  # 不落库表，直写冷层 Parquet；质量留痕于 data_quality_* 表
         run_minute_kline_job,
@@ -354,7 +364,7 @@ JOB_DEFINITIONS = (
         "board_heat",
         "板块行情热度",
         "A 股概念与行业板块行情",
-        "findb",  # 同花顺概念指数（ths_index）+ 申万行业（sw_industry/sw_daily）
+        "hithink-finance / findb fallback",
         "每天 09:05 UTC",
         ("board_heat",),
         run_board_heat_job,
@@ -363,7 +373,7 @@ JOB_DEFINITIONS = (
         "board_map",
         "板块归属映射",
         "从板块成分股反解股票归属",
-        "akshare",
+        "hithink-finance / akshare fallback",
         "每周一 08:00 UTC",
         ("symbol_board_map",),
         run_board_map_job,

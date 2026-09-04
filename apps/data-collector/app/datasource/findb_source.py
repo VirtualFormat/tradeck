@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +26,26 @@ logger = logging.getLogger(__name__)
 
 _RETRIES = 4
 _BASE_DELAY = 1.0
+# 所有 findb API 调用共享节流闸。单 key 是全进程配额，不允许各 job 各自并发。
+_MIN_INTERVAL = 1.05
+_request_lock = asyncio.Lock()
+_last_request_at = 0.0
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str],
+) -> httpx.Response:
+    global _last_request_at
+    async with _request_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_request_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await client.get(url, headers=headers)
+        finally:
+            _last_request_at = time.monotonic()
 
 
 def _available() -> bool:
@@ -54,7 +75,7 @@ async def findb_get(
     for attempt in range(retries + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                res = await client.get(url, headers=headers)
+                res = await _throttled_get(client, url, headers)
 
             # 写锁：HTTP 200 但 body 带 error 键 → 退避重试
             if res.status_code == 200:
@@ -127,6 +148,36 @@ async def fetch_bars(
     data = await findb_get(qs, timeout=timeout, retries=retries)
     if not isinstance(data, dict):
         return []
+    return data.get("data") or []
+
+
+async def fetch_bars_batch(
+    codes: list[str],
+    *,
+    freq: str,
+    start: str,
+    end: str,
+    order: str = "asc",
+    timeout: float = 90.0,
+    retries: int = _RETRIES,
+) -> list[dict]:
+    """批量取 K 线（服务端限制每批 <=50 只）；失败返回空 list。
+
+    对同一 key 仍经过全局节流闸。响应 data 为扁平行，每行自带 code。
+    """
+    if not codes:
+        return []
+    if len(codes) > 50:
+        raise ValueError("findb batch bars 每批最多 50 只")
+    qs = (
+        f"/api/bars?codes={','.join(codes)}&freq={freq}"
+        f"&start={start}&end={end}&order={order}"
+    )
+    data = await findb_get(qs, timeout=timeout, retries=retries)
+    if not isinstance(data, dict):
+        return []
+    if data.get("truncated"):
+        logger.warning("findb batch bars 被截断: %s %s~%s", freq, start, end)
     return data.get("data") or []
 
 

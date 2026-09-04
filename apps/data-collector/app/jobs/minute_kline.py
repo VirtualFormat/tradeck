@@ -1,326 +1,286 @@
-"""分钟K 采集 job（4.2a-0 冷层先行）：每日拉当日分钟K，直写冷层 Parquet。
+"""全市场股票分钟 K 增量：findb 批量 API → 自有增量 Parquet。
 
-链路：findb 1min（findb_source）→ quality_gate（minute_bars 质量闸）→
-      ColdStorage 写 Parquet 落冷层（year/market 分区 + 文件内 (symbol,ts) 排序）。
+findb full 包已经提供 symbol/year 历史基线。每日按 data_coverage 中仍活跃的
+CN/HK/US 股票，使用官方 ``codes`` 批量协议（≤50 只/请求）拉每个交易日增量，
+写成 market/date 分区。查询层把历史基线与 delta 分区 UNION 后按
+``symbol + datetime`` 去重即可。
 
-数据源（2026-08-25 起 yfinance → findb）：
-- findb：A股/港股/美股 1min 全市场 + 全历史（A股 2002 年起）+ amount 成交额，
-  无 yfinance 的 7 天窗口限制（历史缺口可补）。findb bars 为单 code 接口，
-  逐标的拉取。复权默认原始价（adjust 空，复权经 adj_factor 另算）。
-- A股分钟K 由此接入（此前 yfinance 不支持 A股、akshare 东财本地被封）。
-
-纪律：ts 统一存 UTC epoch 秒；每日幂等（重跑覆盖同分区文件）；
-findb 限流/写锁自动退避（findb_source 内置）；失败优雅降级记日志。
+这种 overlay 布局避免每天重写约 1.6 万个历史 symbol/year 文件，也把约 330 次/
+交易日的请求控制在 findb 60 次/分钟限制内。失败日不发布最终文件，下轮重试。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from app.cold_storage import get_cold_storage
+from app.config import settings
+from app.datasource import findb_source
+from app.db import get_pool
 from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
-# 缺口检测窗口（天）：每日采集当日后，顺带检测近 N 天缺口并补拉。
-# findb 全历史可拉（无 yfinance 的 7 天窗口），窗口设为采集效率与及时性的平衡。
-_GAP_LOOKBACK_DAYS = 7
-
-
-def _minute_symbols() -> dict[str, list[str]]:
-    """按市场分组待采标的（US/HK/CN 三市场，findb 均支持）。"""
-    from app.constants import TRACKED_SYMBOLS
-    from app.markets import pick_market
-
-    groups: dict[str, list[str]] = {"US": [], "HK": [], "CN": []}
-    for s in TRACKED_SYMBOLS:
-        m = pick_market(s)
-        if m not in groups:
-            continue
-        # 健壮性：港股规范码须为 5 位（findb 用 5 位补零，与规范一致）。
-        if m == "HK":
-            code = s.split(".")[0]
-            if len(code) != 5:
-                logger.warning(f"minute_kline 跳过非法港股代码（非 5 位）: {s}")
-                continue
-        groups[m].append(s)
-    return groups
-
-
-# 各市场交易所时区（findb datetime 为交易所本地时间，转 UTC epoch 用）
-_MARKET_TZ = {
-    "CN": "Asia/Shanghai",
-    "HK": "Asia/Hong_Kong",
-    "US": "America/New_York",
+_BATCH_SIZE = 50
+_ACTIVE_MAX_AGE_DAYS = 45
+_MARKET_SUFFIX = {
+    "CN": (".SH", ".SZ", ".BJ"),
+    "HK": (".HK",),
+    "US": (".US",),
 }
 
 
-def _to_findb_code(symbol: str, market: str) -> str:
-    """规范 symbol → findb code。findb 用：A股 600036.SH/000001.SZ/920839.BJ、
-    港股 00700.HK（5 位补零）、美股 AAPL.US（裸码 + .US 后缀）。"""
-    if market == "US" and "." not in symbol:
-        return f"{symbol}.US"
-    return symbol  # CN（.SH/.SZ/.BJ）与 HK（5 位）与规范一致
-
-
-async def _fetch_1m_symbol(
-    symbol: str, market: str, day: date | None
-) -> list[dict[str, Any]]:
-    """拉单标的 findb 1min，返回 findb 原始行（含 datetime/ohlc/volume/amount）。
-
-    findb bars 单 code；day=None 拉最近（order=desc limit=当日分钟数上限），
-    指定 day 拉该天（start=end=day，findb 全历史可拉，无 7 天窗口限制）。
-    """
-    from app.datasource import findb_source
-
-    code = _to_findb_code(symbol, market)
-    if day is None:
-        # 当日：拉最近一批（A股 240 根/日、美股 390 根/日，取上限 400 覆盖）
-        return await findb_source.fetch_bars(
-            code, freq="1min", order="desc", limit=400
-        )
-    return await findb_source.fetch_bars(
-        code,
-        freq="1min",
-        start=day.isoformat(),
-        end=day.isoformat(),
-        order="asc",
-        limit=400,
-    )
-
-
-def _v(x: Any) -> float | None:
-    """NaN/None → None，否则转 float（避免 NaN 进 Parquet）。"""
-    if x is None:
-        return None
+def _number(value: Any) -> float | None:
     try:
-        f = float(x)
+        result = float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-    return None if f != f else f
+    return None if result is not None and result != result else result
 
 
-def _findb_rows_to_minute(
-    bars: list[dict[str, Any]], symbol: str, market: str
-) -> list[dict[str, Any]]:
-    """findb 1min 行（datetime 交易所本地时间）→ 分钟K dict 行（ts UTC epoch 秒）。"""
+def _normalize_rows(raw: list[dict[str, Any]], market: str) -> list[dict[str, Any]]:
     from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo(_MARKET_TZ.get(market, "UTC"))
-    rows: list[dict[str, Any]] = []
-    for b in bars:
-        close = _v(b.get("close"))
-        if close is None:
-            continue
-        # findb datetime 如 2026-08-24T15:00:00（交易所本地，无 tz）→ UTC epoch
-        dt_str = b.get("datetime") or b.get("date")
+    zone = ZoneInfo({
+        "CN": "Asia/Shanghai",
+        "HK": "Asia/Hong_Kong",
+        "US": "America/New_York",
+    }[market])
+    result = []
+    for item in raw:
         try:
-            naive = datetime.fromisoformat(str(dt_str).replace("Z", ""))
-            epoch = int(naive.replace(tzinfo=tz).timestamp())
-        except (ValueError, TypeError):
+            local_time = datetime.fromisoformat(
+                str(item.get("datetime") or "").replace("Z", "")
+            ).replace(tzinfo=None)
+        except ValueError:
             continue
-        rows.append(
+        close = _number(item.get("close"))
+        symbol = str(item.get("code") or "").strip().upper()
+        if not symbol or close is None:
+            continue
+        result.append(
             {
                 "symbol": symbol,
                 "market": market,
-                "ts": epoch,
-                "open": _v(b.get("open")),
-                "high": _v(b.get("high")),
-                "low": _v(b.get("low")),
+                "datetime": local_time,
+                # 质量闸继续使用 UTC epoch；落盘只保留 datetime。
+                "ts": int(local_time.replace(tzinfo=zone).timestamp()),
+                "open": _number(item.get("open")),
+                "high": _number(item.get("high")),
+                "low": _number(item.get("low")),
                 "close": close,
-                "volume": _v(b.get("volume")),
-                "amount": _v(b.get("amount")),  # findb 有成交额（yfinance 无）
+                "volume": _number(item.get("volume")),
+                "amount": _number(item.get("amount")),
             }
         )
-    return rows
+    return result
 
 
-async def fetch_and_store_minute_kline(
-    market: str, symbols: list[str], day: date
-) -> int:
-    """拉单市场某天分钟K → 质量闸 → 冷层。返回落冷层条数。
-
-    day 为要采集的交易日（采当日传当天，补拉缺口传历史某天）。
-    """
-    if not symbols:
-        return 0
-
-    # ① 拉取（findb 逐标的并发；单标的失败不影响其他，优雅降级）。
-    # day 传给 _fetch_1m_symbol 决定拉当日还是历史某天（补拉，findb 全历史可拉）。
-    rows: list[dict[str, Any]] = []
-    fetch_results = await asyncio.gather(
-        *(_fetch_1m_symbol(sym, market, day) for sym in symbols),
-        return_exceptions=True,
+def _delta_path(market: str, day: date) -> Path:
+    return (
+        Path(settings.DATA_POOL_ROOT)
+        / "bars"
+        / "minute_delta"
+        / "asset=stock"
+        / f"market={market}"
+        / f"year={day.year}"
+        / f"date={day.isoformat()}"
+        / "part-000.parquet"
     )
-    for sym, res in zip(symbols, fetch_results):
-        if isinstance(res, Exception):
-            logger.warning(f"minute_kline {market} {sym} 拉取失败: {res}")
-            continue
-        rows.extend(_findb_rows_to_minute(res, sym, market))
-
-    if not rows:
-        logger.warning(f"minute_kline {market} {day} 无数据（{len(symbols)} 只）")
-        return 0
-
-    # ② 质量闸（OHLC 自洽 + 非负；分钟K 不落库表，quarantine 留痕于 quality 层）
-    accepted = await quality_gate("minute_bars", rows)
-    if not accepted:
-        return 0
-
-    # ③ 冷层：year/market/date 分区 + 文件内 (symbol,ts) 排序；幂等覆盖当日文件。
-    # 分区日期用数据真实交易日（yfinance index 的首个交易日，交易所时区），
-    # 不用入参 day——misfire 补跑跨 UTC 日界时 day 可能错位，数据日期才是准的。
-    trade_date = _trade_date_of(rows) or day
-    key = (
-        f"minute_bars/year={trade_date.year}/market={market}/"
-        f"date={trade_date.isoformat()}/part-000.parquet"
-    )
-    cs = get_cold_storage()
-    try:
-        await asyncio.to_thread(cs.write_parquet, key, accepted, sort_by=["symbol", "ts"])
-    except Exception as e:  # noqa: BLE001 — 冷层写失败降级记日志，不连带阻塞其他市场
-        logger.error(
-            f"minute_kline {market} 写冷层失败（{len(accepted)} 行 → {key}）："
-            f"{type(e).__name__}: {e}"
-        )
-        return 0
-    logger.info(f"minute_kline {market} {trade_date}: {len(accepted)} rows → {key}")
-    return len(accepted)
 
 
-def _trade_date_of(rows: list[dict[str, Any]]) -> date | None:
-    """从已落行的 ts（UTC epoch 秒）推导数据的真实交易日（取众数日的 UTC 日期）。
+def _write_batch(path: Path, rows: list[dict[str, Any]]) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    分钟K 单行 ts 是 UTC；同一交易日内的行 UTC 日期一致（US/HK 盘后数据）。
-    用于冷层分区 key，比信任入参 day 更抗 misfire 跨日界错位。
-    """
-    if not rows:
-        return None
-    days = [
-        datetime.fromtimestamp(r["ts"], tz=timezone.utc).date()
-        for r in rows
-        if r.get("ts") is not None
+    payload = [
+        {
+            "symbol": row["symbol"],
+            "datetime": row["datetime"],
+            "open": row["open"],
+            "high": row["high"],
+            "low": row["low"],
+            "close": row["close"],
+            "volume": row["volume"],
+            "amount": row["amount"],
+            "source": "findb",
+        }
+        for row in rows
     ]
-    if not days:
-        return None
-    return max(set(days), key=days.count)
+    table = pa.Table.from_pylist(payload).sort_by(
+        [("symbol", "ascending"), ("datetime", "ascending")]
+    )
+    pq.write_table(table, path, compression="zstd")
 
 
-async def detect_missing_days(
-    market: str, lookback_days: int, today: date
-) -> tuple[list[date], bool]:
-    """缺口检测：近 lookback_days 天内，该市场缺哪些交易日的冷层分区。
+def _compact_day(staging: Path, target: Path) -> int:
+    import duckdb
 
-    用冷层 list_keys 列已有分区，对比「应有的近期日期」找缺口。
-    候选集剔除周末（周六/周日全球休市，yfinance 必返回空，列为缺口会常态化
-    刷屏、淹没真缺口）。节假日不预判（无交易日历）——补拉空转，但量级小。
-
-    返回 (缺口日期列表升序, 检测是否成功)。检测失败（冷层不可达）返回
-    ([], False)——调用方据此区分「无缺口」与「检测失败」，失败需显式告警
-    （漏采即永久丢失，检测失败 = 缺口检测形同虚设，不能静默）。
-    """
-    try:
-        cs = get_cold_storage()
-    except Exception:  # noqa: BLE001 — 配置非法也算检测失败
-        logger.exception(f"minute_kline {market} 缺口检测初始化冷层失败")
-        return [], False
-    try:
-        keys = await asyncio.to_thread(cs.list_keys, f"minute_bars/")
-    except Exception:  # noqa: BLE001
-        logger.exception(f"minute_kline {market} 缺口检测列分区失败")
-        return [], False
-
-    # 已有分区的 (market, date) 集合
-    have: set[date] = set()
-    prefix = f"minute_bars/year="
-    marker = f"/market={market}/date="
-    for k in keys:
-        if not k.startswith(prefix) or marker not in k:
-            continue
-        try:
-            dstr = k.split(marker, 1)[1].split("/", 1)[0]
-            have.add(date.fromisoformat(dstr))
-        except (IndexError, ValueError):
-            continue
-
-    # 近 lookback_days 天（不含今日——今日由本轮正常采集覆盖）中缺失的；
-    # 剔除周末（weekday() 5=周六 6=周日）
-    missing = []
-    for i in range(1, lookback_days + 1):
-        d = today - timedelta(days=i)
-        if d.weekday() >= 5:
-            continue
-        if d not in have:
-            missing.append(d)
-    return sorted(missing), True
-
-
-async def backfill_missing_days(market: str, symbols: list[str], today: date) -> int:
-    """补拉近 7 天缺口（yfinance 1m 窗口内可救）。返回补回的分区数。
-
-    每个缺口日独立降级：补拉失败（限流/该天非交易日无数据）记日志跳过，
-    不影响其他缺口日。幂等（补拉覆盖同分区）。
-    检测失败（冷层不可达）显式告警（ERROR），不误报为「无缺口」——
-    漏采即永久丢失，检测失败 = 缺口检测形同虚设，必须可被发现。
-    """
-    if not symbols:
+    files = sorted(staging.glob("*.parquet"))
+    if not files:
         return 0
-    missing, detect_ok = await detect_missing_days(market, _GAP_LOOKBACK_DAYS, today)
-    if not detect_ok:
-        # 显式告警（区别于日常 noise）：连续出现说明冷层挂了，缺口在悄悄累积
-        logger.error(
-            f"minute_kline {market} 缺口检测失败（冷层不可达），本轮无法确认缺口"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".parquet.part")
+    connection = duckdb.connect()
+    try:
+        connection.execute("SET memory_limit='1GB'")
+        connection.execute("SET threads=2")
+        connection.execute(
+            """
+            COPY (
+                SELECT * EXCLUDE(rank)
+                FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY symbol,datetime ORDER BY source DESC
+                    ) rank
+                    FROM read_parquet(?,union_by_name=true)
+                ) WHERE rank=1 ORDER BY symbol,datetime
+            ) TO ? (FORMAT PARQUET,COMPRESSION ZSTD,ROW_GROUP_SIZE 122880)
+            """,
+            [[str(path) for path in files], str(temporary)],
         )
-        return 0
-    if not missing:
-        return 0
-    logger.info(f"minute_kline {market} 检测到 {len(missing)} 个缺口日（已剔周末）: {missing}")
+        count = int(
+            connection.execute(
+                "SELECT num_rows FROM parquet_file_metadata(?)", [str(temporary)]
+            ).fetchone()[0]
+        )
+        os.replace(temporary, target)
+        return count
+    finally:
+        connection.close()
+        temporary.unlink(missing_ok=True)
 
-    filled = 0
-    for d in missing:
-        try:
-            n = await fetch_and_store_minute_kline(market, symbols, d)
-            if n > 0:
-                filled += 1
-                logger.info(f"minute_kline {market} 补拉 {d}: {n} rows")
-            else:
-                # 区分「该天无数据」（节假日/滑出窗口）与「补拉失败」（异常）：
-                # fetch_and_store 返回 0 是正常空转（不写假数据），记 info 而非 exception
-                logger.info(f"minute_kline {market} 补拉 {d}: 该天无数据（节假日或窗口外）")
-        except Exception:  # noqa: BLE001 — 单缺口日失败不影响其他
-            logger.exception(f"minute_kline {market} 补拉 {d} 失败，跳过")
-    return filled
+
+async def _active_symbols(market: str) -> list[str]:
+    suffixes = _MARKET_SUFFIX[market]
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            WITH market_rows AS (
+                SELECT symbol,end_at,
+                       max(end_at) OVER () AS market_max
+                FROM data_coverage
+                WHERE source='findb' AND frequency='1min'
+                  AND symbol LIKE ANY($1::text[])
+            )
+            SELECT symbol
+            FROM market_rows
+            WHERE end_at >= market_max - ($2 * INTERVAL '1 day')
+            ORDER BY symbol
+            """,
+            [f"%{suffix}" for suffix in suffixes],
+            _ACTIVE_MAX_AGE_DAYS,
+        )
+    return [row["symbol"] for row in rows]
+
+
+async def _expected_days(market: str, through: date) -> list[date]:
+    """以 daily_prices 为交易日历；从 full coverage 末日后开始补。"""
+    suffixes = _MARKET_SUFFIX[market]
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        baseline_end = await connection.fetchval(
+            """
+            SELECT max(end_at::date)
+            FROM data_coverage
+            WHERE source='findb' AND frequency='1min'
+              AND symbol LIKE ANY($1::text[])
+            """,
+            [f"%{suffix}" for suffix in suffixes],
+        )
+        if baseline_end is None:
+            return []
+        rows = await connection.fetch(
+            """
+            SELECT DISTINCT date
+            FROM daily_prices
+            WHERE market=$1 AND date > $2 AND date <= $3
+            ORDER BY date
+            """,
+            market,
+            baseline_end,
+            through,
+        )
+    return [row["date"] for row in rows]
+
+
+async def _sync_day(market: str, symbols: list[str], day: date) -> int:
+    target = _delta_path(market, day)
+    if target.exists():
+        return 0
+    staging = target.parent / f".staging-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    successful_batches = 0
+    try:
+        for index, offset in enumerate(range(0, len(symbols), _BATCH_SIZE)):
+            chunk = symbols[offset : offset + _BATCH_SIZE]
+            raw = await findb_source.fetch_bars_batch(
+                chunk,
+                freq="1min",
+                start=day.isoformat(),
+                end=day.isoformat(),
+                timeout=90.0,
+                retries=2,
+            )
+            if not raw:
+                continue
+            accepted = await quality_gate(
+                "minute_bars", _normalize_rows(raw, market), persist=False
+            )
+            if not accepted:
+                continue
+            await asyncio.to_thread(
+                _write_batch, staging / f"batch-{index:04d}.parquet", accepted
+            )
+            successful_batches += 1
+
+        expected_batches = (len(symbols) + _BATCH_SIZE - 1) // _BATCH_SIZE
+        # 少量已退市/停牌标的会让个别批次无数据；低于 80% 视为源异常，不发布。
+        if successful_batches < max(1, int(expected_batches * 0.8)):
+            logger.warning(
+                "minute_kline %s %s 批次不足: %d/%d，不发布",
+                market,
+                day,
+                successful_batches,
+                expected_batches,
+            )
+            return 0
+        count = await asyncio.to_thread(_compact_day, staging, target)
+        logger.info("minute_kline %s %s: %d rows", market, day, count)
+        return count
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
-    """每日分钟K 采集：US/HK 各市场采当日。返回各市场落冷层条数。"""
+    """同步 full 基线末日后的所有已知交易日，已发布日期自动跳过。"""
     logger.info("=== minute kline job start ===")
-    day = day or datetime.now(timezone.utc).date()
-    groups = _minute_symbols()
+    through = day or datetime.now(timezone.utc).date()
     counts: dict[str, int] = {}
-    for market, symbols in groups.items():
-        # 每市场独立降级：一个市场失败（拉取/质量/写冷层）不影响另一市场
-        try:
-            counts[market] = await fetch_and_store_minute_kline(market, symbols, day)
-        except Exception:  # noqa: BLE001 — 双保险（fetch_and_store 内部已分层降级）
-            logger.exception(f"minute_kline {market} 未捕获异常，跳过本市场")
-            counts[market] = 0
-
-    # 第二阶段：缺口检测 + 窗口期内补拉（漏采即永久丢失，近 7 天可救）。
-    # 与当日采集同样按市场隔离降级。
-    for market, symbols in groups.items():
-        try:
-            filled = await backfill_missing_days(market, symbols, day)
-            if filled:
-                logger.info(f"minute_kline {market} 补回 {filled} 个缺口日")
-        except Exception:  # noqa: BLE001
-            logger.exception(f"minute_kline {market} 缺口补拉失败")
-
+    for market in ("CN", "HK", "US"):
+        symbols = await _active_symbols(market)
+        days = await _expected_days(market, through)
+        logger.info(
+            "minute_kline %s: %d active symbols, %d missing trade days",
+            market,
+            len(symbols),
+            len(days),
+        )
+        total = 0
+        for trade_day in days:
+            try:
+                total += await _sync_day(market, symbols, trade_day)
+            except Exception:  # noqa: BLE001
+                logger.exception("minute_kline %s %s 增量失败", market, trade_day)
+        counts[market] = total
     logger.info(
-        "=== minute kline job done: "
-        + ", ".join(f"{m}={c}" for m, c in counts.items())
-        + " ==="
+        "=== minute kline job done: %s ===",
+        ", ".join(f"{market}={count}" for market, count in counts.items()),
     )
     return counts

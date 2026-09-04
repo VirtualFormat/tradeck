@@ -411,6 +411,23 @@ CREATE TABLE IF NOT EXISTS adjust_factors (
 );
 CREATE INDEX IF NOT EXISTS idx_adjust_factors_symbol_date ON adjust_factors(symbol, date DESC);
 
+-- 日级估值快照（同花顺全市场批量主源；与日K分表，避免不同更新时点互相覆盖）
+CREATE TABLE IF NOT EXISTS daily_valuations (
+    symbol VARCHAR(32) NOT NULL,
+    date DATE NOT NULL,
+    name TEXT,
+    pe_ttm DOUBLE PRECISION,
+    pe_mrq DOUBLE PRECISION,
+    pb_mrq DOUBLE PRECISION,
+    ps_ttm DOUBLE PRECISION,
+    pcf_ttm DOUBLE PRECISION,
+    source VARCHAR(32) NOT NULL,
+    source_updated_at TIMESTAMPTZ,
+    PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_valuations_date
+    ON daily_valuations(date DESC);
+
 -- 自有 data pool 元数据热层。findb 只是初始化来源；供应商原始包转换成功后
 -- 删除，5275 万行复权因子按年转为自有 Parquet。以下小表由手动任务替换。
 CREATE TABLE IF NOT EXISTS instrument_master (

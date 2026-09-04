@@ -134,6 +134,16 @@ data-pool/
 Parquet 年分片；同花顺失败时 findb API 仅补 tracked A 股，避免单标的接口扫描
 全市场导致 429。
 
+增量源分工：同花顺覆盖的 A 股日K、日级估值、板块目录/快照和板块成分优先
+走同花顺；findb 仅作为这些数据的 fallback，并继续负责分钟K、资金流及同花顺
+未覆盖的数据域。分钟K 使用 findb `/api/bars?codes=` 批量协议（每批最多 20 只，
+全进程节流），按 `(symbol, datetime)` 合并回初始化形成的 `symbol/year` 分片；
+每日分钟任务基于 `data_coverage` 选取仍活跃的 CN/HK/US 股票，使用 findb 官方
+`codes` 批量协议（最多 50 只/批）写 `minute_delta/market/date` overlay 分区；
+查询时与 full 的 `symbol/year` 基线 UNION，并按 `(symbol, datetime)` 去重。
+同花顺覆盖的板块目录/行情/成分和 A 股日级估值均切为同花顺主源，findb 只在
+同花顺整体失败时兜底，减少 API 配额竞争。
+
 **Parquet（存储格式）**：列存 + 压缩 + schema 自描述，按 `year=YYYY/market=XX/` 目录分区。回测扫特定年份/市场只读对应目录，天然谓词下推。
 
 **腾讯云 COS（存储底座，主选）**：

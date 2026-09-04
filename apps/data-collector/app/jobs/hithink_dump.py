@@ -82,13 +82,13 @@ def _cache_path(dump_type: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"hithink_dump_{dump_type}.parquet")
 
 
-def _pool_daily_path(year: int) -> str:
+def _pool_daily_path(year: int, market: str = "CN") -> str:
     return os.path.join(
         settings.DATA_POOL_ROOT,
         "bars",
         "daily",
         "asset=stock",
-        "market=CN",
+        f"market={market}",
         f"year={year}.parquet",
     )
 
@@ -97,7 +97,78 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-async def _merge_pool_daily(records: list[tuple], *, source: str = "hithink") -> int:
+def merge_daily_baseline(source: str, target: str, market: str) -> None:
+    """把 findb 历史基线并入已存在的增量分片，保留历史扩展字段。
+
+    同日期以自有增量 OHLCVA/source 为准；PE/PB/市值等仅历史源提供的列继续
+    保留，避免初始化顺序导致当年基线被近 10 日增量遮蔽。
+    """
+    import duckdb
+
+    temporary = f"{target}.baseline.part"
+    connection = duckdb.connect()
+    try:
+        existing_columns = [
+            row[0]
+            for row in connection.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?,hive_partitioning=false)",
+                [target],
+            ).fetchall()
+        ]
+        baseline_columns = [
+            row[0]
+            for row in connection.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?,hive_partitioning=false)",
+                [source],
+            ).fetchall()
+        ]
+        preferred = [
+            "symbol", "market", "date", "open", "high", "low", "close",
+            "volume", "amount", "source",
+        ]
+        output_columns = preferred + [
+            column
+            for column in baseline_columns + existing_columns
+            if column not in preferred
+        ]
+        output_columns = list(dict.fromkeys(output_columns))
+        expressions = []
+        for column in output_columns:
+            existing = f'e."{column}"' if column in existing_columns else "NULL"
+            baseline = f'b."{column}"' if column in baseline_columns else "NULL"
+            if column == "market":
+                expressions.append(
+                    f"COALESCE({existing},{baseline},'{market}') AS market"
+                )
+            else:
+                expressions.append(
+                    f'COALESCE({existing},{baseline}) AS "{column}"'
+                )
+        connection.execute(
+            f"""
+            COPY (
+                SELECT {', '.join(expressions)}
+                FROM read_parquet(
+                    {_sql_literal(target)}, hive_partitioning=false
+                ) e
+                FULL OUTER JOIN read_parquet(
+                    {_sql_literal(source)}, hive_partitioning=false
+                ) b USING (symbol,date)
+                ORDER BY symbol,date
+            ) TO {_sql_literal(temporary)}
+            (FORMAT PARQUET,COMPRESSION ZSTD,ROW_GROUP_SIZE 122880)
+            """
+        )
+        os.replace(temporary, target)
+    finally:
+        connection.close()
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+async def merge_daily_pool(
+    records: list[tuple], *, source: str, market: str
+) -> int:
     """把标准化日K合并进自有 Parquet data pool（按 symbol/date 幂等）。"""
     if not records:
         return 0
@@ -105,7 +176,7 @@ async def _merge_pool_daily(records: list[tuple], *, source: str = "hithink") ->
     def merge(year: int, year_records: list[tuple]) -> int:
         import duckdb
 
-        target = _pool_daily_path(year)
+        target = _pool_daily_path(year, market)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         temporary = f"{target}.part"
         connection = duckdb.connect()
@@ -126,21 +197,47 @@ async def _merge_pool_daily(records: list[tuple], *, source: str = "hithink") ->
             target_sql = _sql_literal(target)
             temporary_sql = _sql_literal(temporary)
             if os.path.exists(target):
-                query = f"""
-                    SELECT symbol, market, date, open, high, low, close,
-                           volume, amount, source
-                    FROM (
-                        SELECT *, row_number() OVER (
-                            PARTITION BY symbol, date ORDER BY priority DESC
-                        ) AS rank
-                        FROM (
-                            SELECT symbol, market, date, open, high, low, close,
-                                   volume, amount, source, 1 AS priority
-                            FROM read_parquet({target_sql}, union_by_name=true)
-                            UNION ALL
-                            SELECT *, 2 AS priority FROM incoming
+                existing_columns = [
+                    row[0]
+                    for row in connection.execute(
+                        "DESCRIBE SELECT * FROM read_parquet(?,hive_partitioning=false)",
+                        [target],
+                    ).fetchall()
+                ]
+                core_columns = [
+                    "symbol", "market", "date", "open", "high", "low", "close",
+                    "volume", "amount", "source",
+                ]
+                output_columns = core_columns + [
+                    column
+                    for column in existing_columns
+                    if column not in core_columns
+                ]
+                expressions = []
+                for column in output_columns:
+                    if column in core_columns:
+                        existing = (
+                            f'e."{column}"'
+                            if column in existing_columns
+                            else "NULL"
                         )
-                    ) WHERE rank = 1 ORDER BY symbol, date
+                        if column == "market":
+                            expressions.append(
+                                f"COALESCE(i.market,{existing},'{market}') AS market"
+                            )
+                        else:
+                            expressions.append(
+                                f'COALESCE(i."{column}",{existing}) AS "{column}"'
+                            )
+                    else:
+                        expressions.append(f'e."{column}"')
+                query = f"""
+                    SELECT {', '.join(expressions)}
+                    FROM read_parquet(
+                        {target_sql}, union_by_name=true, hive_partitioning=false
+                    ) e
+                    FULL OUTER JOIN incoming i USING (symbol,date)
+                    ORDER BY symbol,date
                 """
                 connection.execute(
                     f"COPY ({query}) TO {temporary_sql} "
@@ -314,7 +411,7 @@ async def _run_findb_tracked_fallback() -> int:
     async with pool.acquire() as connection:
         for offset in range(0, len(normalized), _UPSERT_BATCH):
             await _upsert_batch(connection, normalized[offset : offset + _UPSERT_BATCH])
-    await _merge_pool_daily(normalized, source="findb")
+    await merge_daily_pool(normalized, source="findb", market="CN")
     logger.warning("同花顺日K不可用，findb fallback 补齐 tracked A 股 %d 行", len(normalized))
     return len(normalized)
 
@@ -400,7 +497,7 @@ async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
                 for j in range(0, len(rows), _UPSERT_BATCH):
                     await _upsert_batch(conn, rows[j : j + _UPSERT_BATCH])
                 # data pool 按年份分片；每日 10d 增量通常只覆盖当年，跨年时
-                # _merge_pool_daily 会按真实 date 拆入对应年度分片。全量任务
+                # merge_daily_pool 会按真实 date 拆入对应年度分片。全量任务
                 # 当前由供应商初始包负责，不重复把十年数据常驻内存。
                 if not full:
                     pool_rows.extend(rows)
@@ -411,7 +508,9 @@ async def run_hithink_daily_k_dump_job(*, full: bool = False) -> int:
 
     if pool_rows:
         try:
-            pool_written = await _merge_pool_daily(pool_rows)
+            pool_written = await merge_daily_pool(
+                pool_rows, source="hithink", market="CN"
+            )
             logger.info("%s 自有 data pool 更新：%d 行", label, pool_written)
         except Exception as e:  # noqa: BLE001 — PG 已成功，冷层失败记错不回滚
             logger.error("%s 写自有 data pool 失败: %s", label, e)

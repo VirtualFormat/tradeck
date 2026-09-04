@@ -323,12 +323,30 @@ def _materialize_market_module(
             if not filename.startswith("year="):
                 filename = f"year={Path(filename).stem}.parquet"
             relative = Path(f"symbol={symbol}") / filename
-        _replace_hardlink(
-            source,
+        elif frequency == "daily" and not relative.name.startswith("year="):
+            relative = relative.with_name(f"year={relative.stem}.parquet")
+        target = (
             root / "bars" / frequency / f"asset={asset}"
-            / f"market={market}" / relative,
-            overwrite=overwrite,
+            / f"market={market}" / relative
         )
+        if frequency == "daily" and target.exists() and not overwrite:
+            from app.jobs.hithink_dump import merge_daily_baseline
+
+            merge_daily_baseline(str(source), str(target), market)
+        else:
+            _replace_hardlink(
+                source,
+                target,
+                overwrite=overwrite,
+            )
+        # 早期版本曾把日线发布成 `YYYY.parquet`；规范化完成后清理旧硬链接。
+        if frequency == "daily":
+            legacy = (
+                root / "bars" / frequency / f"asset={asset}"
+                / f"market={market}" / source.relative_to(source_root)
+            )
+            if legacy != target:
+                legacy.unlink(missing_ok=True)
 
 
 async def _record_state(

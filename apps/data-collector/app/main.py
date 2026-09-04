@@ -80,6 +80,21 @@ CREATE INDEX IF NOT EXISTS idx_corporate_events_date
 # 自有 data pool 元数据热层。findb 是初始化来源，供应商原始包不长期保留。
 # init.sql 只在空卷执行，存量卷需补表。
 _FINDB_METADATA_MIGRATION = """
+CREATE TABLE IF NOT EXISTS daily_valuations (
+    symbol VARCHAR(32) NOT NULL,
+    date DATE NOT NULL,
+    name TEXT,
+    pe_ttm DOUBLE PRECISION,
+    pe_mrq DOUBLE PRECISION,
+    pb_mrq DOUBLE PRECISION,
+    ps_ttm DOUBLE PRECISION,
+    pcf_ttm DOUBLE PRECISION,
+    source VARCHAR(32) NOT NULL,
+    source_updated_at TIMESTAMPTZ,
+    PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_valuations_date
+    ON daily_valuations(date DESC);
 CREATE TABLE IF NOT EXISTS instrument_master (
     symbol VARCHAR(32) NOT NULL,
     name TEXT,

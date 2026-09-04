@@ -1,17 +1,4 @@
-"""板块行情热度（findb 同花顺概念指数 + 申万行业，写入 board_heat）
-
-数据源（findb /api/table，A 股板块目录/行情，替代原 akshare 东财板块接口）：
-- 概念：ths_index（type=N 概念指数目录）+ ths_index_daily（指数日线，
-  按 ts_code 聚合取最新一根的涨跌幅）。
-- 行业：sw_industry（申万行业目录，2021 版）；findb 当前未开放 sw_daily，
-  因此只写目录、行情字段留空。
-
-原 akshare 东财概念/行业板块接口已退役：本地常被东财断连/封 IP。
-
-code 口径：findb 板块 ts_code 直接写入（885xxx.TI / 801xxx.SI），
-不带 THS: 前缀——后端 /api/boards/heat 按 THS: 前缀判 source=ths，
-此处沿用 tushare 风格 ts_code 走默认 eastmoney 分支（与旧东财快照一致）。
-"""
+"""A 股板块热度：同花顺指数目录 + 批量快照，findb 兜底。"""
 from __future__ import annotations
 
 import asyncio
@@ -19,176 +6,194 @@ import logging
 from datetime import date
 from typing import Any
 
-from app.datasource import findb_source
+from app.datasource import findb_source, hithink_source
 from app.db import get_pool
 from app.quality import quality_gate
 
 logger = logging.getLogger(__name__)
 
 
-def _f(v: Any) -> float | None:
+def _f(value: Any) -> float | None:
     try:
-        f = float(v) if v is not None else None
+        result = float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-    return None if f is not None and f != f else f
+    return None if result is not None and result != result else result
 
 
-def _i(v: Any) -> int | None:
-    try:
-        f = float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
-    return None if f is None or f != f else int(f)
-
-
-async def _latest_daily_by_code(
-    table: str, *, codes: list[str], daily_cols: str
-) -> dict[str, dict]:
-    """按 ts_code 聚合取指数日线最新一根（单 code 拉取 + 合并，order=desc 取首条）。
-
-    findb 日线表为单 code 接口（sort/order 对全表生效、非按 code 分组），
-    逐 code 拉 order=desc limit=1 得到每个指数最新一根。
-    单 code 失败只丢该指数，不拖累其余（优雅降级）。
-    """
-    latest: dict[str, dict] = {}
-
-    async def _one(code: str) -> None:
-        rows = await findb_source.fetch_table(
-            table, cols=daily_cols, col="ts_code", val=code,
-            sort="trade_date", order="desc", limit=1,
+async def _hithink_rows(board_type: str) -> list[tuple]:
+    """同花顺主源：目录一次全量 + 快照 100 只/批。"""
+    tag = "industry" if board_type == "industry" else "cn_concept"
+    boards = await hithink_source.get_index_catalog(tag)
+    if not boards:
+        return []
+    codes = [str(item.get("thscode") or "") for item in boards]
+    snapshots: dict[str, dict] = {}
+    failed_batches = 0
+    for offset in range(0, len(codes), 100):
+        items = await hithink_source.get_index_snapshot(codes[offset : offset + 100])
+        if not items:
+            failed_batches += 1
+        snapshots.update(
+            (str(item.get("thscode") or ""), item)
+            for item in items
+            if item.get("thscode")
         )
-        if rows:
-            latest[code] = rows[0]
+    if failed_batches or len(snapshots) < int(len(codes) * 0.8):
+        logger.warning(
+            "hithink %s boards snapshot incomplete: %d/%d, fallback findb",
+            board_type,
+            len(snapshots),
+            len(codes),
+        )
+        return []
+    result = []
+    for board in boards:
+        code = str(board.get("thscode") or "")
+        name = str(board.get("name") or "").strip()
+        if not code or not name:
+            continue
+        snapshot = snapshots.get(code, {})
+        result.append(
+            (
+                board_type,
+                name,
+                code,
+                _f(snapshot.get("price_change_ratio_pct")),
+                None,
+                _f(snapshot.get("turnover_rate")),
+                None,
+                None,
+            )
+        )
+    logger.info("hithink %s boards: %d", board_type, len(result))
+    return result
 
-    # 全市场指数目录 ~500 个，分批并发控制请求节奏
-    _BATCH = 20
-    for i in range(0, len(codes), _BATCH):
-        await asyncio.gather(*(_one(c) for c in codes[i : i + _BATCH]))
-    return latest
 
-
-async def _fetch_concept_rows() -> list[tuple]:
-    """同花顺概念指数（ths_index type=N + ths_index_daily 最新涨跌幅）。"""
+async def _findb_concept_rows() -> list[tuple]:
     boards = await findb_source.fetch_table(
         "ths_index", cols="ts_code,name", col="type", val="N", limit=5000
     )
     if not boards:
-        logger.warning("findb ths_index 概念目录为空")
         return []
+    latest: dict[str, dict] = {}
 
-    codes = [str(r["ts_code"]) for r in boards if r.get("ts_code") and r.get("name")]
-    # ths_index_daily 实际列无 total_mv（此前请求未知列导致所有日线为空）；
-    # 只请求真实存在字段，market_cap 置空。
-    latest = await _latest_daily_by_code(
-        "ths_index_daily", codes=codes,
-        daily_cols="ts_code,pct_change,turnover_rate",
-    )
+    async def fetch_one(code: str) -> None:
+        items = await findb_source.fetch_table(
+            "ths_index_daily",
+            cols="ts_code,pct_change,turnover_rate",
+            col="ts_code",
+            val=code,
+            sort="trade_date",
+            order="desc",
+            limit=1,
+        )
+        if items:
+            latest[code] = items[0]
 
-    rows = []
-    for r in boards:
-        code = str(r.get("ts_code") or "")
-        name = str(r.get("name") or "").strip()
+    codes = [str(item.get("ts_code") or "") for item in boards]
+    for offset in range(0, len(codes), 5):
+        await asyncio.gather(*(fetch_one(code) for code in codes[offset : offset + 5]))
+        await asyncio.sleep(0.2)
+
+    result = []
+    for board in boards:
+        code = str(board.get("ts_code") or "")
+        name = str(board.get("name") or "").strip()
         if not code or not name:
             continue
-        d = latest.get(code, {})
-        rows.append((
-            "concept",
-            name,
-            code,
-            _f(d.get("pct_change")),
-            _i(d.get("total_mv")),
-            _f(d.get("turnover_rate")),
-            None,  # leader_stock：findb 板块日线无领涨股，置空
-            None,  # leader_change：同上
-        ))
-    logger.info(f"findb concept boards: {len(rows)}")
-    return rows
+        snapshot = latest.get(code, {})
+        result.append(
+            (
+                "concept",
+                name,
+                code,
+                _f(snapshot.get("pct_change")),
+                None,
+                _f(snapshot.get("turnover_rate")),
+                None,
+                None,
+            )
+        )
+    return result
 
 
-async def _fetch_industry_rows() -> list[tuple]:
-    """申万行业目录（findb sw_industry，字段 index_code/industry_name）。"""
+async def _findb_industry_rows() -> list[tuple]:
     boards = await findb_source.fetch_table(
         "sw_industry", cols="index_code,industry_name", limit=5000
     )
-    if not boards:
-        logger.warning("findb sw_industry 行业目录为空")
-        return []
-
-    rows = []
-    for r in boards:
-        code = str(r.get("index_code") or "")
-        name = str(r.get("industry_name") or "").strip()
-        if not code or not name:
-            continue
-        rows.append((
+    return [
+        (
             "industry",
-            name,
-            code,
-            None,  # findb 未开放 sw_daily，行业行情暂留空
+            str(item["industry_name"]),
+            str(item["index_code"]),
             None,
             None,
-            None,  # leader_stock：findb 行业日线无领涨股，置空
-            None,  # leader_change：同上
-        ))
-    logger.info(f"findb industry boards: {len(rows)}")
-    return rows
+            None,
+            None,
+            None,
+        )
+        for item in boards
+        if item.get("index_code") and item.get("industry_name")
+    ]
 
 
 async def fetch_and_store_boards(board_type: str) -> int:
-    """拉一类板块（concept/industry）行情，全量覆盖写入。返回写入条数。"""
-    if board_type == "industry":
-        rows = await _fetch_industry_rows()
-    else:
-        rows = await _fetch_concept_rows()
-
+    rows = await _hithink_rows(board_type)
     if not rows:
-        logger.warning(f"No boards data for {board_type}")
+        logger.warning("hithink %s boards empty, fallback to findb", board_type)
+        rows = (
+            await _findb_industry_rows()
+            if board_type == "industry"
+            else await _findb_concept_rows()
+        )
+    if not rows:
+        logger.warning("No boards data for %s", board_type)
         return 0
 
-    # 写库前把 tuple 转 dict 过质量闸（键与 board_heat 列名一致；snapshot_date 恒为当天，
-    # 与 INSERT 的 DEFAULT CURRENT_DATE 同口径），被拦的行不进 INSERT
-    _cols = (
-        "board_type", "name", "code", "change_percent", "market_cap",
-        "turnover_rate", "leader_stock", "leader_change",
+    columns = (
+        "board_type",
+        "name",
+        "code",
+        "change_percent",
+        "market_cap",
+        "turnover_rate",
+        "leader_stock",
+        "leader_change",
     )
     today = date.today()
-    dict_rows = [
-        {**dict(zip(_cols, row)), "snapshot_date": today} for row in rows
-    ]
-    accepted = await quality_gate("board_heat", dict_rows)
+    accepted = await quality_gate(
+        "board_heat",
+        [{**dict(zip(columns, row)), "snapshot_date": today} for row in rows],
+    )
     if not accepted:
-        logger.warning(f"boards {board_type} 全部被质量闸拦截，保留旧快照")
         return 0
-    rows = [tuple(d[c] for c in _cols) for d in accepted]
-
+    stored = [tuple(item[column] for column in columns) for item in accepted]
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        # 只覆盖当天快照（保留历史日期，供回看）
-        await conn.execute(
-            "DELETE FROM board_heat WHERE board_type = $1 AND snapshot_date = CURRENT_DATE",
-            board_type,
-        )
-        await conn.executemany(
-            """
-            INSERT INTO board_heat
-                (board_type, name, code, change_percent, market_cap,
-                 turnover_rate, leader_stock, leader_change, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-            """,
-            rows,
-        )
-    logger.info(f"fetched {len(rows)} {board_type} boards")
-    return len(rows)
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                "DELETE FROM board_heat WHERE board_type=$1 "
+                "AND snapshot_date=CURRENT_DATE",
+                board_type,
+            )
+            await connection.executemany(
+                """
+                INSERT INTO board_heat
+                    (board_type, name, code, change_percent, market_cap,
+                     turnover_rate, leader_stock, leader_change, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                """,
+                stored,
+            )
+    return len(stored)
 
 
 async def run_board_heat_job() -> dict[str, int]:
-    """定时任务：拉概念 + 行业板块行情热度"""
     logger.info("=== board heat job start ===")
     counts = {
         "concept": await fetch_and_store_boards("concept"),
         "industry": await fetch_and_store_boards("industry"),
     }
-    total = sum(counts.values())
-    logger.info(f"=== board heat job done: {total} rows ===")
+    logger.info("=== board heat job done: %d rows ===", sum(counts.values()))
     return counts

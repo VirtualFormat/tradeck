@@ -115,6 +115,19 @@ async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
                 """,
                 rows[i : i + _UPSERT_BATCH],
             )
+    # HK/US 每日增量同步写入 findb 初始化形成的同一年度 Parquet。
+    # 延迟导入避免 daily_kline ↔ hithink_dump 模块加载环。
+    if market in {"HK", "US"}:
+        from app.jobs.hithink_dump import merge_daily_pool
+
+        pool_rows = [
+            ((f"{row[0]}.US" if market == "US" else row[0]), *row[1:])
+            for row in rows
+        ]
+        try:
+            await merge_daily_pool(pool_rows, source="openbb", market=market)
+        except Exception:  # noqa: BLE001 — PG 已成功，冷层失败不回滚主链
+            logger.exception("daily_kline %s 写自有 data pool 失败", market)
     return len(rows)
 
 

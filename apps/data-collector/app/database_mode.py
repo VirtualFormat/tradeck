@@ -24,6 +24,7 @@ _VALID_DATABASE_MODES = {"live", "mock"}
 # 业务表清单与 backend 保持一致：用于区分「空库」与「存量库」。
 BUSINESS_TABLES = (
     "daily_prices",
+    "daily_valuations",
     "quote_snapshots",
     "index_prices",
     "movers_cache",
