@@ -125,23 +125,26 @@ def _compact_day(staging: Path, target: Path) -> int:
         return 0
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".parquet.part")
+    sources = [str(path).replace("'", "''") for path in files]
+    source_sql = "[" + ",".join(f"'{path}'" for path in sources) + "]"
+    output_sql = str(temporary).replace("'", "''")
     connection = duckdb.connect()
     try:
         connection.execute("SET memory_limit='1GB'")
         connection.execute("SET threads=2")
         connection.execute(
-            """
+            f"""
             COPY (
                 SELECT * EXCLUDE(rank)
                 FROM (
                     SELECT *, row_number() OVER (
                         PARTITION BY symbol,datetime ORDER BY source DESC
                     ) rank
-                    FROM read_parquet(?,union_by_name=true)
+                    FROM read_parquet({source_sql},union_by_name=true)
                 ) WHERE rank=1 ORDER BY symbol,datetime
-            ) TO ? (FORMAT PARQUET,COMPRESSION ZSTD,ROW_GROUP_SIZE 122880)
-            """,
-            [[str(path) for path in files], str(temporary)],
+            ) TO '{output_sql}'
+            (FORMAT PARQUET,COMPRESSION ZSTD,ROW_GROUP_SIZE 122880)
+            """
         )
         count = int(
             connection.execute(
