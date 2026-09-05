@@ -231,7 +231,14 @@ async def _expected_days(market: str, through: date) -> list[date]:
         marker = read_delta_marker(path)
         if day <= through and (not marker or marker.get("complete") is not True):
             days.add(day)
-    return sorted(days)
+    return sorted(
+        day
+        for day in days
+        if not (
+            (marker := read_delta_marker(delta_path(market, day)))
+            and marker.get("complete") is True
+        )
+    )
 
 
 async def _sync_day(market: str, symbols: list[str], day: date) -> int:
