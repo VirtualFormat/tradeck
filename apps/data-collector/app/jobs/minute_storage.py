@@ -493,22 +493,81 @@ def _delta_partition(path: Path) -> tuple[str, date]:
     return market, day
 
 
-def _complete_delta_files(through: date) -> dict[tuple[str, int], list[Path]]:
-    grouped: dict[tuple[str, int], list[Path]] = defaultdict(list)
+def _next_month(day: date) -> date:
+    return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+
+
+async def _contiguous_complete_delta_files(
+    cutoff: date,
+) -> dict[tuple[str, int], list[Path]]:
+    """只选择从 baseline 水位起连续完整的月份；遇到首个缺口立即停止。"""
+    selected: dict[tuple[str, int], list[Path]] = defaultdict(list)
     root = pool_root() / "bars" / "minute_delta" / "asset=stock"
-    for path in sorted(root.glob("market=*/year=*/date=*/part-000.parquet")):
-        market, day = _delta_partition(path)
-        marker = read_delta_marker(path)
-        if day <= through and marker and marker.get("complete") is True:
-            grouped[(market, day.year)].append(path)
-    return grouped
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        for market in _MARKETS:
+            baseline_end = await connection.fetchval(
+                """
+                SELECT max(end_at::date) FROM data_coverage
+                WHERE source='findb' AND frequency='1min'
+                  AND symbol LIKE ANY($1::text[])
+                """,
+                {
+                    "CN": ["%.SH", "%.SZ", "%.BJ"],
+                    "HK": ["%.HK"],
+                    "US": ["%.US"],
+                }[market],
+            )
+            if baseline_end is None:
+                continue
+            cursor = baseline_end + timedelta(days=1)
+            while cursor <= cutoff:
+                month_end = min(_next_month(cursor) - timedelta(days=1), cutoff)
+                expected = {
+                    row["date"]
+                    for row in await connection.fetch(
+                        """
+                        SELECT DISTINCT date FROM daily_prices
+                        WHERE market=$1 AND date BETWEEN $2 AND $3
+                        ORDER BY date
+                        """,
+                        market,
+                        cursor,
+                        month_end,
+                    )
+                }
+                files: dict[date, Path] = {}
+                for path in root.glob(
+                    f"market={market}/year=*/date=*/part-000.parquet"
+                ):
+                    _, day = _delta_partition(path)
+                    marker = read_delta_marker(path)
+                    if (
+                        cursor <= day <= month_end
+                        and marker
+                        and marker.get("complete") is True
+                    ):
+                        files[day] = path
+                if expected - set(files):
+                    logger.warning(
+                        "分钟增量压实暂停 %s %s~%s，缺少完整交易日: %s",
+                        market,
+                        cursor,
+                        month_end,
+                        sorted(expected - set(files)),
+                    )
+                    break
+                for day in sorted(expected):
+                    selected[(market, day.year)].append(files[day])
+                cursor = month_end + timedelta(days=1)
+    return selected
 
 
 async def run_minute_delta_compact_job(through: date | None = None) -> dict[str, int]:
     """将上月及更早的完整 delta 压入 symbol/year baseline。"""
     first_this_month = date.today().replace(day=1)
     cutoff = through or first_this_month - timedelta(days=1)
-    grouped = _complete_delta_files(cutoff)
+    grouped = await _contiguous_complete_delta_files(cutoff)
     compacted_files = 0
     compacted_symbols: set[str] = set()
     for (market, year), files in sorted(grouped.items()):

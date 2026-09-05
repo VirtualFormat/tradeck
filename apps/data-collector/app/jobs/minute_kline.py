@@ -208,7 +208,23 @@ async def _expected_days(market: str, through: date) -> list[date]:
             baseline_end,
             through,
         )
-    return [row["date"] for row in rows]
+    days = {row["date"] for row in rows}
+    delta_root = (
+        Path(settings.DATA_POOL_ROOT)
+        / "bars"
+        / "minute_delta"
+        / "asset=stock"
+        / f"market={market}"
+    )
+    for path in delta_root.glob("year=*/date=*/part-000.parquet"):
+        try:
+            day = date.fromisoformat(path.parent.name.removeprefix("date="))
+        except ValueError:
+            continue
+        marker = read_delta_marker(path)
+        if day <= through and (not marker or marker.get("complete") is not True):
+            days.add(day)
+    return sorted(days)
 
 
 async def _sync_day(market: str, symbols: list[str], day: date) -> int:
