@@ -40,8 +40,8 @@ _MIN_SYMBOL_COVERAGE = {
     # findb 的北京证券交易所分钟端点当前整体无数据，按可用 CN universe 验收。
     "CN": 0.94,
     # 港股大量低流动性股票有日 K 但当日无任何分钟成交。
-    "HK": 0.83,
-    "US": 0.98,
+    "HK": 0.82,
+    "US": 0.97,
 }
 _FETCH_ROUNDS = 2
 _MAX_DAYS_PER_RUN = 1

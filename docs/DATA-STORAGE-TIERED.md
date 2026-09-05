@@ -143,7 +143,7 @@ Parquet 年分片；同花顺失败时 findb API 仅补 tracked A 股，避免�
 查询时与 full 的 `symbol/year` 基线 UNION，并按 `(symbol, datetime)` 去重。
 旧版 `minute_bars/year/market/date` tracked 分区由一次性维护任务迁入
 `bars/minute_delta`，验证零漏键后归档。每个新日分区都写 `_SUCCESS.json`，以
-当日日 K 标的为预期集合，覆盖率按市场阈值验收（CN 94%、HK 83%、US 98%）；
+当日日 K 标的为预期集合，覆盖率按市场阈值验收（CN 94%、HK 82%、US 97%）；
 CN 的已知缺口主要是 findb 暂不返回北交所分钟线，HK 则有较多日内零成交标的。
 未达阈值时保留 partial 并在下轮只补缺失标的。
 每月 2 日把上月及更早、且标记完整的 delta 按 symbol/year 压回基线；单标的
