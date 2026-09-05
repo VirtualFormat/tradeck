@@ -48,8 +48,11 @@ devcontainer 配置在 `.devcontainer/`，自动装：
 # 本地验证 prod 配置
 docker compose up -d --build
 
-# 部署到 VPS
-docker compose -f docker-compose.yml up -d --build
+# 中国大陆 VPS：GHCR 默认经南京大学镜像站拉取
+bash deploy/deploy-cn.sh
+
+# 海外 VPS 或镜像站异常时临时直连 GHCR
+GHCR_REGISTRY=ghcr.io bash deploy/deploy-cn.sh
 ```
 
 ## 项目结构

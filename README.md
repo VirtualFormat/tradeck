@@ -23,4 +23,13 @@
 ## 开发 / 部署
 
 - 开发在 devcontainer 内完成（见 `CODEBUDDY.md`）。
-- Prod 部署：根 `docker-compose.yml`（`docker compose up -d --build`）。
+- Prod 部署：中国大陆服务器运行 `bash deploy/deploy-cn.sh`，GHCR 镜像默认经
+  南京大学镜像站拉取；其他环境也可直接使用根 `docker-compose.yml`。
+
+```bash
+# 上海等中国大陆服务器：校验配置、经 NJU 拉镜像并启动
+bash deploy/deploy-cn.sh
+
+# 临时绕过镜像站排障
+GHCR_REGISTRY=ghcr.io bash deploy/deploy-cn.sh
+```
