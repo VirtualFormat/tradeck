@@ -49,7 +49,11 @@ for service in openbb collector data-api quant web; do
 done
 
 log "拉取 PostgreSQL 公共镜像"
-pull_service postgres
+if ! docker image inspect postgres:16-alpine >/dev/null 2>&1; then
+  pull_service postgres
+else
+  log "本机已有 postgres:16-alpine，跳过公共镜像拉取"
+fi
 
 log "启动生产服务"
 docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
