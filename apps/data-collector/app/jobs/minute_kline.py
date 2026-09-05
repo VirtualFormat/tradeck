@@ -36,7 +36,13 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50
 _ACTIVE_MAX_AGE_DAYS = 45
-_MIN_SYMBOL_COVERAGE = 0.98
+_MIN_SYMBOL_COVERAGE = {
+    # findb 的北京证券交易所分钟端点当前整体无数据，按可用 CN universe 验收。
+    "CN": 0.94,
+    # 港股大量低流动性股票有日 K 但当日无任何分钟成交。
+    "HK": 0.83,
+    "US": 0.98,
+}
 _FETCH_ROUNDS = 2
 _MAX_DAYS_PER_RUN = 1
 _MARKET_SUFFIX = {
@@ -286,7 +292,7 @@ async def _sync_day(market: str, symbols: list[str], day: date) -> int:
         )
         covered = len(set(expected) & final_symbols)
         coverage = covered / len(expected)
-        complete = coverage >= _MIN_SYMBOL_COVERAGE
+        complete = coverage >= _MIN_SYMBOL_COVERAGE[market]
         total_rows = (
             await asyncio.to_thread(parquet_row_count, target) if target.exists() else 0
         )
