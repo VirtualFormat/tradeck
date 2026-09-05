@@ -148,6 +148,10 @@ async def _minute_kline() -> None:
     await run_registered_job("minute_kline")
 
 
+async def _minute_delta_compact() -> None:
+    await run_registered_job("minute_delta_compact")
+
+
 async def _cleanup() -> None:
     await run_registered_job("cleanup")
 
@@ -426,6 +430,15 @@ async def start_scheduler() -> None:
         id="minute_kline",
         replace_existing=True,
         **_DAILY_MARKET_JOB_OPTIONS,
+    )
+    _scheduler.add_job(
+        _minute_delta_compact,
+        CronTrigger(day=2, hour=4, minute=30, timezone="UTC"),
+        id="minute_delta_compact",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=12 * 60 * 60,
     )
 
     _scheduler.start()

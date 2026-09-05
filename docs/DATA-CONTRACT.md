@@ -36,6 +36,7 @@
 | 端点 | 说明 | 关键参数 |
 |---|---|---|
 | `POST /api/bars` | 批量日K（PG 原始价 × 复权因子） | `symbols[]`、`start_date`、`end_date`、`adjust`（空/qfq/hfq）、`limit` |
+| `POST /api/bars/minute` | 批量分钟K（服务端 UNION 基线/增量并去重） | `symbols[]`、`start_date`、`end_date`、`limit` |
 | `GET /api/historical` | 单标的日K（原始价） | `symbol`、`start_date`、`end_date` |
 | `GET /api/quotes` | 实时报价快照 | `symbols`（逗号分隔） |
 
@@ -47,34 +48,46 @@
 
 `GET /api/system/data`（任务/库表/调度）、`GET /api/system/quality`（数据质量度量）。
 
-## 出口 2：冷层 Parquet（只读）
+## 出口 2：冷层 Parquet（数据服务内部只读）
 
 **用途**：分钟K / tick 的全量历史，供回测批量扫描。**不是在线查询接口**。
 
 ### 布局（COS bucket `tradeck-lake`，或本地 `data-lake/`）
 
-```
-minute_bars/
-  year=YYYY/market=CN|HK|US/date=YYYY-MM-DD/part-000.parquet   # 文件内按 (symbol, ts) 排序
-tick/
-  year=.../market=.../date=.../symbol=....parquet
+```text
+bars/minute/asset=stock/market=CN|HK|US/symbol=.../year=YYYY.parquet
+bars/minute_delta/asset=stock/market=CN|HK|US/year=YYYY/date=YYYY-MM-DD/part-000.parquet
 ```
 
-schema（minute_bars）：`symbol / market / ts(UTC epoch 秒) / open / high / low / close / volume / amount`。
+两层 schema 统一为 `symbol / datetime(交易所本地无时区) / open / high / low /
+close / volume / amount / source`。`bars/minute` 是 `symbol/year` 历史基线；
+`bars/minute_delta` 是 `market/date` 全市场增量。查询必须 UNION 两层并按
+`(symbol, datetime)` 去重，delta 优先。月度压实把上月及更早的完整 delta 原子
+合并回基线，验证零漏键后删除对应 delta。
 
 ### 消费约定
 
-- 用 **DuckDB `read_parquet()`** 读，按 `year/market` 分区谓词下推。
-- **先拉本地工作缓存再算**（比直读对象存储稳）。
-- **多标的用 `symbol IN (...)` 一次扫**，不要逐只查（避免重复扫全分区）。
-- 单标的回测靠文件内 `(symbol, ts)` 排序的 row group 裁剪（详见 DATA-STORAGE-TIERED.md「三层读实现与性能评估」）。
+- 在线与普通回测调用 `POST /api/bars/minute`，不得自行拼接单层文件。
+- data-api 用 DuckDB 一次读取请求涉及的 symbol/year 基线和 market/date 增量，
+  多标的统一扫描并在服务端去重。
+- 大规模离线研究若未来开放文件资产，也必须复用同一 UNION/优先级语义。
 
 ### 示例（DuckDB）
 
 ```sql
--- 回测查 2024 年 A股某标的分钟K
-SELECT * FROM read_parquet('s3://tradeck-lake/minute_bars/year=2024/market=CN/*.parquet')
-WHERE symbol = '600036.SH' AND ts BETWEEN ... ;
+WITH unioned AS (
+  SELECT *, 0 AS priority FROM read_parquet('bars/minute/.../year=2026.parquet')
+  UNION ALL
+  SELECT *, 1 AS priority FROM read_parquet('bars/minute_delta/.../*.parquet')
+)
+SELECT * EXCLUDE(priority, rank)
+FROM (
+  SELECT *, row_number() OVER (
+    PARTITION BY symbol, datetime ORDER BY priority DESC
+  ) rank
+  FROM unioned
+)
+WHERE rank = 1;
 ```
 
 ## 契约演进

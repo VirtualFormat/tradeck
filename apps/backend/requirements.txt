@@ -5,6 +5,8 @@ APScheduler>=3.10
 httpx>=0.27
 python-dateutil>=2.9
 pydantic>=2.9
+# 分钟 K 统一查询：进程内 UNION baseline/delta 并按键去重。
+duckdb>=1.5,<2
 # 板块/自定义模型数据（OpenBB REST 只暴露标准模型，ConceptBoards 等自定义模型需直接调 akshare）
 akshare>=1.12
 # 财报日历（OpenBB /equity/calendar/earnings 仅 fmp 付费源可用，免费方案为 backend 直调 yfinance 库）

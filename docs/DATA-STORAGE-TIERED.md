@@ -141,6 +141,11 @@ Parquet 年分片；同花顺失败时 findb API 仅补 tracked A 股，避免�
 每日分钟任务基于 `data_coverage` 选取仍活跃的 CN/HK/US 股票，使用 findb 官方
 `codes` 批量协议（最多 50 只/批）写 `minute_delta/market/date` overlay 分区；
 查询时与 full 的 `symbol/year` 基线 UNION，并按 `(symbol, datetime)` 去重。
+旧版 `minute_bars/year/market/date` tracked 分区由一次性维护任务迁入
+`bars/minute_delta`，验证零漏键后归档。每个新日分区都写 `_SUCCESS.json`，以
+当日日 K 标的为预期集合，覆盖率未达 100% 时保留 partial 并在下轮只补缺失标的。
+每月 2 日把上月及更早、且标记完整的 delta 按 symbol/year 压回基线；单标的
+原子替换，全部标的验证通过后才删除日增量文件并刷新 `data_coverage`。
 同花顺覆盖的板块目录/行情/成分和 A 股日级估值均切为同花顺主源，findb 只在
 同花顺整体失败时兜底，减少 API 配额竞争。
 

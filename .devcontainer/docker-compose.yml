@@ -112,8 +112,10 @@ services:
       # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
       # 配置后量化批量接口（/api/bars）强制有效 X-Service-Token。
       SERVICE_TOKENS: ${SERVICE_TOKENS:-}
+      DATA_POOL_ROOT: /data/market-pool
     volumes:
       - ../apps/backend:/app
+      - dev-market-pool:/data/market-pool:ro
     ports:
       - "8081:8080"  # 避免和 dev 容器 8080 冲突
     depends_on:

@@ -117,6 +117,50 @@ async def fetch_bars(
     return all_bars
 
 
+async def fetch_minute_bars(
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    limit: int = 200000,
+) -> list[dict[str, Any]]:
+    """批量拉分钟 K；data-api 在服务端 UNION baseline/delta 并去重。"""
+    rows: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for index in range(0, len(symbols), 50):
+            chunk = symbols[index : index + 50]
+            try:
+                response = await client.post(
+                    _url("/api/bars/minute"),
+                    headers=_headers(),
+                    json={
+                        "symbols": chunk,
+                        "start_date": start.isoformat(),
+                        "end_date": end.isoformat(),
+                        "limit": limit,
+                    },
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "/api/bars/minute %s: %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    continue
+                payload = response.json()
+                rows.extend(payload.get("bars") or [])
+                if payload.get("truncated"):
+                    logger.warning(
+                        "/api/bars/minute 被 limit 截断 symbols=%d %s~%s",
+                        len(chunk),
+                        start,
+                        end,
+                    )
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                logger.warning("/api/bars/minute 连接异常: %s", exc)
+    return rows
+
+
 async def get_json(path: str, params: dict[str, Any]) -> Any:
     """通用 GET（as-of 查询等公开读接口）；失败返回 None。"""
     try:

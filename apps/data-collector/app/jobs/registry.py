@@ -36,6 +36,10 @@ from app.jobs.indices import run_indices_job
 from app.jobs.macro import run_macro_job
 from app.jobs.macro_assets import run_macro_assets_job
 from app.jobs.minute_kline import run_minute_kline_job
+from app.jobs.minute_storage import (
+    run_minute_delta_compact_job,
+    run_minute_storage_migration_job,
+)
 from app.jobs.market_breadth import run_market_breadth_job
 from app.jobs.market_breadth_global import run_market_breadth_global_job
 from app.jobs.movers import fetch_and_store_cn_movers, run_movers_job
@@ -311,12 +315,39 @@ JOB_DEFINITIONS = (
     ),
     JobDefinition(
         "minute_kline",
-        "分钟K 采集（冷层）",
-        "findb tracked 标的当日 1m → 限速请求 → 合并全量历史 symbol/year Parquet",
+        "全市场分钟K 增量",
+        "findb 批量拉取全市场 1m，写 market/date delta；按当日日K标的校验覆盖率",
         "findb",
         "每交易日盘后",
         (),  # 不落库表，直写冷层 Parquet；质量留痕于 data_quality_* 表
         run_minute_kline_job,
+        concurrency_group="minute_pool",
+    ),
+    JobDefinition(
+        "minute_storage_migration",
+        "分钟K旧增量迁移",
+        "将 minute_bars tracked 分区规范化并合并进 bars/minute_delta，随后按物理文件重建 coverage",
+        "本地维护",
+        "仅手动触发一次",
+        ("data_coverage",),
+        run_minute_storage_migration_job,
+        allow_manual=True,
+        concurrency_group="minute_pool",
+        classify_result=False,
+        maintenance=True,
+    ),
+    JobDefinition(
+        "minute_delta_compact",
+        "分钟K增量压实",
+        "将上月及更早的完整 market/date delta 原子压入 symbol/year baseline",
+        "本地维护",
+        "每月 2 日 04:30 UTC",
+        ("data_coverage",),
+        run_minute_delta_compact_job,
+        allow_manual=True,
+        concurrency_group="minute_pool",
+        classify_result=False,
+        maintenance=True,
     ),
     JobDefinition(
         "economic_calendar",

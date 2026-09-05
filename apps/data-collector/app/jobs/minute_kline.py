@@ -8,13 +8,14 @@ CN/HK/US 股票，使用官方 ``codes`` 批量协议（≤50 只/请求）拉�
 这种 overlay 布局避免每天重写约 1.6 万个历史 symbol/year 文件，也把约 330 次/
 交易日的请求控制在 findb 60 次/分钟限制内。失败日不发布最终文件，下轮重试。
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import shutil
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,21 @@ from app.config import settings
 from app.datasource import findb_source
 from app.db import get_pool
 from app.quality import quality_gate
+from app.jobs.minute_storage import (
+    delta_path,
+    merge_minute_files,
+    parquet_row_count,
+    parquet_symbols,
+    read_delta_marker,
+    write_delta_marker,
+)
 
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50
 _ACTIVE_MAX_AGE_DAYS = 45
+_MIN_SYMBOL_COVERAGE = 1.0
+_FETCH_ROUNDS = 2
 _MARKET_SUFFIX = {
     "CN": (".SH", ".SZ", ".BJ"),
     "HK": (".HK",),
@@ -45,11 +56,13 @@ def _number(value: Any) -> float | None:
 def _normalize_rows(raw: list[dict[str, Any]], market: str) -> list[dict[str, Any]]:
     from zoneinfo import ZoneInfo
 
-    zone = ZoneInfo({
-        "CN": "Asia/Shanghai",
-        "HK": "Asia/Hong_Kong",
-        "US": "America/New_York",
-    }[market])
+    zone = ZoneInfo(
+        {
+            "CN": "Asia/Shanghai",
+            "HK": "Asia/Hong_Kong",
+            "US": "America/New_York",
+        }[market]
+    )
     result = []
     for item in raw:
         try:
@@ -80,19 +93,6 @@ def _normalize_rows(raw: list[dict[str, Any]], market: str) -> list[dict[str, An
     return result
 
 
-def _delta_path(market: str, day: date) -> Path:
-    return (
-        Path(settings.DATA_POOL_ROOT)
-        / "bars"
-        / "minute_delta"
-        / "asset=stock"
-        / f"market={market}"
-        / f"year={day.year}"
-        / f"date={day.isoformat()}"
-        / "part-000.parquet"
-    )
-
-
 def _write_batch(path: Path, rows: list[dict[str, Any]]) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -115,47 +115,6 @@ def _write_batch(path: Path, rows: list[dict[str, Any]]) -> None:
         [("symbol", "ascending"), ("datetime", "ascending")]
     )
     pq.write_table(table, path, compression="zstd")
-
-
-def _compact_day(staging: Path, target: Path) -> int:
-    import duckdb
-
-    files = sorted(staging.glob("*.parquet"))
-    if not files:
-        return 0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".parquet.part")
-    sources = [str(path).replace("'", "''") for path in files]
-    source_sql = "[" + ",".join(f"'{path}'" for path in sources) + "]"
-    output_sql = str(temporary).replace("'", "''")
-    connection = duckdb.connect()
-    try:
-        connection.execute("SET memory_limit='1GB'")
-        connection.execute("SET threads=2")
-        connection.execute(
-            f"""
-            COPY (
-                SELECT * EXCLUDE(rank)
-                FROM (
-                    SELECT *, row_number() OVER (
-                        PARTITION BY symbol,datetime ORDER BY source DESC
-                    ) rank
-                    FROM read_parquet({source_sql},union_by_name=true)
-                ) WHERE rank=1 ORDER BY symbol,datetime
-            ) TO '{output_sql}'
-            (FORMAT PARQUET,COMPRESSION ZSTD,ROW_GROUP_SIZE 122880)
-            """
-        )
-        count = int(
-            connection.execute(
-                "SELECT num_rows FROM parquet_file_metadata(?)", [str(temporary)]
-            ).fetchone()[0]
-        )
-        os.replace(temporary, target)
-        return count
-    finally:
-        connection.close()
-        temporary.unlink(missing_ok=True)
 
 
 async def _active_symbols(market: str) -> list[str]:
@@ -199,6 +158,29 @@ async def _active_symbols(market: str) -> list[str]:
     return [row["symbol"] for row in rows]
 
 
+async def _expected_symbols_for_day(
+    market: str, active_symbols: list[str], day: date
+) -> list[str]:
+    """以当日日 K 为交易事实，只要求当天确有日 K 的 baseline 标的。"""
+    canonical_to_pool = {
+        (symbol[:-3] if market == "US" and symbol.endswith(".US") else symbol): symbol
+        for symbol in active_symbols
+    }
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT symbol FROM daily_prices
+            WHERE market=$1 AND date=$2 AND symbol=ANY($3::text[])
+            ORDER BY symbol
+            """,
+            market,
+            day,
+            list(canonical_to_pool),
+        )
+    return [canonical_to_pool[row["symbol"]] for row in rows]
+
+
 async def _expected_days(market: str, through: date) -> list[date]:
     """以 daily_prices 为交易日历；从 full coverage 末日后开始补。"""
     suffixes = _MARKET_SUFFIX[market]
@@ -230,50 +212,100 @@ async def _expected_days(market: str, through: date) -> list[date]:
 
 
 async def _sync_day(market: str, symbols: list[str], day: date) -> int:
-    target = _delta_path(market, day)
-    if target.exists():
+    target = delta_path(market, day)
+    expected = await _expected_symbols_for_day(market, symbols, day)
+    if not expected:
+        logger.info("minute_kline %s %s 无预期交易标的，跳过", market, day)
+        return 0
+    marker = read_delta_marker(target) if target.exists() else None
+    if marker and marker.get("complete") is True:
         return 0
     staging = target.parent / f".staging-{os.getpid()}"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
-    successful_batches = 0
+    existing_symbols = (
+        await asyncio.to_thread(parquet_symbols, target) if target.exists() else set()
+    )
+    missing = set(expected) - existing_symbols
+    fetched_rows = 0
     try:
-        for index, offset in enumerate(range(0, len(symbols), _BATCH_SIZE)):
-            chunk = symbols[offset : offset + _BATCH_SIZE]
-            raw = await findb_source.fetch_bars_batch(
-                chunk,
-                freq="1min",
-                start=day.isoformat(),
-                end=day.isoformat(),
-                timeout=90.0,
-                retries=2,
-            )
-            if not raw:
-                continue
-            accepted = await quality_gate(
-                "minute_bars", _normalize_rows(raw, market), persist=False
-            )
-            if not accepted:
-                continue
-            await asyncio.to_thread(
-                _write_batch, staging / f"batch-{index:04d}.parquet", accepted
-            )
-            successful_batches += 1
+        for round_index in range(_FETCH_ROUNDS):
+            if not missing:
+                break
+            round_symbols = sorted(missing)
+            returned: set[str] = set()
+            for index, offset in enumerate(range(0, len(round_symbols), _BATCH_SIZE)):
+                chunk = round_symbols[offset : offset + _BATCH_SIZE]
+                raw = await findb_source.fetch_bars_batch(
+                    chunk,
+                    freq="1min",
+                    start=day.isoformat(),
+                    end=day.isoformat(),
+                    timeout=90.0,
+                    retries=2,
+                )
+                accepted = await quality_gate(
+                    "minute_bars", _normalize_rows(raw, market), persist=False
+                )
+                if not accepted:
+                    continue
+                returned.update(row["symbol"] for row in accepted)
+                fetched_rows += len(accepted)
+                await asyncio.to_thread(
+                    _write_batch,
+                    staging / f"round-{round_index}-batch-{index:04d}.parquet",
+                    accepted,
+                )
+            missing -= returned
 
-        expected_batches = (len(symbols) + _BATCH_SIZE - 1) // _BATCH_SIZE
-        # 少量已退市/停牌标的会让个别批次无数据；低于 80% 视为源异常，不发布。
-        if successful_batches < max(1, int(expected_batches * 0.8)):
+        new_files = sorted(staging.glob("*.parquet"))
+        if new_files:
+            sources = ([target] if target.exists() else []) + new_files
+            await asyncio.to_thread(merge_minute_files, sources, target)
+        final_symbols = (
+            await asyncio.to_thread(parquet_symbols, target)
+            if target.exists()
+            else set()
+        )
+        covered = len(set(expected) & final_symbols)
+        coverage = covered / len(expected)
+        complete = coverage >= _MIN_SYMBOL_COVERAGE
+        total_rows = (
+            await asyncio.to_thread(parquet_row_count, target) if target.exists() else 0
+        )
+        write_delta_marker(
+            target,
+            {
+                "schema_version": 1,
+                "market": market,
+                "date": day,
+                "expected_symbols": len(expected),
+                "covered_symbols": covered,
+                "symbol_coverage": round(coverage, 6),
+                "rows": total_rows,
+                "complete": complete,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        if not complete:
             logger.warning(
-                "minute_kline %s %s 批次不足: %d/%d，不发布",
+                "minute_kline %s %s 覆盖不足: %d/%d (%.2f%%)，保留 partial 下轮续补",
                 market,
                 day,
-                successful_batches,
-                expected_batches,
+                covered,
+                len(expected),
+                coverage * 100,
             )
-            return 0
-        count = await asyncio.to_thread(_compact_day, staging, target)
-        logger.info("minute_kline %s %s: %d rows", market, day, count)
-        return count
+        else:
+            logger.info(
+                "minute_kline %s %s 完成: %d rows, %d/%d symbols",
+                market,
+                day,
+                total_rows,
+                covered,
+                len(expected),
+            )
+        return fetched_rows
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -283,6 +315,7 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
     logger.info("=== minute kline job start ===")
     through = day or datetime.now(timezone.utc).date()
     counts: dict[str, int] = {}
+    incomplete_days = 0
     for market in ("CN", "HK", "US"):
         symbols = await _active_symbols(market)
         days = await _expected_days(market, through)
@@ -296,9 +329,14 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
         for trade_day in days:
             try:
                 total += await _sync_day(market, symbols, trade_day)
+                marker = read_delta_marker(delta_path(market, trade_day))
+                if not marker or marker.get("complete") is not True:
+                    incomplete_days += 1
             except Exception:  # noqa: BLE001
                 logger.exception("minute_kline %s %s 增量失败", market, trade_day)
         counts[market] = total
+    if incomplete_days:
+        counts["incomplete_days"] = -incomplete_days
     logger.info(
         "=== minute kline job done: %s ===",
         ", ".join(f"{market}={count}" for market, count in counts.items()),
