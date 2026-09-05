@@ -38,6 +38,7 @@ _BATCH_SIZE = 50
 _ACTIVE_MAX_AGE_DAYS = 45
 _MIN_SYMBOL_COVERAGE = 1.0
 _FETCH_ROUNDS = 2
+_MAX_DAYS_PER_RUN = 1
 _MARKET_SUFFIX = {
     "CN": (".SH", ".SZ", ".BJ"),
     "HK": (".HK",),
@@ -327,7 +328,7 @@ async def _sync_day(market: str, symbols: list[str], day: date) -> int:
 
 
 async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
-    """同步 full 基线末日后的所有已知交易日，已发布日期自动跳过。"""
+    """每市场补最早缺口日；完整日期跳过，partial 下轮续补。"""
     logger.info("=== minute kline job start ===")
     through = day or datetime.now(timezone.utc).date()
     counts: dict[str, int] = {}
@@ -335,6 +336,7 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
     for market in ("CN", "HK", "US"):
         symbols = await _active_symbols(market)
         days = await _expected_days(market, through)
+        days = days[:_MAX_DAYS_PER_RUN]
         logger.info(
             "minute_kline %s: %d active symbols, %d missing trade days",
             market,
