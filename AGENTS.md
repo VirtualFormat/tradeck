@@ -300,6 +300,8 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 - [ ] **A 股报价兜底（纯数据层）**：`realtime_quotes` akshare 失败时从 `daily_prices` 最近两根日K 回填 `quote_snapshots`（延迟一天，东财实时优先）。恢复 CN 涨跌榜（预定义列表排序版）/换手榜/涨跌平 donut/个股报价。
 - [ ] **板块热度/资金流的东财替代**（CVM 部署后实测 `stock_zh_a_spot_em`；被封则：降速/改 UA 自写慢分页 → 代理出口 → 接受缺失）。
+- [ ] **接入 QMT 作为数据源**：迅投 QMT（券商量化终端）分钟K/tick 调研接入；数据源维持现状不动，仅登记为后续优化（对应 TASKS-DATA-SERVICE.md D4）。
+- [ ] **AmazingData 正式账户开通后接入**：当前试用账号权限不全（行情/复权受阻，见 TASKS-AMAZINGDATA-CN.md 验收记录），代码保留但默认禁用；待正式账户开通、权限补齐并逐值对拍后，再评估 AmazingData 主用、findb fallback。
 - [ ] **CN 指数迁 TickFlow（可选 P3）**：`000001.SH`/`399006.SZ` 等（免费档实测可用），减少 yfinance 依赖；存量 `.SS` 数据处理需先决策。
 - [ ] **个股页市值货币符号**：`fmtBigNumber` 硬编码 `$`，CNY/HKD 资产应按 currency 显示（cosmetic）。
 
