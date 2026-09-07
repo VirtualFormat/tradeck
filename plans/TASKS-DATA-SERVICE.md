@@ -79,7 +79,7 @@
 | 任务 | 内容 | 触发条件 |
 |---|---|---|
 | 4.2a-0 分钟K 冷层先行（快速项） | **不建 PG 表**（评估证伪：分钟K 480 万行/日，PG 写入崩+存储爆，见 DATA-STORAGE-TIERED.md「三层读实现与性能评估」）。改为：collector 每日分钟K job（US/HK 用 yfinance 1m 起步，A股待付费档）→ **直接写 Parquet 落 COS**（`year/market` 分区 + **文件内按 (symbol,ts) 排序**，回测点查靠 row group 裁剪）。失败重试 + 缺口检测（yfinance 1m 仅 7 天窗口，漏采即永久丢失）+ 幂等覆盖同分区 | D1 已确认（2026-08-22），可即刻启动 |
-| 4.2a 分钟K 温层 | 从冷层 Parquet 批量导入 CH（在线窗口 1 年）+ collector 每日增量双写 CH + data-api `/api/bars/minute`（量化策略在线读近期，毫秒级） | 量化需要分钟级在线读/回测时 |
+| 4.2a 分钟K 温层 | 从冷层 Parquet 批量导入 CH（在线窗口 1 年）+ collector 每日增量双写 CH + data-api `/api/bars/minute`（量化策略在线读近期，毫秒级） | ✅ 已完成（2026-09-07，见验收记录） |
 | 4.2b 冷层归档管道 | CH → Parquet/COS 归档 + DuckDB 消费约定；分钟K 全量永久保留 | CH 逼近 1 年窗口时 |
 | 4.2c tick 直落冷层 | 逐笔采集 → Parquet 直落 COS（year/market/date/symbol 分区），不进任何在线库 | 需要逐笔回测时 |
 | 4.1 全市场技术指标 | 算进 ClickHouse 宽表（列存适合宽表），PG 不动 | 量化需要全市场因子时 |
@@ -189,6 +189,30 @@ COS 按 year/market 分区，schema 一致即可无缝拼接）。
 backfill_missing_days 近 7 天窗口逐日独立降级补拉；run 第二阶段当日采集后顺带补拉。
 容错链完整：采当日（限流降级）→ 缺口检测 → 逐日补拉（独立降级）。实测缺口检测正确 +
 限流下逐日独立降级不 crash。
+
+### 4.2a 分钟K 温层落地（2026-09-07）
+
+由主 agent 拆 3 个并行子 agent（A compose / B collector 温层客户端 / C data-api 读路由），
+主 agent 做集成（冷层→温层读取 + UTC 换算 + 每日双写 + 回填 job）、review 与端到端验收。
+
+| 件 | 内容 |
+|---|---|
+| CH service | dev/prod compose 各加 `clickhouse`（`clickhouse/clickhouse-server:25.8-alpine` 单节点）；dev 8123 仅绑 `127.0.0.1`，prod 不映射宿主机端口（与 postgres 同纪律）；initdb 建 `tradeck.minute_bars`（MergeTree `PARTITION BY toYYYYMMDD(ts)` + `ORDER BY (symbol,ts)` + TTL 1 年） |
+| 温层客户端 | collector `app/warm_storage/`：ClickHouseClient（HTTP 8123 + httpx，永不抛异常）+ minute_bars（`replace_market_day` 先删后插按日幂等，>50 万行分片，NaN/异市场行拒收）+ pool_source（DuckDB 读冷层 delta + 交易所本地→UTC 换算） |
+| 每日双写 | `minute_kline._sync_day` 写完 delta marker 后，把 merge 后的当日分区投影进 CH（数据源是 merge 后的干净数据而非 findb 旁路；失败仅记日志不阻断冷层） |
+| 历史回填 | `minute_warm_backfill` job（registry 手动触发，maintenance）：把冷层近 1 年 complete delta 分区逐日投影进 CH |
+| 读出口 | data-api `GET /api/bars/minute`（symbols≤50、窗口≤31天、param 绑定防注入、quant_access 鉴权、X-Truncated 头、降级空）+ web 代理路由 |
+
+**端到端验收（dev 容器实跑）**：CH 健康 + PARTITION schema 生效；collector 经容器网络写入（含幂等重跑，行数不翻倍）；`/api/bars/minute` 读回正确；UTC 换算正确（CN 09:30→01:30、美东夏令时 EDT 09:30→13:30）；collector 单测 22 个全绿。
+
+**review 发现并修复（均为端到端验证暴露，打桩单测抓不到）**：
+1. **B 占位符语法错**：用了 psycopg 风 `%(m)s`，CH HTTP 是 `{m:String}`——删除 mutation 全部 400，温层写不进。已改对并补单测断言。
+2. **B 删除范围与插入内容可错位**：混市场行会被重复插入（删除只按传入 market）。已在 `replace_market_day` 强制拒收异市场行，删除范围与插入内容对齐。
+3. **A config.d 的 `<users>` 块不生效**：用户覆写须放 `users.d/`（否则被 entrypoint 生成的 `default-user.xml` 锁 localhost-only 盖掉），且文件名须字典序排在 `default-user.xml` 后（用 `z_` 前缀）。Leibniz 用容器内 localhost 验证未暴露，容器网络路径 401。已拆分为 config.d(监听) + users.d(网络放行)。
+4. **安全收窄（应审核拦截）**：users.d networks 从 `::/0` 收窄到容器网络段 + 回环；dev 8123 从全接口改绑 `127.0.0.1`，不暴露局域网（default 无密码）。
+5. **主 agent 补 PARTITION BY**：原任务卡漏了日分区键，会导致 25 亿行/年表做全分区 mutation/TTL。已加 `PARTITION BY toYYYYMMDD(ts)`，日级删+插与 TTL 落在单日分区上。
+
+**遗留**：CH 增量双写要等分钟K job 真实跑过（findb/yfinance 数据源）才有真实数据；首启用温层需手动触发 `minute_warm_backfill` 回填历史。A股分钟K 源仍待付费档（D3，数据源维持现状不动）。
 
 **二次 review（2026-08-23，Feynman）**：容错机制经审查「骨架正确、可上 VPS 实测」，发现 2 P1 已修（fc65a2e）：
 - P1-1 真缺口永不收敛：周末被当「应有分区」但必返回空 → 每天固定 2-4 个周末假缺口刷屏淹没真缺口。

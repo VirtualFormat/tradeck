@@ -11,6 +11,8 @@ class Settings:
     DATABASE_URL: str
     OPENBB_API_URL: str
     COLLECTOR_API_URL: str
+    CLICKHOUSE_URL: str
+    CLICKHOUSE_DATABASE: str
     TICKFLOW_API_KEY: str
     DATA_SYNC_TOKEN: str
     SERVICE_TOKENS: str
@@ -36,6 +38,12 @@ class Settings:
         self.COLLECTOR_API_URL = os.getenv(
             "COLLECTOR_API_URL", "http://collector:8080"
         )
+        # ClickHouse 温层（分钟K 在线 1 年）。data-api 只读查询，查不到/不可达
+        # 即降级空数组，无需 ENABLED 开关（与 DB 查询失败降级一致）。
+        self.CLICKHOUSE_URL = os.getenv(
+            "CLICKHOUSE_URL", "http://clickhouse:8123"
+        ).rstrip("/")
+        self.CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "tradeck")
         # TickFlow 日K 源。为空则用免费档 TickFlow.free()（日K 足够，盘中不实时）。
         self.TICKFLOW_API_KEY = os.getenv("TICKFLOW_API_KEY", "")
         # 数据中心手动同步令牌。仅 Next.js 服务端代理持有，避免公网直接触发重任务。

@@ -1,6 +1,6 @@
 # devcontainer 的 docker-compose — 开发环境
 # 与项目根的 docker-compose.yml（prod）独立
-# 架构：dev（开发容器）+ postgres + collector + data-api + openbb
+# 架构：dev（开发容器）+ postgres + clickhouse（温层）+ collector + data-api + openbb
 #
 # DATA_MODE=mock 用法（拆分后 seed 无归属进程，由独立 Job 容器完成）：
 #   1) 先灌种子：docker compose -f .devcontainer/docker-compose.yml --profile mock run --rm mock-seed
@@ -65,6 +65,37 @@ services:
     networks:
       - dev-net
 
+  # ClickHouse 温层（单节点；分钟K 在线 1 年窗口，collector 双写 / data-api 读）
+  # 钉 25.8-alpine（跟随 postgres:16-alpine 的 major-alpine 钉版风格）；
+  # 单节点即可，不上 Cluster/Keeper/副本（纪律见 docs/DATA-STORAGE-TIERED.md）
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    container_name: tradeck-dev-clickhouse
+    # 不设密码：仅容器网络内可达，与 postgres 开发默认值同级
+    ports:
+      # HTTP 接口映射仅绑宿主机回环（方便本机手测），不暴露局域网——
+      # 因为 default 用户无密码（users.d 仅放行容器网络段 + 回环）。
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - dev-clickhouse-data:/var/lib/clickhouse
+      # 初始化 SQL（建库 tradeck + minute_bars 表），仅首次启动执行
+      - ../docker/clickhouse/initdb:/docker-entrypoint-initdb.d:ro
+      # IPv4 监听（见该目录注释）
+      - ../docker/clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      # 放开 default 用户容器网络访问（否则 entrypoint 锁死 localhost-only，
+      # collector/data-api 经容器 IP 访问会 401；prod 公网暴露须自行加固）
+      - ../docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    healthcheck:
+      # 注意用 127.0.0.1 而非 localhost：CH 只监听 IPv4（config.d 覆写），
+      # 容器内 localhost 会解析到 ::1 导致 connection refused
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - dev-net
+
   # collector（数据管道/写者：定时拉取数据源写库 + 内部运维 API）
   # dev 环境从源码跑 uvicorn --reload；映射 8082 仅供宿主机调试
   collector:
@@ -81,6 +112,8 @@ services:
       # 海外节点 / TickFlow / findb 密钥由上方 env_file（根 .env）注入，
       # 不在此处插值（environment 空串会覆盖 env_file 的值）。
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
+      # 温层 ClickHouse（分钟K 在线窗口；collector 双写）
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       DATA_POOL_ROOT: /data/market-pool
       COLD_STORAGE_BACKEND: local
       COLD_STORAGE_LOCAL_ROOT: /data/market-pool
@@ -92,6 +125,8 @@ services:
       - "8082:8080"  # 调试端口，避免与 dev 8080 / data-api 8081 冲突
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
       openbb:
         condition: service_healthy
@@ -109,6 +144,8 @@ services:
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
+      # 温层 ClickHouse（分钟K 在线窗口；data-api 读）
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
       # 配置后量化批量接口（/api/bars）强制有效 X-Service-Token。
       SERVICE_TOKENS: ${SERVICE_TOKENS:-}
@@ -120,6 +157,8 @@ services:
       - "8081:8080"  # 避免和 dev 容器 8080 冲突
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
       openbb:
         condition: service_healthy
@@ -253,6 +292,7 @@ volumes:
   dev-node-modules:
   dev-venv:
   dev-openbb-config:
+  dev-clickhouse-data:
   minio-data:
   quant-cache:
   dev-market-pool:

@@ -32,6 +32,31 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ClickHouse 温层（单节点；分钟K 在线 1 年窗口，collector 双写 / data-api 读）
+  # 与 postgres 同纪律：不映射宿主机端口，仅 collector/data-api 经容器网络可达；
+  # 不设密码，仅内网可达——若确需公网暴露必须自行加固（见 docker/clickhouse/.env.example）
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    container_name: tradeck-clickhouse
+    mem_limit: 1g
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      # 初始化 SQL（建库 tradeck + minute_bars 表），仅首次启动执行
+      - ./docker/clickhouse/initdb:/docker-entrypoint-initdb.d:ro
+      # IPv4 监听（见该目录注释）
+      - ./docker/clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      # 放开 default 用户容器网络访问（否则 entrypoint 锁死 localhost-only，
+      # collector/data-api 经容器 IP 访问会 401；prod 公网暴露须自行加固）
+      - ./docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    healthcheck:
+      # 注意用 127.0.0.1 而非 localhost：CH 只监听 IPv4（config.d 覆写），
+      # 容器内 localhost 会解析到 ::1 导致 connection refused
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # ── 数据源代理 ────────────────────────────────────
   openbb:
     # GHCR 镜像（CI 构建发布；服务器只 pull，不 build）。
@@ -71,6 +96,8 @@ services:
       DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
+      # 温层 ClickHouse（分钟K 在线窗口；collector 双写）
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       # 海外节点（韩国瘦 OpenBB）：为空则海外源回落国内 openbb
       OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
       OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
@@ -103,6 +130,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
       openbb:
         condition: service_healthy
     restart: unless-stopped
@@ -116,6 +145,8 @@ services:
       DATA_MODE: ${DATA_MODE:-live}
       DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       OPENBB_API_URL: http://openbb:6900
+      # 温层 ClickHouse（分钟K 在线窗口；data-api 读）
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       # 数据中心手动同步令牌；留空时后端禁用手动触发
       DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-}
       # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
@@ -126,6 +157,8 @@ services:
       - ./data-pool:/data/market-pool:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
       openbb:
         condition: service_healthy
@@ -190,3 +223,7 @@ services:
       quant:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  # ClickHouse 温层数据（/var/lib/clickhouse）
+  clickhouse-data:

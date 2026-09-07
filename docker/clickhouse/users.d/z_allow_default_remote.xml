@@ -1,0 +1,34 @@
+<!-- 放开 default 用户的网络访问（dev/prod 内网纪律，无密码）。
+
+     背景（实测坑）：官方 clickhouse-server 镜像在未设 CLICKHOUSE_USER/PASSWORD 时，
+     entrypoint 会生成 users.d/default-user.xml，把 default 锁死为 localhost-only
+     （<ip>::1</ip> + <ip>127.0.0.1</ip>）。这导致容器网络内（collector/data-api
+     经容器 IP 访问）default 用户 401 Authentication failed，而容器内 localhost 的
+     clickhouse-client 却正常——极具迷惑性。
+
+     用户配置的覆写必须放在 users.d/（不能放 config.d/——config.d 的 <users> 块
+     不会合并进用户配置，会被 entrypoint 的 default-user.xml 盖掉）。
+     ClickHouse 按文件名字典序合并 users.d/ 内的覆写，同名键后者覆盖前者；
+     entrypoint 生成的文件名为 default-user.xml，故本文件用 z_ 前缀确保
+     字典序排在它之后加载、最终生效。
+
+     安全纪律：与官方 postgres 镜像同级——不设密码、仅容器网络可达
+     （prod compose 不映射宿主机端口；dev 的 8123 也只绑宿主机回环
+     127.0.0.1，不暴露局域网）。networks 收窄到容器网络常用内网段 +
+     回环，不放 ::/0。若 prod 确需公网暴露，必须改密码 + 网络层 ACL
+     后再放开，见 docker/clickhouse/.env.example。 -->
+<clickhouse>
+    <users>
+        <default>
+            <networks>
+                <!-- 回环（容器内 clickhouse-client / healthcheck） -->
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+                <!-- docker bridge / 容器网络常用私网段（collector/data-api 经此访问） -->
+                <ip>10.0.0.0/8</ip>
+                <ip>172.16.0.0/12</ip>
+                <ip>192.168.0.0/16</ip>
+            </networks>
+        </default>
+    </users>
+</clickhouse>

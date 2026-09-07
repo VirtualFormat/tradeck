@@ -40,6 +40,7 @@ from app.jobs.minute_storage import (
     run_minute_delta_compact_job,
     run_minute_storage_migration_job,
 )
+from app.jobs.minute_warm_backfill import run_minute_warm_backfill_job
 from app.jobs.market_breadth import run_market_breadth_job
 from app.jobs.market_breadth_global import run_market_breadth_global_job
 from app.jobs.movers import fetch_and_store_cn_movers, run_movers_job
@@ -345,6 +346,19 @@ JOB_DEFINITIONS = (
         "每月 2 日 04:30 UTC",
         ("data_coverage",),
         run_minute_delta_compact_job,
+        allow_manual=True,
+        concurrency_group="minute_pool",
+        classify_result=False,
+        maintenance=True,
+    ),
+    JobDefinition(
+        "minute_warm_backfill",
+        "分钟K温层回填",
+        "把冷层 minute_delta 近 1 年 complete 日分区批量投影进 ClickHouse（先删后插幂等）",
+        "本地维护",
+        "仅手动触发",
+        (),  # 写 CH 而非 PG 表；冷层 delta 为事实源
+        run_minute_warm_backfill_job,
         allow_manual=True,
         concurrency_group="minute_pool",
         classify_result=False,

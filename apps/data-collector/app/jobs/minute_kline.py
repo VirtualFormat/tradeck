@@ -32,6 +32,8 @@ from app.jobs.minute_storage import (
     read_delta_marker,
     write_delta_marker,
 )
+from app.warm_storage import write_minute_bars
+from app.warm_storage.pool_source import read_delta_day_as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +337,21 @@ async def _sync_day(market: str, symbols: list[str], day: date) -> int:
                 covered,
                 len(expected),
             )
+        # 温层双写：把当日 merge 后的最终 delta 分区投影进 ClickHouse（先删后插，
+        # 幂等）。数据源是 merge 后的 target（已与基线去重），保证 CH 承载的是
+        # 经验证的干净数据而非 findb 旁路；失败仅记日志，不影响冷层主链路。
+        if total_rows:
+            try:
+                warm_rows = await asyncio.to_thread(
+                    read_delta_day_as_utc, target, market, day
+                )
+                _, warm_err = await write_minute_bars(market, day, warm_rows)
+                if warm_err:
+                    logger.warning(
+                        "minute_kline %s %s 温层双写降级: %s", market, day, warm_err
+                    )
+            except Exception:  # noqa: BLE001 — 温层是投影，绝不阻断冷层
+                logger.exception("minute_kline %s %s 温层双写失败", market, day)
         return fetched_rows
     finally:
         shutil.rmtree(staging, ignore_errors=True)

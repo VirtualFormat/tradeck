@@ -35,6 +35,9 @@ class Settings:
     COLD_S3_ACCESS_KEY: str
     COLD_S3_SECRET_KEY: str
     COLD_S3_REGION: str
+    CLICKHOUSE_ENABLED: str
+    CLICKHOUSE_URL: str
+    CLICKHOUSE_DATABASE: str
     DATA_MODE: DataMode
 
     def __init__(self) -> None:
@@ -110,6 +113,13 @@ class Settings:
         self.COLD_S3_ACCESS_KEY = os.getenv("COLD_S3_ACCESS_KEY", "")
         self.COLD_S3_SECRET_KEY = os.getenv("COLD_S3_SECRET_KEY", "")
         self.COLD_S3_REGION = os.getenv("COLD_S3_REGION", "")
+        # ── 温层存储（ClickHouse 分钟K 在线窗口，app/warm_storage/）──
+        # 默认关闭（空串）：CH 未就绪环境优雅降级，collector 的 PG/冷层写入
+        # 不受影响；置 1 启用。由接线侧（jobs/scheduler）在调用处判断。
+        self.CLICKHOUSE_ENABLED = os.getenv("CLICKHOUSE_ENABLED", "")
+        # compose 内 service 名 clickhouse，原生 HTTP 接口 8123。
+        self.CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", "http://clickhouse:8123")
+        self.CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "tradeck")
 
 
 settings = Settings()

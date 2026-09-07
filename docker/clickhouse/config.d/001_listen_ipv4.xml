@@ -1,0 +1,9 @@
+<!-- 单节点温层网络配置（dev/prod 共用）：
+     强制 IPv4 监听 0.0.0.0 —— 部分容器宿主环境 IPv6 不可用，官方镜像默认
+     监听 [::] 会失败且不回落，导致 8123/9000 根本不监听（实测坑）。
+     default 用户的网络放行覆写放在 users.d/（用户配置的覆写目录，
+     不能放 config.d，否则被 entrypoint 生成的 users.d/default-user.xml
+     锁死为 localhost-only 覆盖），见 users.d/001_allow_default_remote.xml。 -->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+</clickhouse>
