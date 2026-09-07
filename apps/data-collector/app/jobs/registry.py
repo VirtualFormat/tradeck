@@ -316,7 +316,8 @@ JOB_DEFINITIONS = (
     JobDefinition(
         "minute_kline",
         "全市场分钟K 增量",
-        "findb 批量拉取全市场 1m，写 market/date delta；按当日日K标的校验覆盖率",
+        "findb 批量拉取全市场 1m，循环追赶全部 market/date 缺口；"
+        "按当日日K标的校验覆盖率",
         "findb",
         "每交易日盘后",
         (),  # 不落库表，直写冷层 Parquet；质量留痕于 data_quality_* 表

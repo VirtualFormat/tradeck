@@ -21,7 +21,7 @@ tradeck 的数据获取收口到一层薄门面，横切能力（限流 / 重试
 | A 股日级估值 | 同花顺 valuation snapshot（100只/批） | 暂无；失败不发布残缺快照 |
 | A 股实时快照 | 同花顺批量 | akshare |
 | A 股板块目录/行情/成分 | 同花顺指数 API | findb / akshare |
-| CN/HK/US 分钟K | findb `codes` 批量 API，全进程节流 | 下一日重叠窗口重试 |
+| CN/HK/US 分钟K | findb `codes` 批量 API，全进程节流 | 每日循环追赶全部缺口；无进展日留待下轮 |
 | A 股资金流 | findb 全市场表 | 保留旧快照 |
 | HK/US 日K | OpenBB/yfinance | findb 历史基线 |
 

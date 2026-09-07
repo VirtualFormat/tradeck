@@ -6,7 +6,8 @@ CN/HK/US 股票，使用官方 ``codes`` 批量协议（≤50 只/请求）拉�
 ``symbol + datetime`` 去重即可。
 
 这种 overlay 布局避免每天重写约 1.6 万个历史 symbol/year 文件，也把约 330 次/
-交易日的请求控制在 findb 60 次/分钟限制内。失败日不发布最终文件，下轮重试。
+交易日的请求控制在 findb 60 次/分钟限制内。任务会循环追赶全部缺口；失败日不发布
+最终文件，无覆盖进展时退出并留待下轮重试。
 """
 
 from __future__ import annotations
@@ -44,7 +45,6 @@ _MIN_SYMBOL_COVERAGE = {
     "US": 0.97,
 }
 _FETCH_ROUNDS = 2
-_MAX_DAYS_PER_RUN = 1
 _MARKET_SUFFIX = {
     "CN": (".SH", ".SZ", ".BJ"),
     "HK": (".HK",),
@@ -341,7 +341,7 @@ async def _sync_day(market: str, symbols: list[str], day: date) -> int:
 
 
 async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
-    """每市场补最早缺口日；完整日期跳过，partial 下轮续补。"""
+    """循环补齐各市场截至 day 的全部缺口；无覆盖进展时留待下轮。"""
     logger.info("=== minute kline job start ===")
     through = day or datetime.now(timezone.utc).date()
     counts: dict[str, int] = {}
@@ -349,7 +349,6 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
     for market in ("CN", "HK", "US"):
         symbols = await _active_symbols(market)
         days = await _expected_days(market, through)
-        days = days[:_MAX_DAYS_PER_RUN]
         logger.info(
             "minute_kline %s: %d active symbols, %d missing trade days",
             market,
@@ -357,14 +356,55 @@ async def run_minute_kline_job(day: date | None = None) -> dict[str, int]:
             len(days),
         )
         total = 0
-        for trade_day in days:
-            try:
-                total += await _sync_day(market, symbols, trade_day)
-                marker = read_delta_marker(delta_path(market, trade_day))
-                if not marker or marker.get("complete") is not True:
-                    incomplete_days += 1
-            except Exception:  # noqa: BLE001
-                logger.exception("minute_kline %s %s 增量失败", market, trade_day)
+        stalled: set[date] = set()
+        round_index = 0
+        while days:
+            pending = [trade_day for trade_day in days if trade_day not in stalled]
+            if not pending:
+                break
+            round_index += 1
+            logger.info(
+                "minute_kline %s 追赶第 %d 轮: %d 个待补交易日",
+                market,
+                round_index,
+                len(pending),
+            )
+            for trade_day in pending:
+                marker_before = read_delta_marker(delta_path(market, trade_day)) or {}
+                covered_before = int(marker_before.get("covered_symbols") or 0)
+                try:
+                    total += await _sync_day(market, symbols, trade_day)
+                except Exception:  # noqa: BLE001
+                    stalled.add(trade_day)
+                    logger.exception("minute_kline %s %s 增量失败", market, trade_day)
+                    continue
+
+                marker_after = read_delta_marker(delta_path(market, trade_day)) or {}
+                if marker_after.get("complete") is True:
+                    continue
+                covered_after = int(marker_after.get("covered_symbols") or 0)
+                if covered_after <= covered_before:
+                    stalled.add(trade_day)
+                    logger.warning(
+                        "minute_kline %s %s 覆盖无进展（%d symbols），"
+                        "本轮停止重试该日",
+                        market,
+                        trade_day,
+                        covered_after,
+                    )
+            days = await _expected_days(market, through)
+
+        unresolved = [trade_day for trade_day in days if trade_day in stalled]
+        if unresolved:
+            incomplete_days += len(unresolved)
+            logger.warning(
+                "minute_kline %s 追赶停止，仍有 %d 个无进展交易日: %s",
+                market,
+                len(unresolved),
+                ", ".join(str(trade_day) for trade_day in unresolved),
+            )
+        else:
+            logger.info("minute_kline %s 已追赶至无缺口", market)
         counts[market] = total
     if incomplete_days:
         counts["incomplete_days"] = -incomplete_days

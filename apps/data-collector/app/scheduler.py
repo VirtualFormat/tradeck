@@ -422,8 +422,8 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 分钟K 采集（冷层）：美股盘后纽约 17:45（日K/宏观资产之后）；US/HK 一次跑
-    # （yfinance 1m 仅近 7 天窗口，每日盘后采当日，漏采即永久丢失）。
+    # 分钟K 采集（冷层）：美股盘后纽约 17:45（日K/宏观资产之后）；一次任务
+    # 按 CN/HK/US 顺序循环追赶 findb 基线后的全部已知交易日缺口。
     _scheduler.add_job(
         _minute_kline,
         CronTrigger(hour=17, minute=45, timezone="America/New_York"),
