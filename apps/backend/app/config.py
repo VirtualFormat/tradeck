@@ -55,6 +55,10 @@ class Settings:
         # 唯一数据出口后用于区分消费方（限流/审计/未来收紧）。空 = 未启用，
         # 全部放行（内网默认）；配置后量化批量接口强制有效 X-Service-Token。
         self.SERVICE_TOKENS = os.getenv("SERVICE_TOKENS", "")
+        # CORS 允许的来源（逗号分隔）。data-api 是服务间 API（消费方走
+        # X-Service-Token 鉴权），本不该允许浏览器任意跨域；默认空 = 不放开
+        # 跨域。仅确有浏览器直连场景（如 dev 跨端口调试）时显式配置。
+        self.CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
         # data-api 只读挂载自有 Parquet 池，用于分钟 K UNION 查询。
         self.DATA_POOL_ROOT = os.getenv("DATA_POOL_ROOT", "/data/market-pool")
 

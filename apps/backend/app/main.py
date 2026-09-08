@@ -63,10 +63,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="tradb data-api", version="0.1.0", lifespan=lifespan)
 
-# CORS（前端同源访问不需要，但 dev 环境跨端口要）
+# CORS：data-api 是服务间 API（消费方经 X-Service-Token 鉴权），默认不放开
+# 浏览器跨域（空列表 = CORSMiddleware 不放行任何跨域来源，同源/服务端调用
+# 不受影响）。确有浏览器直连场景时经环境变量 CORS_ORIGINS（逗号分隔）显式配置。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )

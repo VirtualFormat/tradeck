@@ -176,7 +176,9 @@ services:
     mem_limit: 1g
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
-      BACKEND_API_URL: http://data-api:8080
+      # tradb 独立部署后经 host.docker.internal 访问宿主机回环 data-api；
+      # 默认回退同 compose 服务名（过渡形态）。
+      BACKEND_API_URL: ${TRADB_API_URL:-http://data-api:8080}
       # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；留空内网放行
       SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
@@ -191,6 +193,9 @@ services:
       - ./quant/cache:/data/cache
     ports:
       - "8083:8083"  # HTTP 服务（web 经 Next 代理消费）
+    # tradb 独立部署后，quant 经 host.docker.internal 访问宿主机回环上的 tradb。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       data-api:
         condition: service_started
@@ -206,15 +211,23 @@ services:
       # 反代到 127.0.0.1:3000，web 不直接暴露公网。
       - "127.0.0.1:3000:3000"
     environment:
-      # 从 data-api 读（data-api 从 DB 读，<50ms）
-      - BACKEND_API_URL=http://data-api:8080
+      # tradb 数据服务地址：tradb 独立部署后仅绑宿主机回环，
+      # web 经 host.docker.internal 访问宿主机 localhost 上的 data-api/collector。
+      # 默认回退到同 compose 内的服务名（tradb 尚未拆出时的过渡形态）。
+      - BACKEND_API_URL=${TRADB_API_URL:-http://data-api:8080}
       # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
-      - COLLECTOR_API_URL=http://collector:8080
+      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://collector:8080}
+      # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
+      - TRADB_SERVICE_TOKEN=${TRADB_SERVICE_TOKEN:-}
+      - TRADB_SERVICE_NAME=web-bff
       # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
       - OPENBB_API_URL=http://openbb:6900
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
       - QUANT_API_URL=http://quant:8083
       - NODE_ENV=production
+    # tradb 独立部署后，web 经 host.docker.internal 访问宿主机回环上的 tradb。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       data-api:
         condition: service_started

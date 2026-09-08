@@ -6,6 +6,7 @@
  */
 import Link from "next/link";
 import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
+import { serviceAuthHeaders } from "@/lib/service-auth";
 import { StockPreviewTrigger } from "@/components/stock-preview-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -77,13 +78,14 @@ async function fetchScreener(
       return sorted.slice(0, 10);
     }
 
-    // 美股/全球用 backend /api/movers（从 DB 读，支持 date 快照回看）
+    // 美股/全球用 backend /api/movers（从 DB 读，支持 date 快照回看）；
+    // 默认兜底仅供本地开发，生产由环境变量注入 tradb data-api 回环地址。
     const BACKEND_API_URL =
       process.env.BACKEND_API_URL ?? "http://localhost:8080";
     const dateQuery = date ? `&date=${date}` : "";
     const res = await fetch(
       `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=10${dateQuery}`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json", ...serviceAuthHeaders() } }
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -96,12 +98,13 @@ async function fetchScreener(
 /** 换手榜（backend 计算：成交额/市值，缺市值的标的不计） */
 async function fetchTurnover(market: string): Promise<ScreenerItem[]> {
   try {
+    // 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
     const BACKEND_API_URL =
       process.env.BACKEND_API_URL ?? "http://localhost:8080";
     const m = market === "cn" ? "CN" : market === "hk" ? "HK" : "US";
     const res = await fetch(
       `${BACKEND_API_URL}/api/movers/turnover?market=${m}&limit=10`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json", ...serviceAuthHeaders() } }
     );
     if (!res.ok) return [];
     const data = await res.json();

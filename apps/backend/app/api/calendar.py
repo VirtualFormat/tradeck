@@ -1,10 +1,13 @@
 """GET /api/calendar/* — 财报日历 + 宏观数据日历（从 earnings_calendar / economic_calendar 读）"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 @router.get("/api/calendar/earnings")

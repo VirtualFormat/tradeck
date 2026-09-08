@@ -8,9 +8,11 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=None)
 
-    # data-api（backend）地址：引擎只过 data-api 取数，绝不直连 DB（三条铁律）
+    # data-api（backend）地址：引擎只过 data-api 取数，绝不直连 DB（三条铁律）；
+    # 默认兜底仅供本地开发，生产由环境变量注入 tradb data-api 回环地址。
     BACKEND_API_URL: str = "http://localhost:8080"
-    # 调 data-api 的服务方令牌（X-Service-Token），空表示不带（内网/开发环境）
+    # 调 data-api 的服务方令牌（X-Service-Token），空表示不带（内网/开发环境）；
+    # 须与 tradb 侧 SERVICE_TOKENS 中的某个 token 对应，compose 由 QUANT_SERVICE_TOKEN 注入。
     SERVICE_TOKEN: str = ""
     # TickFlow API Key：拉除权因子用；为空则用免费档 TickFlow.free()
     TICKFLOW_API_KEY: str = ""

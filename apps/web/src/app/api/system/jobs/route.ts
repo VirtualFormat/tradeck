@@ -4,13 +4,16 @@
  */
 import { NextResponse } from "next/server";
 
+import { serviceAuthHeaders } from "@/lib/service-auth";
+
+// 默认兜底仅供本地开发；生产由环境变量注入 tradb collector 回环地址。
 const COLLECTOR_API_URL =
   process.env.COLLECTOR_API_URL ?? "http://localhost:8082";
 
 export async function GET() {
   try {
     const res = await fetch(`${COLLECTOR_API_URL}/api/system/jobs`, {
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...serviceAuthHeaders() },
       cache: "no-store",
     });
     if (!res.ok) {

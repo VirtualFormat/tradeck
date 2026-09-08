@@ -19,14 +19,16 @@ from datetime import date, datetime, timedelta, timezone
 from time import monotonic
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api._service_auth import read_access
 from app.config import settings
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# 内部运维端点同样挂 read_access（不对外暴露 ≠ 不鉴权，消费方带 token 调用）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 # 任务展示元数据（展示名 + cron 文案 + 关联表 + 任务专属健康查询）；
 # 顺序即 /api/system/data 输出顺序。

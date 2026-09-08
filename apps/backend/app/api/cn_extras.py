@@ -10,11 +10,13 @@ announcements 表反查（数据本就由 collector 按 tracked 列表写入，�
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 @router.get("/api/announcements")

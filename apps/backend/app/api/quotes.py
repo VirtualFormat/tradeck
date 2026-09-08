@@ -1,12 +1,14 @@
 """GET /api/quotes — 从 quote_snapshots 读；美/港股缺失时经 collector 按需回源"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
 from app.api._ensure import ensure, valid_symbol
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 async def _fetch_rows(pool, sym_list: list[str]):

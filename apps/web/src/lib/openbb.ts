@@ -4,7 +4,10 @@
  * - 失败降级返回空数组，页面永远可渲染
  */
 
-// Backend API（从 DB 读，< 50ms）
+import { serviceAuthHeaders } from "@/lib/service-auth";
+
+// Backend API（从 DB 读，< 50ms）；默认兜底仅供本地开发，
+// 生产由环境变量 BACKEND_API_URL 注入 tradb data-api 回环地址。
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
@@ -46,7 +49,7 @@ async function backendFetch<T>(path: string): Promise<T> {
   const url = `${BACKEND}${path}`;
   try {
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...serviceAuthHeaders() },
     });
     if (!res.ok) {
       console.warn(`backend ${path} failed: ${res.status}`);

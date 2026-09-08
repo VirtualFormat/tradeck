@@ -14,6 +14,7 @@ import {
 import { BoardTypeTabs } from "@/components/board-type-tabs";
 import { EmptyState } from "@/components/empty-state";
 import { fmtDataDate } from "@/lib/format";
+import { serviceAuthHeaders } from "@/lib/service-auth";
 
 export interface BoardSentimentItem {
   name: string;
@@ -28,13 +29,14 @@ async function fetchSentiment(
   type: string,
   date?: string
 ): Promise<BoardSentimentItem[]> {
+  // 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
   const BACKEND_API_URL =
     process.env.BACKEND_API_URL ?? "http://localhost:8080";
   try {
     const dateQuery = date ? `&date=${date}` : "";
     const res = await fetch(
       `${BACKEND_API_URL}/api/boards/sentiment?type=${type}&limit=10&order=desc${dateQuery}`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json", ...serviceAuthHeaders() } }
     );
     if (!res.ok) return [];
     const data = await res.json();

@@ -3,9 +3,13 @@
 设计意图：data-api 成为所有消费方（web-bff / 量化 / 回测）的唯一入口后，
 需要能区分消费方身份——用于按消费方限流、审计与未来的访问控制收紧。
 
-现阶段策略（内网公开行情，渐进收紧）：
-- 公开读接口（quotes/historical/...）：token 可空放行，仅识别 + 记录消费方。
-- 量化批量接口（/api/bars 等重操作）：已配置 SERVICE_TOKENS 时强制有效 token。
+现阶段策略（分两级，均复用同一份 SERVICE_TOKENS）：
+- read_access（全部读接口，含内部运维端点 /api/system/*）：已配置
+  SERVICE_TOKENS 时强制有效 token；未配置（内网默认）全部放行，与历史
+  行为兼容。/health 探活不鉴权。
+- quant_access（量化批量重操作接口 /api/bars、/api/bars/minute）：强制
+  级别与 read_access 相同，单独保留作语义标记（批量/重操作），未来需要
+  更严（如独立令牌表、更紧限流）时只动这一个依赖。
 
 配置（config.py）：
 - SERVICE_TOKENS：JSON 对象串 {"<token>": "<consumer_name>"}；
@@ -67,11 +71,31 @@ async def quant_access(
     identity: ServiceIdentity = Depends(service_identity),
 ) -> ServiceIdentity:
     """量化批量接口的访问门槛：已配置 SERVICE_TOKENS 时强制有效 token；
-    未配置（内网默认）放行——与 CORS allow_origins=* 的现阶段公开策略一致。
+    未配置（内网默认）放行。
+
+    与 read_access 同构，语义上标记「批量/重操作」接口；挂在 /api/bars、
+    /api/bars/minute 上，未来收紧只改这里。
     """
     if _tokens_map() and not identity.authenticated:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="缺少有效的 X-Service-Token（量化批量接口需要消费方鉴权）",
+        )
+    return identity
+
+
+async def read_access(
+    identity: ServiceIdentity = Depends(service_identity),
+) -> ServiceIdentity:
+    """读接口的访问门槛：已配置 SERVICE_TOKENS 时强制有效 token；
+    未配置（内网默认）放行，与未启用鉴权的历史行为一致。
+
+    挂在全部读路由（含 /api/system/* 内部运维端点——不对外暴露 ≠ 不鉴权）
+    的 router 级 dependencies 上；/health 探活不鉴权。
+    """
+    if _tokens_map() and not identity.authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少有效的 X-Service-Token（读接口需要消费方鉴权）",
         )
     return identity
