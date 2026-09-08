@@ -62,11 +62,17 @@ def read_delta_day_as_utc(path: Path, market: str, day: date) -> list[dict[str, 
     for symbol, local_dt, o, h, low, c, vol, amt in raw:
         if local_dt is None or symbol is None:
             continue
+        # symbol 规范化：US 的 findb 源带 .US 后缀（如 AAPL.US），项目规范是
+        # 美股裸码（AAPL，见 docs/DATA-LAYER.md symbol 规范），温层统一剥离；
+        # CN(.SH/.SZ)/HK(.HK) 本就是规范格式，不动。
+        symbol = str(symbol)
+        if market == "US" and symbol.endswith(".US"):
+            symbol = symbol[:-3]
         # naive 本地时间 → 赋予交易所时区 → 转 UTC → 去 tzinfo 格式化
         utc_dt = local_dt.replace(tzinfo=zone).astimezone(ZoneInfo("UTC"))
         rows.append(
             {
-                "symbol": str(symbol),
+                "symbol": symbol,
                 "market": market,
                 "ts": utc_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 "open": o,

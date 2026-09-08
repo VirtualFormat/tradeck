@@ -79,6 +79,17 @@ class SerializeRowsTest(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(rejected, 2)
 
+    def test_none_amount_filled_zero_not_rejected(self):
+        """HK/US 分钟K 无成交额（amount=None）：不应拒收，amount 填 0.0。
+
+        回归：findb 的 HK/US 分钟K 不返回成交额，原 serialize_rows 对
+        amount 强制 float(None) 导致整天数据被全部拒收（backfill 写入 0 行）。
+        """
+        rows, rejected = serialize_rows([_row(datetime(2026, 9, 7), amount=None)])
+        self.assertEqual(rejected, 0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["amount"], 0.0)
+
     def test_serialized_row_is_valid_json_each_row(self):
         rows, _ = serialize_rows([_row(datetime(2026, 9, 7, 1, 30))])
         line = json.dumps(rows[0], ensure_ascii=False)
@@ -330,3 +341,27 @@ class ClientHttpBehaviorTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PoolSourceSymbolTest(unittest.TestCase):
+    """pool_source 的 symbol 规范化：US 剥离 .US 后缀（美股裸码规范）。"""
+
+    def test_us_suffix_stripped(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from datetime import date, datetime
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from app.warm_storage.pool_source import read_delta_day_as_utc
+
+        tmp = Path(tempfile.mkdtemp())
+        p = tmp / "part-000.parquet"
+        tbl = pa.Table.from_pylist([
+            {"symbol": "AAPL.US", "datetime": datetime(2026, 8, 25, 9, 30),
+             "open": 200.0, "high": 201.0, "low": 199.0, "close": 200.5,
+             "volume": 1000, "amount": 200500.0, "source": "findb"},
+        ])
+        pq.write_table(tbl, p)
+        rows = read_delta_day_as_utc(p, "US", date(2026, 8, 25))
+        self.assertEqual(rows[0]["symbol"], "AAPL", "US 应剥离 .US 后缀为裸码")
+        self.assertEqual(rows[0]["market"], "US")

@@ -77,11 +77,18 @@ def serialize_rows(
 
     防御性清洗：ts 转 UTC 字符串、volume 转 int、价格/成交额转 float；
     任何字段为 NaN/inf、volume 无法转 int 的行拒收。返回 (有效行, 拒收数)。
+
+    amount（成交额）可空：HK/US 的 findb 分钟K 不返回成交额（None），
+    这类行不应被拒收——OHLCV 才是必需字段。amount 为 None 时填 0.0
+    （CH 的 amount 列是 Float64 非 Nullable；成交额未知按 0 处理）。
     """
     valid: list[dict[str, Any]] = []
     rejected = 0
     for row in rows:
         try:
+            # amount 可空：None → 0.0（HK/US 分钟K 无成交额字段）
+            raw_amount = row.get("amount")
+            amount = 0.0 if raw_amount is None else float(raw_amount)
             record = {
                 "symbol": str(row["symbol"]),
                 "market": str(row["market"]),
@@ -91,7 +98,7 @@ def serialize_rows(
                 "low": float(row["low"]),
                 "close": float(row["close"]),
                 "volume": int(row["volume"]),
-                "amount": float(row["amount"]),
+                "amount": amount,
             }
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             rejected += 1

@@ -160,3 +160,24 @@ docker compose stop collector data-api postgres clickhouse
 另：`merge_daily_pool` 已加文件级 `asyncio.Lock`（`_MERGE_FILE_LOCKS`）作纵深防御——
 同一 (year, market) 文件的 merge 在单进程内串行化。注意 asyncio.Lock 仅进程内有效，
 生产纪律保持 collector 单进程写 data-pool。
+
+## 分钟K 温层（2026-09-08 首次加载 + 两个修复）
+
+分钟K 温层（ClickHouse `minute_bars`）首次加载，从冷层 delta 分区投影 **1648 万行**
+（CN 622 万 + HK 79 万 + US 947 万）。过程暴露并修复两个 `serialize_rows`/`pool_source` bug：
+
+1. **amount 可空**：findb 的 HK/US 分钟K 不返回成交额（`amount=None`），`serialize_rows`
+   强制 `float(None)` 导致 HK/US 整天数据被全部拒收（backfill 写入 0 行）。修复：amount
+   可空（None 填 0.0；OHLCV 才是必需字段）。
+2. **US symbol 规范化**：findb 的 US 分钟K symbol 带 `.US` 后缀（AAPL.US），项目规范是
+   美股裸码（AAPL）。`read_delta_day_as_utc` 原样透传导致查询侧（裸码）查不到。修复：
+   pool_source 读冷层时剥离 US 的 `.US` 后缀（CN `.SH/.SZ`、HK `.HK` 本就是规范格式不动）。
+
+**温层加载/更新逻辑**：
+- **首次/重建回填**：`minute_warm_backfill` job（registry 手动触发），把冷层近 1 年
+  `complete` 的 delta 分区逐日投影进 CH（`read_delta_day_as_utc` 本地→UTC + 先删后插幂等）。
+- **每日增量**：`minute_kline` job（纽约盘后 17:45）写冷层 delta 分区后，把当日 merge 后的
+  最终分区双写进 CH（`replace_market_day` 先删后插）。
+- **查询**：data-api `GET /api/bars/minute`（≤50 只、窗口≤31 天、quant_access 鉴权）。
+- **TTL**：CH `minute_bars` 表 `TTL ts + INTERVAL 1 YEAR DELETE`，在线窗口 1 年，全量历史
+  留在冷层 data-pool（永久）。
