@@ -126,8 +126,24 @@ docker compose stop collector data-api postgres clickhouse
 （`rsync -aH` 保留硬链接）→ tradb 改挂自己的副本 → 去重（删 38,266 冗余行）→ 重建 pkey →
 从 PG 重建 2 个损坏的冷层 parquet（US 2025/2026 daily）。修复后 daily_kline 恢复正常写入。
 
+**深度修复（同日二次，根治）**：首次去重只处理了 id 重复，REINDEX DATABASE 又暴露
+`(symbol, date)` 业务键也有 14,417 组重复（内容冲突 0 组，纯冗余）。二次去重（删 40,245 行，
+保留 id 最小行）→ `REINDEX DATABASE tradeck` 全库重建索引 → IndexCorrupted 彻底消失。
+最终 daily_prices 去重后健康，daily_kline 恢复 `done: 11360 rows` 正常写入。
+
 **操作要点**：
 - 物理拷贝必须停写者（PG 数据目录任一时刻只能一个进程打开）。
 - data-pool 含 32 万硬链接文件（findb 全量包去重），rsync 必须加 `-H` 保留硬链接，
   否则目标体积膨胀（169G vs 源 122G）。
 - 迁移后全量扫一遍 parquet 可读性（`duckdb read_parquet`），损坏文件从 PG 重建。
+- **双写者污染的排查顺序**：先查 id 重复（pkey），再查业务唯一键重复（symbol,date 等
+  UNIQUE 约束），两者都可能有；REINDEX DATABASE 会逐个暴露，需先清干净重复才能重建索引。
+
+## 已知缺陷（非迁移引入，待修）
+
+**`merge_daily_pool` 并发竞态**（`apps/data-collector/app/jobs/hithink_dump.py`）：daily_kline
+按 symbol 批次并发调 `merge_daily_pool` 写同一 (year, market) 的 Parquet 文件时，一个 merge
+在 `os.replace` 替换文件、另一个正在 `read_parquet`，偶发 `_duckdb.Error: TProtocolException:
+Invalid data`（读到替换到一半的文件）。**影响仅限冷层 data-pool 的 HK/US 增量同步部分批次
+失败，PG 主链路不受影响**（daily_prices 经 ON CONFLICT 正常入库）。修复方向：对同一 target
+的 merge 加进程级锁串行化（参考 `app/api/_ensure.py` 的 per-key 锁模式）。
