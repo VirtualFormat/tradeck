@@ -24,11 +24,11 @@
 | 4 | 本地预演：起 tradb 独立 compose（postgres+clickhouse+openbb+collector+data-api），data-api 鉴权冒烟（无 token 401 / 带 token 200） | 【我准备】 | 容器健康 + 鉴权行为正确 | ✅ |
 | 5 | tradeck compose 切到「tradb 独立」模式：web/quant 的 `TRADB_API_URL`/`TRADB_COLLECTOR_URL` 指向 host.docker.internal，内嵌 collector/data-api 标注退役 | 【我准备】 | compose config 通过、退役服务加注释 | ✅ |
 | 6 | 迁移指南文档（VPS 操作步骤 + 回滚方案）写入 docs/ | 【我准备】 | 文档含切换/回滚/排障 | ✅ |
-| 7 | 【VPS】克隆/拉取 tradb 仓库 + 填 `.env`（SERVICE_TOKENS / 数据源密钥 / POSTGRES 密码） | 【VPS】 | tradb `.env` 就绪 | ⬜ |
-| 8 | 【VPS】数据迁移决策：tradb 用新卷从零采集，还是挂载/迁移现有 PG + data-pool | 【VPS】 | 决策记录 + 数据可用 | ⬜ |
-| 9 | 【VPS】起 tradb（`deploy/deploy-cn.sh`），确认 5 容器健康 + data-api 带 token 通 | 【VPS】 | health 全绿 + token 冒烟通过 | ⬜ |
-| 10 | 【VPS】tradeck 切到 tradb：改 `.env` 的 TRADB_* + token，`deploy/deploy-cn.sh` 重启 web/quant | 【VPS】 | web 首页/个股页渲染正常、数据来自 tradb | ⬜ |
-| 11 | 【VPS】停掉 tradeck 内嵌 collector/data-api/postgres/clickhouse（确认 tradb 接管后） | 【VPS】 | 内嵌服务已停、web 仍正常 | ⬜ |
+| 7 | 【VPS】克隆/拉取 tradb 仓库 + 填 `.env`（SERVICE_TOKENS / 数据源密钥 / POSTGRES 密码） | 【VPS】 | tradb `.env` 就绪 | ✅ |
+| 8 | 【VPS】数据迁移决策：tradb 用新卷从零采集，还是挂载/迁移现有 PG + data-pool | 【VPS】 | 决策记录 + 数据可用 | ✅ |
+| 9 | 【VPS】起 tradb（`deploy/deploy-cn.sh`），确认 5 容器健康 + data-api 带 token 通 | 【VPS】 | health 全绿 + token 冒烟通过 | ✅ |
+| 10 | 【VPS】tradeck 切到 tradb：改 `.env` 的 TRADB_* + token，`deploy/deploy-cn.sh` 重启 web/quant | 【VPS】 | web 首页/个股页渲染正常、数据来自 tradb | ✅ |
+| 11 | 【VPS】停掉 tradeck 内嵌 collector/data-api/postgres/clickhouse（确认 tradb 接管后） | 【VPS】 | 内嵌服务已停、web 仍正常 | ✅ |
 | 12 | tradeck 仓库退役内嵌 data-api/collector 代码（tradb 稳定运行后；另一迭代） | 【我准备】 | 代码删除 + CI 调整 | ⬜ |
 
 ## 回滚方案（贯穿 9-11）
@@ -55,6 +55,30 @@
   compose config 通过。
 - **任务 6**：`docs/TRADB-DEPLOY.md`（拓扑/前置/5 步切换/回滚/排障表/切换后事项）。
 
-### 【VPS】7-11
+### 【VPS】7-11（2026-09-08 完成，生产环境 host-thu 实跑）
 
-待 VPS 执行（按 `docs/TRADB-DEPLOY.md` 操作）。
+- **任务 7**：VPS 配 git 凭证（token 存 `~/.git-credentials` 600）→ clone `VirtualFormat/tradb`
+  到 `/data/apps/tradb`；从 tradeck `.env` 平移数据源密钥 + 生成 web/quant token 配对写入 tradb `.env`（600）。
+- **任务 8 决策**：**复用现有数据**（不从零采集）——VPS 有 122G data-pool（分钟K 冷层 + findb
+  全量包）+ 6G PG，全部 bind mount，复用成本远低于重灌。tradb 用 `docker-compose.prod.yml`
+  （复用现有 PG 数据目录 + data-pool + 运行中的 openbb）。
+- **任务 9**：写者切换窗口——停 tradeck collector/data-api（PG 仍在跑保数据）→ 停 tradeck-postgres
+  → 起 tradb 全栈。**数据完整接管**（35 表、daily_prices 1372 万行）。踩坑并修复：
+  - PG 密码不匹配（tradb `.env` 新密码 ≠ 现有 PG 用户的 `tradeck_dev`，存量数据不改密码）→ 改回。
+  - GHCR 镜像私有拉不到（token 无 read:packages）→ 改为 public 后经 nju 代理拉取成功（与 tradeck 一致）。
+  - 验：collector 接管写者（跑 indices/news job）、data-api `/health` 200 + 无 token 401 + 对 token 200 返回真实数据。
+- **任务 10**：tradeck `.env` 加 TRADB_* + token，compose 同步。**踩坑并修复（真实架构问题）**：
+  - web/quant `depends_on: data-api` 连带拉起已停的内嵌 postgres/clickhouse → depends_on 收敛为只依赖 openbb。
+  - **loopback 冲突**：tradb data-api 绑 127.0.0.1，web 经 host-gateway（bridge IP）访问不到
+    （loopback 仅监听本机）→ 改为 web/quant 加入 tradb 外部网络 `tradb_default`，经容器别名
+    `tradb-data-api`/`tradb-collector` 直连，tradb 保持回环绑定不变。
+  - web/quant 旧镜像无 token 注入 → 拉含 service-auth 的新镜像重建。
+  - 终验：web 代理真实取到 AAPL 数据（带 token）、数据中心面板 200、quant 通 tradb 200、5 关键页面全 200。
+- **任务 11**：停 tradeck 内嵌 data-api/collector/postgres/clickhouse。最终形态：
+  tradb 全家（postgres/clickhouse/collector/data-api）+ tradeck 消费方（web/quant/nginx/openbb）。
+  **端口收窄确认**：data-api 8080 / collector 8082 / web 3000 均只绑 127.0.0.1，对外仅 nginx 443
+  （修复了切换前 data-api `0.0.0.0:8080` 全接口暴露无鉴权的问题）。数据持续增长（写者正常）。
+- 清理：删除本地临时 token 文件；VPS 登出 GHCR（镜像 public 走 nju 代理无需认证），保留 git 凭证供 tradb 更新。
+
+**待办/后续**：任务 12（tradeck 仓库退役内嵌 apps/backend、apps/data-collector 代码 + CI 调整，
+待 tradb 稳定运行一段时间后）；分钟K 温层首启用需手动触发 `minute_warm_backfill` 回填（CH 在线窗口）。

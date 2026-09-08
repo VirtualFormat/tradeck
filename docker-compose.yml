@@ -181,9 +181,10 @@ services:
     mem_limit: 1g
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
-      # tradb 独立部署后经 host.docker.internal 访问宿主机回环 data-api；
-      # 默认回退同 compose 服务名（过渡形态）。
-      BACKEND_API_URL: ${TRADB_API_URL:-http://data-api:8080}
+      # tradb 独立部署：quant 与 tradb 同处 tradb_default 外部网络（见底部 networks），
+      # 经 tradb 容器别名访问（tradb data-api 仅绑 127.0.0.1 回环，同网络容器直连容器端口，
+      # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
+      BACKEND_API_URL: ${TRADB_API_URL:-http://tradb-data-api:8080}
       # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；留空内网放行
       SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
       TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
@@ -198,12 +199,15 @@ services:
       - ./quant/cache:/data/cache
     ports:
       - "8083:8083"  # HTTP 服务（web 经 Next 代理消费）
-    # tradb 独立部署后，quant 经 host.docker.internal 访问宿主机回环上的 tradb。
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
+    networks:
+      - default
+      - tradb_net
     depends_on:
-      data-api:
-        condition: service_started
+      # 不再 depends_on 内嵌 data-api：tradb 独立部署后 quant 经 tradb_net 访问 tradb，
+      # 拉起内嵌 data-api 会连带拉起已退役的内嵌 postgres/clickhouse。
+      openbb:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── 前端 ──────────────────────────────────────────
@@ -216,12 +220,12 @@ services:
       # 反代到 127.0.0.1:3000，web 不直接暴露公网。
       - "127.0.0.1:3000:3000"
     environment:
-      # tradb 数据服务地址：tradb 独立部署后仅绑宿主机回环，
-      # web 经 host.docker.internal 访问宿主机 localhost 上的 data-api/collector。
-      # 默认回退到同 compose 内的服务名（tradb 尚未拆出时的过渡形态）。
-      - BACKEND_API_URL=${TRADB_API_URL:-http://data-api:8080}
+      # tradb 数据服务地址：web 与 tradb 同处 tradb_default 外部网络（见底部 networks），
+      # 经 tradb 容器别名访问（tradb data-api 仅绑 127.0.0.1 回环，同网络容器直连容器端口，
+      # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
+      - BACKEND_API_URL=${TRADB_API_URL:-http://tradb-data-api:8080}
       # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
-      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://collector:8080}
+      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
       # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
       - TRADB_SERVICE_TOKEN=${TRADB_SERVICE_TOKEN:-}
       - TRADB_SERVICE_NAME=web-bff
@@ -230,12 +234,13 @@ services:
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
       - QUANT_API_URL=http://quant:8083
       - NODE_ENV=production
-    # tradb 独立部署后，web 经 host.docker.internal 访问宿主机回环上的 tradb。
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
+    networks:
+      - default
+      - tradb_net
     depends_on:
-      data-api:
-        condition: service_started
+      # 不再 depends_on 内嵌 data-api：tradb 独立部署后 web 经 tradb_net 访问 tradb，
+      # 拉起内嵌 data-api 会连带拉起已退役的内嵌 postgres/clickhouse。
       openbb:
         condition: service_healthy
       quant:
@@ -245,3 +250,10 @@ services:
 volumes:
   # ClickHouse 温层数据（/var/lib/clickhouse）
   clickhouse-data:
+
+networks:
+  # tradb 独立 compose（/data/apps/tradb）创建的默认网络，tradeck web/quant 接入后
+  # 与 tradb data-api/collector 同网络直接通信。external：由 tradb 侧 compose 管理生命周期。
+  tradb_net:
+    name: tradb_default
+    external: true
