@@ -168,7 +168,9 @@ services:
       collector:
         condition: service_started
     ports:
-      - "8080:8080"
+      # 仅回环：对外提供经宿主机 nginx 反代 + SERVICE_TOKENS 鉴权，不全接口暴露。
+      # （tradeck 内嵌形态下 web 经容器网络服务名访问，回环仅供本机调试。）
+      - "127.0.0.1:8080:8080"
     restart: unless-stopped
 
   # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
