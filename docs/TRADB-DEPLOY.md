@@ -109,3 +109,25 @@ docker compose stop collector data-api postgres clickhouse
 
 - tradeck 仓库内嵌 `apps/backend` / `apps/data-collector` 代码退役删除（另一迭代，见任务 12）。
 - 分钟K 冷层暂留本地 `tradb/data-pool`，数据量上来后迁 COS（4.2b，见 `docs/DATA-STORAGE-TIERED.md`）。
+
+## 数据隔离铁律（2026-09-08 生产教训，强制）
+
+**禁止跨应用 bind mount 共享数据目录。** tradb 接管 tradeck 数据时，必须先把数据
+**物理拷贝**到 tradb 自己的目录（`/data/apps/tradb/postgres`、`/data/apps/tradb/data-pool`），
+再挂载自己的副本；绝不允许 tradb 与 tradeck 同时挂载同一份数据目录。
+
+**事故经过**：初版切换让 tradb compose 直接 bind mount tradeck 的 `postgres/data` 与
+`data-pool`（共享同一目录）。切换窗口 tradeck-postgres 被 compose 意外拉起，与 tradb-postgres
+**并发写同一 PG 数据目录**（双写者，违背铁律二），导致：
+- `daily_prices` 38,266 组 id 重复（双写者各取一段 id sequence 撞车，同逻辑行插两遍）；
+- `daily_prices_pkey` / `data_quality_rejects_pkey` 索引损坏（zero page），日K 初始化写不进。
+
+**修复（2026-09-08 已完成）**：停全服 → PG 与 122G data-pool **物理拷贝**到 tradb 独立目录
+（`rsync -aH` 保留硬链接）→ tradb 改挂自己的副本 → 去重（删 38,266 冗余行）→ 重建 pkey →
+从 PG 重建 2 个损坏的冷层 parquet（US 2025/2026 daily）。修复后 daily_kline 恢复正常写入。
+
+**操作要点**：
+- 物理拷贝必须停写者（PG 数据目录任一时刻只能一个进程打开）。
+- data-pool 含 32 万硬链接文件（findb 全量包去重），rsync 必须加 `-H` 保留硬链接，
+  否则目标体积膨胀（169G vs 源 122G）。
+- 迁移后全量扫一遍 parquet 可读性（`duckdb read_parquet`），损坏文件从 PG 重建。
