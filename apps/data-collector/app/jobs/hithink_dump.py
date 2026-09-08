@@ -54,6 +54,10 @@ _DUMP_CACHE_TTL = 24 * 3600
 
 _TZ_CN = timezone(timedelta(hours=8))
 
+# merge_daily_pool 的文件级并发锁：key 为 target Parquet 路径。
+# 同一 (year, market) 文件的 merge 串行化，防并发 read_parquet/os.replace 竞态。
+_MERGE_FILE_LOCKS: dict[str, asyncio.Lock] = {}
+
 
 def _ms_to_date(ms: Any) -> date | None:
     """Asia/Shanghai 零点毫秒戳 → date。"""
@@ -173,6 +177,13 @@ async def merge_daily_pool(
     if not records:
         return 0
 
+    # 并发竞态修复（2026-09-08）：daily_kline 对同一 market 的不同 symbol 批次
+    # 会并发调本函数，它们写同一个 (year, market) Parquet 文件——一个 merge 在
+    # os.replace 替换文件、另一个正在 read_parquet，会读到替换到一半的文件，
+    # 报 _duckdb.Error: TProtocolException: Invalid data。按 target 文件路径加
+    # 进程级 asyncio.Lock，同一文件的 merge 串行化；不同 (year, market) 文件
+    # 仍可并发（不牺牲吞吐）。参考 app/api/ondemand.py 的 per-key 锁模式。
+
     def merge(year: int, year_records: list[tuple]) -> int:
         import duckdb
 
@@ -264,7 +275,10 @@ async def merge_daily_pool(
         by_year.setdefault(row[2].year, []).append(row)
     total = 0
     for year, year_records in sorted(by_year.items()):
-        total += await asyncio.to_thread(merge, year, year_records)
+        target = _pool_daily_path(year, market)
+        lock = _MERGE_FILE_LOCKS.setdefault(target, asyncio.Lock())
+        async with lock:
+            total += await asyncio.to_thread(merge, year, year_records)
     return total
 
 

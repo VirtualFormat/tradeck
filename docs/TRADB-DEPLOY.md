@@ -141,9 +141,22 @@ docker compose stop collector data-api postgres clickhouse
 
 ## 已知缺陷（非迁移引入，待修）
 
-**`merge_daily_pool` 并发竞态**（`apps/data-collector/app/jobs/hithink_dump.py`）：daily_kline
-按 symbol 批次并发调 `merge_daily_pool` 写同一 (year, market) 的 Parquet 文件时，一个 merge
-在 `os.replace` 替换文件、另一个正在 `read_parquet`，偶发 `_duckdb.Error: TProtocolException:
-Invalid data`（读到替换到一半的文件）。**影响仅限冷层 data-pool 的 HK/US 增量同步部分批次
-失败，PG 主链路不受影响**（daily_prices 经 ON CONFLICT 正常入库）。修复方向：对同一 target
-的 merge 加进程级锁串行化（参考 `app/api/_ensure.py` 的 per-key 锁模式）。
+**`TProtocolException: Invalid data`（2026-09-08 已根治，两因叠加）**：
+
+1. **冷层 parquet 隐性损坏（主因）**：3 个文件（US 2025、US 2026、HK 2026 daily）内部
+   row group 损坏——`count(*)`/`DESCRIBE` 可读，但 merge 的 `read_parquet(...) FULL OUTER
+   JOIN incoming` 深层读取时报 `TProtocolException`。迁移前已损坏。**修复：从 PG 重建
+   这 3 个文件**（PG 有完整数据）。排查教训：扫 parquet 健康要用 merge 的真实读取方式
+   （JOIN 路径），`LIMIT 1`/`count(*)` 会漏检 row group 级损坏。
+2. **daily_kline 高频写冷层（放大器）**：原按 50-symbol 分片、每片调一次 merge_daily_pool，
+   每片都对同一年度 parquet 做 read+`os.replace`。分片越多，对损坏/被替换文件的读取越频繁。
+   **修复：攒批一次 merge**——`_upsert_klines` 加 `pool_collector` 攒批参数，HK/US 冷层行
+   攒齐本 universe 后一次性 merge（每 universe 每天 1 次，替代原每 market 数十次）。
+   内存可控（HK/US 近 5 天日K 各约 1-2.3 万行，峰值几 MB）。
+
+验证：修复后 daily_kline 全程 **0 次 TProtocolException**（原每分片数十次），
+`日K 每日更新 done: 12596 rows` 正常，冷层 286 个 daily parquet JOIN 路径扫描 0 损坏。
+
+另：`merge_daily_pool` 已加文件级 `asyncio.Lock`（`_MERGE_FILE_LOCKS`）作纵深防御——
+同一 (year, market) 文件的 merge 在单进程内串行化。注意 asyncio.Lock 仅进程内有效，
+生产纪律保持 collector 单进程写 data-pool。

@@ -67,8 +67,18 @@ def _to_canonical(tf_symbol: str, market: str) -> str:
     return tf_symbol
 
 
-async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
-    """批量 UPSERT 一个 universe 的日K（跳 null close）。返回写入条数。"""
+async def _upsert_klines(
+    klines: dict[str, list[dict]],
+    market: str,
+    pool_collector: list[tuple] | None = None,
+) -> int:
+    """批量 UPSERT 一个 universe 的日K（跳 null close）。返回写入条数。
+
+    pool_collector：传入时，HK/US 的冷层行不立即写 data-pool，而是追加到该
+    列表，由调用方在整个 universe 拉取完成后一次性 merge（避免按 50-symbol
+    分片对同一年度 Parquet 高频 read_parquet/os.replace，触发 DuckDB
+    TProtocolException）。None 时维持原逐分片写冷层行为（兼容其他调用方）。
+    """
     dict_rows = []
     for tf_sym, krows in klines.items():
         symbol = _to_canonical(tf_sym, market)
@@ -117,7 +127,12 @@ async def _upsert_klines(klines: dict[str, list[dict]], market: str) -> int:
             )
     # HK/US 每日增量同步写入 findb 初始化形成的同一年度 Parquet。
     # 延迟导入避免 daily_kline ↔ hithink_dump 模块加载环。
-    if market in {"HK", "US"}:
+    if market in {"HK", "US"} and pool_collector is not None:
+        # 攒批模式：只收集行，由 universe 完成后统一 merge（见 run_daily_kline_job）。
+        pool_collector.extend(
+            ((f"{row[0]}.US" if market == "US" else row[0]), *row[1:]) for row in rows
+        )
+    elif market in {"HK", "US"}:
         from app.jobs.hithink_dump import merge_daily_pool
 
         pool_rows = [
@@ -214,6 +229,8 @@ async def run_daily_kline_job(
             base = processed
             market_written = 0
             symbols_with_data = 0
+            # HK/US：攒齐本 universe 的冷层行，拉取完成后一次性 merge（见下）。
+            pool_rows: list[tuple] = []
 
             def on_chunk(done: int, _total: int, _base: int = base) -> None:
                 progress.job_update(job_id, _base + done, run_started_at)
@@ -221,7 +238,9 @@ async def run_daily_kline_job(
             async def on_data(chunk_klines: dict[str, list[dict]]) -> None:
                 """分片到达即写库，避免 US 全量约 300 万行常驻内存。"""
                 nonlocal market_written, symbols_with_data
-                market_written += await _upsert_klines(chunk_klines, market)
+                market_written += await _upsert_klines(
+                    chunk_klines, market, pool_collector=pool_rows
+                )
                 symbols_with_data += len(chunk_klines)
 
             await openbb_kline_source.get_daily_klines_batch(
@@ -232,6 +251,16 @@ async def run_daily_kline_job(
                 on_data=on_data,
             )
             written += market_written
+            # 攒批冷层 merge：本 universe 全部分片拉完后，一次性写同一年度
+            # Parquet（每 universe 每天仅一次，消除分片级高频 read/replace 竞态）。
+            # PG 已成功落库，冷层失败不回滚主链（记日志降级）。
+            if market in {"HK", "US"} and pool_rows:
+                from app.jobs.hithink_dump import merge_daily_pool
+
+                try:
+                    await merge_daily_pool(pool_rows, source="openbb", market=market)
+                except Exception:  # noqa: BLE001
+                    logger.exception("daily_kline %s 写自有 data pool 失败", market)
             await _backfill_names(syms, market)
             processed += len(syms)
             progress.job_update(job_id, processed, run_started_at)
