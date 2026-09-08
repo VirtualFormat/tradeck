@@ -86,7 +86,9 @@ services:
       retries: 3
 
   # ── 数据管道（写者：定时拉取数据源写库 + 内部运维 API）──
-  # 不对外映射端口，仅内网可达
+  # 【过渡/待退役】tradb 独立部署（VirtualFormat/tradb）后，本服务由 tradb-collector 接管，
+  # web/quant 经 TRADB_API_URL/TRADB_COLLECTOR_URL 指向宿主机回环。切换确认后停用本服务，
+  # 见 plans/TASKS-TRADB-DEPLOY.md。不对外映射端口，仅内网可达。
   collector:
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-collector:latest
     container_name: tradeck-collector
@@ -137,6 +139,7 @@ services:
     restart: unless-stopped
 
   # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
+  # 【过渡/待退役】tradb 独立部署后由 tradb-data-api 接管（见 plans/TASKS-TRADB-DEPLOY.md）。
   data-api:
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-data-api:latest
     container_name: tradeck-data-api
