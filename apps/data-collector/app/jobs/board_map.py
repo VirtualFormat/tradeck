@@ -77,6 +77,26 @@ async def run_board_map_job() -> int:
     if not boards:
         return 0
 
+    # 代码体系过滤（2026-09-09 修复板块舆情为空）：board_heat 混两套代码——
+    # 同花顺指数（881/884/885/886.TI 等 .TI 结尾）与申万/东财行业代码
+    # （801/850/859.SI 等 .SI 结尾）。同花顺成分接口只认 .TI（.SI 报
+    # "Unknown thscode"）。原逻辑把全部板块都拿去问同花顺，.SI 必然为空，
+    # 把覆盖率拉低到 <80%（实测 .TI 仅 59%），触发「保留旧映射」——导致
+    # symbol_board_map 永远停在残缺残留，板块舆情聚合（board_sentiment）空。
+    # 修复：只对 .TI 板块取成分，覆盖率分母改为 .TI 板块数；
+    # .SI 板块跳过（它们的成分需东财/申万源，当前 akshare 被封，见 backlog）。
+    ti_boards = [b for b in boards if str(b["code"] or "").endswith(".TI")]
+    skipped = len(boards) - len(ti_boards)
+    if skipped:
+        logger.info(
+            "board map: 跳过 %d 个非同花顺代码板块（.SI 申万/东财，同花顺成分接口不认）",
+            skipped,
+        )
+    boards = ti_boards
+    if not boards:
+        logger.warning("=== board map job done: 0 rows（无 .TI 板块） ===")
+        return 0
+
     mapped: list[tuple[str, str, str, str | None]] = []
     boards_with_data = 0
     for board in boards:

@@ -181,3 +181,25 @@ docker compose stop collector data-api postgres clickhouse
 - **查询**：data-api `GET /api/bars/minute`（≤50 只、窗口≤31 天、quant_access 鉴权）。
 - **TTL**：CH `minute_bars` 表 `TTL ts + INTERVAL 1 YEAR DELETE`，在线窗口 1 年，全量历史
   留在冷层 data-pool（永久）。
+
+## 板块舆情聚合为空（2026-09-09 诊断与修复）
+
+**现象**：`board_sentiment` job 每次 `done: 0 rows`，板块舆情功能无数据。
+
+**根因（代码体系不匹配，非数据源封锁）**：
+- 聚合逻辑 `symbol_board_map × news_articles(24h已打分)`，JOIN 命中 0。
+- `symbol_board_map` 只剩「汽车芯片」73 只残留（与近24h新闻 symbol 零交集）。
+- `board_map` job（东财/同花顺板块成分反解）报 `覆盖不足: 710/1246 板块有成分，保留旧映射`。
+- **真实原因**：board_heat 混两套代码体系——同花顺指数（`881/884/885/886.TI`）与
+  申万/东财行业代码（`801/850/859.SI`）。同花顺成分接口只认 `.TI`（`.SI` 报
+  `Unknown thscode`）。511 个 `.SI` 板块必然为空，把覆盖率拉到 59%（<80% 阈值），
+  触发「保留旧映射」保护，symbol_board_map 永远停在残缺残留。
+- **同花顺接口本身正常**（实测 `885402.TI` 返回 341 成分）；akshare 东财兜底才是真被封
+  （`RemoteDisconnected`，已知限制）。
+
+**修复**（`board_map.py`）：只对 `.TI` 板块取成分，覆盖率分母改为 `.TI` 板块数；
+`.SI` 板块跳过（成分需东财/申万源，akshare 被封，待 QMT/AmazingData 接入后补）。
+
+**遗留**：`.SI`（申万行业）板块的成分股暂无源（akshare 被封、同花顺不认 .SI），
+待 QMT/AmazingData 数据源接入后补齐；board_map 的 akshare 降级在被封状态下每板块
+白等 ~50s 超时，job 运行较慢（不影响正确性）。
