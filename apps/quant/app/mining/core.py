@@ -80,18 +80,24 @@ def forward_returns(close: np.ndarray, horizon: int) -> np.ndarray:
     return out
 
 
-def factor_rank_ic(
-    factor: np.ndarray, fwd_ret: np.ndarray
-) -> tuple[float, float, int]:
-    """单因子 RankIC：逐日截面 Spearman(因子, 未来收益)，返回 (IC均值, ICIR, 有效天数)。
-
-    ICIR = IC均值 / IC标准差（稳定性），天数太少返回 NaN。
-    """
+def factor_daily_ics(factor: np.ndarray, fwd_ret: np.ndarray) -> list[float]:
+    """逐日截面 Spearman(因子, 未来收益) 的 IC 序列（NaN 剔除）。"""
     ics = []
     for t in range(factor.shape[0]):
         ic = _spearman(factor[t], fwd_ret[t])
         if not np.isnan(ic):
             ics.append(ic)
+    return ics
+
+
+def factor_rank_ic(
+    factor: np.ndarray, fwd_ret: np.ndarray
+) -> tuple[float, float, int]:
+    """单因子 RankIC：返回 (IC均值, ICIR, 有效天数)。
+
+    ICIR = IC均值 / IC标准差（稳定性），天数太少返回 NaN。
+    """
+    ics = factor_daily_ics(factor, fwd_ret)
     if len(ics) < 5:
         return np.nan, np.nan, len(ics)
     arr = np.array(ics)
@@ -240,43 +246,143 @@ def beam_search(
 
 
 # ---------------------------------------------------------------------------
-# 嵌套样本外验证
+# 嵌套样本外验证（purge/embargo 防泄漏 + 真嵌套内外折）
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class OuterFold:
-    """一个外层验证折：训练段选因子/定组合，测试段独立评估。"""
+class NestedValidationConfig:
+    """嵌套验证折参数（所有单位均为交易日 bar 数，不是日历天数）。
 
+    purge_bars：训练段与测试段之间的隔离带——剔除尾部训练样本，使其 forward
+    return 窗口（horizon 日）不跨入测试段；embargo_bars：测试段之后的禁区，
+    滚动到下一折时其起始训练样本的标签不会回看本折测试段。
+    默认对齐参照 NestedValidationConfig（purge=30 >= 默认 horizon 5）。
+    """
+
+    outer_train_bars: int = 504
+    outer_test_bars: int = 126
+    outer_step_bars: int = 63
+    inner_train_bars: int = 252
+    inner_test_bars: int = 63
+    inner_step_bars: int = 63
+    purge_bars: int = 30
+    embargo_bars: int = 5
+    min_train_bars: int = 126
+
+    def __post_init__(self) -> None:
+        positive = {
+            "outer_train_bars": self.outer_train_bars,
+            "outer_test_bars": self.outer_test_bars,
+            "outer_step_bars": self.outer_step_bars,
+            "inner_train_bars": self.inner_train_bars,
+            "inner_test_bars": self.inner_test_bars,
+            "inner_step_bars": self.inner_step_bars,
+            "min_train_bars": self.min_train_bars,
+        }
+        invalid = [name for name, value in positive.items() if value <= 0]
+        if invalid:
+            raise ValueError(f"嵌套验证 bar 数必须为正：{invalid}")
+        if self.purge_bars < 0 or self.embargo_bars < 0:
+            raise ValueError("purge_bars 与 embargo_bars 不能为负")
+
+
+@dataclass
+class ValidationFold:
+    """一个验证折（外层或内层）：[train_start, train_end) 训练、purge 隔离、
+    [test_start, test_end) 测试、embargo 禁区。全部为交易日下标半开区间。"""
+
+    level: str          # "outer" / "inner"
+    outer_index: int
+    inner_index: int | None
     train_start: int
-    train_end: int   # 训练段 [train_start, train_end)
+    train_end: int
     test_start: int
-    test_end: int    # 测试段 [test_start, test_end)
+    test_end: int
+    embargo_end: int    # 测试后禁区终点 [test_end, embargo_end)
+
+
+@dataclass
+class NestedFold:
+    """一个嵌套折：外层折（训练/测试评估）+ 在外层训练段内滚动的内层折列表（调参用）。"""# noqa: E501
+
+    outer: ValidationFold
+    inner: list[ValidationFold]
+
+
+def _make_validation_fold(
+    *,
+    level: str,
+    outer_index: int,
+    inner_index: int | None,
+    train_start: int,
+    train_bars: int,
+    test_bars: int,
+    purge_bars: int,
+    embargo_bars: int,
+    hard_stop: int | None = None,
+) -> ValidationFold:
+    train_stop = train_start + train_bars
+    test_start = train_stop + purge_bars
+    test_stop = test_start + test_bars
+    embargo_stop = test_stop + embargo_bars
+    if hard_stop is not None:
+        embargo_stop = min(embargo_stop, hard_stop)
+    return ValidationFold(
+        level=level, outer_index=outer_index, inner_index=inner_index,
+        train_start=train_start, train_end=train_stop,
+        test_start=test_start, test_end=test_stop, embargo_end=embargo_stop,
+    )
 
 
 def make_nested_folds(
-    n_days: int, n_outer: int = 3, train_ratio: float = 0.6
-) -> list[OuterFold]:
-    """把 n_days 切成 n_outer 个滚动外层折（训练窗在前、测试窗在后，不重叠）。
+    n_days: int,
+    config: NestedValidationConfig | None = None,
+) -> list[NestedFold]:
+    """把 n_days 个交易日切成滚动真嵌套折（外层评估 + 内层调参，带 purge/embargo）。
 
-    train_ratio 为每折内训练段占比。天数太少返回空（调用方降级）。
+    对齐参照 generate_nested_folds：按交易日下标滚动（矩阵行即交易日，无日历空洞），
+    训练段与测试段之间留 purge_bars 隔离（forward return 窗口不跨边界），
+    测试段后留 embargo_bars 禁区；内层折完全在外层训练段内滚动。
+    天数不足返回空列表（调用方优雅降级），不抛错。
     """
-    if n_days < 40 or n_outer < 1:
+    config = config or NestedValidationConfig()
+    outer_required = config.outer_train_bars + config.purge_bars + config.outer_test_bars
+    inner_required = config.inner_train_bars + config.purge_bars + config.inner_test_bars
+    if n_days < outer_required or config.outer_train_bars < inner_required:
+        logger.warning(
+            "天数 %d 不足以切嵌套折（外层至少需 %d 天，外层训练段至少容纳一个内层折 %d 天），返回空",
+            n_days, outer_required, inner_required,
+        )
         return []
-    fold_len = n_days // n_outer
-    folds = []
-    for k in range(n_outer):
-        start = k * fold_len
-        end = n_days if k == n_outer - 1 else (k + 1) * fold_len
-        seg = end - start
-        train_len = int(seg * train_ratio)
-        if train_len < 20 or seg - train_len < 5:
-            continue
-        folds.append(OuterFold(
-            train_start=start, train_end=start + train_len,
-            test_start=start + train_len, test_end=end,
-        ))
-    return folds
+
+    nested: list[NestedFold] = []
+    outer_start = 0
+    outer_index = 0
+    while outer_start + outer_required <= n_days:
+        outer = _make_validation_fold(
+            level="outer", outer_index=outer_index, inner_index=None,
+            train_start=outer_start, train_bars=config.outer_train_bars,
+            test_bars=config.outer_test_bars, purge_bars=config.purge_bars,
+            embargo_bars=config.embargo_bars,
+        )
+        inner_folds: list[ValidationFold] = []
+        inner_start = outer_start
+        inner_index = 0
+        outer_train_stop = outer_start + config.outer_train_bars
+        while inner_start + inner_required <= outer_train_stop:
+            inner_folds.append(_make_validation_fold(
+                level="inner", outer_index=outer_index, inner_index=inner_index,
+                train_start=inner_start, train_bars=config.inner_train_bars,
+                test_bars=config.inner_test_bars, purge_bars=config.purge_bars,
+                embargo_bars=config.embargo_bars, hard_stop=outer_train_stop,
+            ))
+            inner_index += 1
+            inner_start += config.inner_step_bars
+        nested.append(NestedFold(outer=outer, inner=inner_folds))
+        outer_index += 1
+        outer_start += config.outer_step_bars
+    return nested
 
 
 @dataclass
@@ -290,6 +396,10 @@ class FoldResult:
     oos_max_drawdown: float
     oos_trades: int
     oos_positive: bool
+    n_obs: int = 0  # 样本外有效日收益条数（DSR 用）
+    # 日收益矩（DSR 偏度/峰度校正；可选，缺省按无偏斜/正态峰度假定）
+    oos_skewness: float | None = None
+    oos_kurtosis: float | None = None
 
 
 @dataclass

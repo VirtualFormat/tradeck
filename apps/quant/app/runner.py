@@ -2,9 +2,13 @@
 
 被 CLI run 与后续 HTTP API 共用：给定标的池 + 策略 + 区间，跑出统计结果。
 每一环的降级都已内建：缺因子降级无复权标注、策略异常降级空信号、无交易返回全零骨架。
+
+阶段 I3：参数优化（run_optimize / run_sensitivity）与 walk-forward（run_walkforward）
+入口也在此接线 —— async 预拉 benchmark/names/分钟K，重计算经 worker 池或进程内串行。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 from pathlib import Path
@@ -24,6 +28,7 @@ from app.strategy import StrategyRegistry
 __all__ = [
     "run_backtest", "run_backtest_async", "compute_empty",
     "user_strategy_dirs", "migrate_legacy_strategy_dirs", "run_backtest_offloaded",
+    "run_optimize", "run_sensitivity", "run_walkforward",
 ]
 
 logger = logging.getLogger(__name__)
@@ -473,3 +478,235 @@ def compute_empty() -> dict:
         "turnover": 0.0, "days": 0, "final_value": 0.0, "unadjusted": [],
         "risk_free_rate": 0.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# 参数优化 / walk-forward（阶段 I3）
+# ---------------------------------------------------------------------------
+
+# worker 池派发阈值：组合数超过它走 run_backtest_in_worker 批量并发；
+# 小网格进程内串行（避免 spawn 开销盖过计算本身）。
+_OPTIMIZE_OFFLOAD_THRESHOLD = 8
+
+
+def _params_meta(registry: StrategyRegistry, strategy_id: str) -> list[dict]:
+    """取策略 META 参数元信息（params_schema），供优化器 spec 校验。"""
+    return registry.get(strategy_id).params_schema
+
+
+def _check_minute_strategy(registry: StrategyRegistry, strategy_id: str) -> None:
+    """分钟频策略（timeframes 含 "1m"）走分钟回放路径，不进矩阵优化（fail fast）。"""
+    if registry.get(strategy_id).is_minute_strategy:
+        raise ValueError(
+            f"分钟频策略 {strategy_id} 不支持参数优化/walk-forward（走分钟回放路径，"
+            "不进矩阵回测）"
+        )
+
+
+def _make_run_fn_inprocess(
+    registry: StrategyRegistry,
+    benchmark: dict | None,
+    names: dict[str, str] | None,
+    minute_bars: dict | None,
+) -> "optimizer.RunBacktestFn":
+    """进程内串行的 run_fn：直接调 run_backtest（预拉数据透传，不重拉）。"""
+    def _run(symbols, strategy_id, start, end, params=None, config=None):
+        return run_backtest(
+            symbols, strategy_id, start, end, params=params, config=config,
+            registry=registry, benchmark=benchmark, names=names,
+            minute_bars=minute_bars,
+        )
+    return _run
+
+
+def _make_run_fn_worker(
+    benchmark: dict | None,
+    names: dict[str, str] | None,
+    user_id: str | None,
+    timeout: float | None,
+) -> "optimizer.RunBacktestFn":
+    """worker 池派发的 run_fn：每组回测经 run_backtest_in_worker（spawn 子进程）。
+
+    子进程从本地分钟缓存读分钟K（worker 内建），不预拉网络数据；
+    benchmark/names 由主进程预拉透传（worker 不再拉 data-api）。
+    """
+    from app.worker import run_backtest_in_worker
+
+    def _run(symbols, strategy_id, start, end, params=None, config=None):
+        return asyncio.run(run_backtest_in_worker(
+            symbols, strategy_id, start, end, params=params, config=config,
+            user_id=user_id, benchmark=benchmark, names=names, timeout=timeout,
+        ))
+    return _run
+
+
+async def _prefetch_optimize_context(
+    symbols: list[str],
+    start: date,
+    end: date,
+    config: MatcherConfig | None,
+) -> tuple[dict | None, dict[str, str], dict | None]:
+    """优化/walk-forward 共享的预拉：基准 + 名称 + 分钟K（如需）。
+
+    与 run_backtest_async 同口径；失败优雅降级（benchmark None / names 空 /
+    minute_bars None，matcher 降级日K 口径）。
+    """
+    benchmark = await _fetch_benchmark(symbols, start, end)
+    names = await _fetch_names(symbols)
+    minute_bars: dict | None = None
+    cfg = config or MatcherConfig()
+    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+        from app.data.client_minute import get_minute_bars
+        try:
+            minute_bars = await get_minute_bars(symbols, start, end, use_cache=True)
+        except Exception as e:  # 分钟通路故障不阻塞优化，全程日K 口径降级
+            logger.warning("优化预拉分钟K 失败，分钟口径降级日K：%s", e)
+            minute_bars = None
+    return benchmark, names, minute_bars
+
+
+async def run_optimize(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    objective: str = "sharpe",
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """参数网格扫描入口（async）：预拉数据 -> 选执行路径（worker 池/进程内）-> 优化。
+
+    组合数 > _OPTIMIZE_OFFLOAD_THRESHOLD 走 worker 池批量并发；小网格进程内串行。
+    """
+    from app.engine import optimizer
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    n = optimizer.count_combinations(params_meta, param_grid)
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = optimizer.OptimizeConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        base_params=base_params or {}, config=config,
+    )
+    out = optimizer.optimize(cfg, params_meta, run_fn, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    return out
+
+
+async def run_sensitivity(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    param_id: str,
+    objective: str = "sharpe",
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """敏感性分析入口（async）：固定其他参数，单参数扰动扫目标指标曲线。"""
+    from app.engine import optimizer
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    if param_id not in param_grid:
+        raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
+    n = optimizer.count_combinations(params_meta, {param_id: param_grid[param_id]})
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = optimizer.OptimizeConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        base_params=base_params or {}, config=config,
+    )
+    out = optimizer.sensitivity(cfg, params_meta, run_fn, param_id, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    return out
+
+
+async def run_walkforward(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    objective: str = "sharpe",
+    train_days: int = 252,
+    test_days: int = 63,
+    step_days: int = 63,
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """Walk-forward 入口（async）：滚动训练/验证折，样本外拼接净值。
+
+    预拉覆盖整个 [start, end] 区间（训练+测试窗口都在其中）；
+    每折训练优化 + OOS 回测复用同一份预拉数据（benchmark/names/分钟K）。
+    """
+    from app.engine import optimizer, walkforward
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    # 每折组合数超阈值则训练优化走 worker 池；小网格进程内串行
+    # （避免 spawn 开销盖过计算本身）。折数本身不触发派发 —— walk-forward
+    # 每折内部仍按组合数决策。
+    n_combos = optimizer.count_combinations(params_meta, param_grid)
+    use_worker = n_combos > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = walkforward.WalkForwardConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        train_days=train_days, test_days=test_days, step_days=step_days,
+        base_params=base_params or {}, config=config,
+    )
+    out = walkforward.run_walk_forward(cfg, params_meta, run_fn, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    out["n_combinations_per_fold"] = n_combos
+    return out
