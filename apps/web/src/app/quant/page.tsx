@@ -11,6 +11,7 @@ import { useSearchParams } from "next/navigation";
 import { EmptyState } from "@/components/empty-state";
 import { AIGenerateTab } from "@/components/quant/ai-generate-tab";
 import { BacktestTab } from "@/components/quant/backtest-tab";
+import { FactorEditorTab } from "@/components/quant/factor-editor-tab";
 import { MiningTab } from "@/components/quant/mining-tab";
 import { ScreenTab } from "@/components/quant/screen-tab";
 import {
@@ -21,7 +22,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 
 // 合法 Tab 值（URL 参数白名单，非法值回退 backtest）
-const TAB_VALUES = ["backtest", "screen", "ai", "mining"] as const;
+const TAB_VALUES = ["backtest", "screen", "ai", "mining", "factors"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 function normalizeTab(raw: string | null): TabValue {
@@ -132,6 +133,8 @@ function QuantPageInner() {
       {tab === "ai" && <AIGenerateTab />}
 
       {tab === "mining" && <MiningTab />}
+
+      {tab === "factors" && <FactorEditorTab />}
     </main>
   );
 }

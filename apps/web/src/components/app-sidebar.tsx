@@ -30,6 +30,7 @@ import {
   FunnelIcon,
   RobotIcon,
   MagnifyingGlassIcon,
+  FunctionIcon,
 } from "@phosphor-icons/react"
 
 const navMain: NavItem[] = [
@@ -53,6 +54,7 @@ const navMain: NavItem[] = [
       { title: "选股扫描", url: "/quant?tab=screen", icon: <FunnelIcon /> },
       { title: "AI 策略生成", url: "/quant?tab=ai", icon: <RobotIcon /> },
       { title: "因子挖掘", url: "/quant?tab=mining", icon: <MagnifyingGlassIcon /> },
+      { title: "因子编辑器", url: "/quant?tab=factors", icon: <FunctionIcon /> },
     ],
   },
   { title: "AI 分析", url: "/ai-analysis", icon: <SparkleIcon /> },

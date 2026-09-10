@@ -259,3 +259,211 @@ def api_save_candidate(req: SaveCandidateRequest, user_id: str = Depends(current
     ]
     cid = save_candidate(c, user_id)
     return {"candidate_id": cid}
+
+
+# ---------------------------------------------------------------------------
+# 阶段 J4：因子编辑器 API
+#
+# 契约假设（factors 模块由 J1-J3 并行开发，见 docs/QUANT-BACKTEST.md 阶段 J）：
+#   app.factors.api 提供五个门面函数（全部按 user_id 命名空间隔离）：
+#     list_factors(user_id) -> list[dict]   全部可见因子（builtin + 用户 uf_*/cf_*），
+#         每项含 FactorSpec 元数据：id/label/group/formula/kind/version/direction/status
+#     create_factor(user_id, spec: dict) -> dict
+#     compile_preview(user_id, formula: str, kind: str,
+#                     members: list | None = None) -> dict
+#         {ok, errors: [{code, message, position?}], preview?: {mean, std, min, max,
+#          valid_ratio, sample_values: [{date, value}]}}
+#     update_factor(user_id, factor_id, patch: dict) -> dict   公式变更 version+1
+#     delete_factor(user_id, factor_id) -> dict
+# 未就位时所有 /api/factors* 返回 503 + 明确提示（不 import 崩溃、不 500）。
+# ---------------------------------------------------------------------------
+
+_FACTOR_STATUSES = ("draft", "active", "watch", "retired")
+_FACTOR_ID_RE = re.compile(r"^(uf|cf)_[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+
+
+class _FactorMember(BaseModel):
+    """复合因子成员：id 引用 uf/base/virtual 因子，权重最终归一化。"""
+
+    id: str = Field(min_length=1, max_length=64)
+    weight: float = Field(default=1.0)
+
+
+class FactorCreateRequest(BaseModel):
+    id: str = Field(min_length=3, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    group: str = Field(default="自定义", max_length=32)
+    kind: str = Field(pattern="^(uf|cf)$")  # uf=DSL 因子 / cf=复合因子
+    formula: str = Field(default="", max_length=2000)
+    members: list[_FactorMember] | None = Field(default=None, max_length=8)
+    direction: int = Field(default=1)  # 1 高好 / -1 低好
+
+
+class FactorUpdateRequest(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=64)
+    group: str | None = Field(default=None, max_length=32)
+    formula: str | None = Field(default=None, max_length=2000)
+    members: list[_FactorMember] | None = Field(default=None, max_length=8)
+    direction: int | None = None
+    status: str | None = None  # draft/active/watch/retired
+
+
+class FactorCompilePreviewRequest(BaseModel):
+    formula: str = Field(default="", max_length=2000)
+    kind: str = Field(default="uf", pattern="^(uf|cf)$")
+    members: list[_FactorMember] | None = Field(default=None, max_length=8)
+
+
+def _factor_api_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="因子注册表模块（app.factors）未就位，J1-J3 并行开发中",
+    )
+
+
+def _factors_api():
+    """惰性加载因子门面；未实现或缺函数时 503（优雅降级，启动不受影响）。"""
+    try:
+        from app.factors import api as factors_api  # type: ignore
+    except Exception:
+        raise _factor_api_unavailable()
+    for fn in ("list_factors", "create_factor", "compile_preview",
+               "update_factor", "delete_factor"):
+        if not callable(getattr(factors_api, fn, None)):
+            raise _factor_api_unavailable()
+    return factors_api
+
+
+def _validate_factor_payload(kind: str, formula: str,
+                             members: list[_FactorMember] | None,
+                             direction: int) -> None:
+    """入参结构性校验（编译语义校验由 DSL 编译器负责，错误码 E001-E016）。"""
+    if kind == "uf":
+        if not formula.strip():
+            raise HTTPException(status_code=422, detail="DSL 因子必须提供 formula")
+    else:  # cf 复合因子
+        if not members:
+            raise HTTPException(status_code=422, detail="复合因子必须提供成员列表")
+        member_ids = [m.id for m in members]
+        if len(set(member_ids)) != len(member_ids):
+            raise HTTPException(status_code=422, detail="复合因子成员不可重复")
+        if any(m.weight <= 0 for m in members):
+            raise HTTPException(status_code=422, detail="成员权重必须为正数")
+    if direction not in (1, -1):
+        raise HTTPException(status_code=422, detail="direction 仅支持 1（高好）或 -1（低好）")
+
+
+def _spec_of(req: FactorCreateRequest) -> dict:
+    return {
+        "id": req.id,
+        "label": req.label,
+        "group": req.group,
+        "kind": req.kind,
+        "formula": req.formula,
+        "members": ([m.model_dump() for m in req.members]
+                    if req.members is not None else None),
+        "direction": req.direction,
+    }
+
+
+@app.get("/api/factors")
+def list_factors(user_id: str = Depends(current_user_id)) -> list[dict]:
+    """因子列表：builtin（base/virtual）+ 当前用户的 uf_*/cf_* 自定义因子。"""
+    try:
+        return list(_factors_api().list_factors(user_id))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("因子列表读取失败：%s", e)
+        return []  # 优雅降级：读失败返回空列表而不是 500
+
+
+@app.post("/api/factors", status_code=201)
+def create_factor(req: FactorCreateRequest,
+                  user_id: str = Depends(current_user_id)) -> dict:
+    """创建自定义因子：DSL 公式编译验证 → 落盘 → 注册（初始状态 draft）。"""
+    if not _FACTOR_ID_RE.fullmatch(req.id):
+        raise HTTPException(
+            status_code=422,
+            detail="id 须以 uf_ 或 cf_ 前缀开头，仅含字母/数字/下划线/连字符",
+        )
+    expected_prefix = f"{req.kind}_"
+    if not req.id.startswith(expected_prefix):
+        raise HTTPException(
+            status_code=422, detail=f"{req.kind} 因子的 id 必须以 {expected_prefix} 开头"
+        )
+    _validate_factor_payload(req.kind, req.formula, req.members, req.direction)
+    try:
+        return dict(_factors_api().create_factor(user_id, _spec_of(req)))
+    except HTTPException:
+        raise
+    except ValueError as e:  # 编译错误/重复 id 等参数级错误 → 400
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/factors/compile-preview")
+def compile_preview(req: FactorCompilePreviewRequest,
+                    user_id: str = Depends(current_user_id)) -> dict:
+    """编译诊断 + 样例数据即时预览（不持久化）。
+
+    返回 {ok, errors: [{code, message, position?}], preview?: {mean, std, min, max,
+    valid_ratio, sample_values: [{date, value}]}}；编译失败 ok=false 且 errors 非空，
+    HTTP 仍 200（诊断是成功响应，不是异常）。
+    """
+    if req.kind == "uf" and not req.formula.strip():
+        raise HTTPException(status_code=422, detail="formula 不能为空")
+    try:
+        members = ([m.model_dump() for m in req.members]
+                   if req.members is not None else None)
+        return dict(_factors_api().compile_preview(
+            user_id, req.formula, req.kind, members=members))
+    except HTTPException:
+        raise
+    except Exception as e:  # 编译器红线是结构化错误码，裸异常兜底按未知错误透出
+        logger.warning("编译预览失败：%s", e)
+        return {"ok": False,
+                "errors": [{"code": "E000", "message": f"编译器内部错误：{e}"}],
+                "preview": None}
+
+
+@app.put("/api/factors/{factor_id}")
+def update_factor(factor_id: str, req: FactorUpdateRequest,
+                  user_id: str = Depends(current_user_id)) -> dict:
+    """更新自定义因子（公式/成员变更 version+1；状态机 draft→active→watch→retired）。"""
+    if not _FACTOR_ID_RE.fullmatch(factor_id):
+        raise HTTPException(status_code=400, detail=f"非法因子 id：{factor_id!r}")
+    patch = req.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=422, detail="没有可更新的字段")
+    if "status" in patch and patch["status"] not in _FACTOR_STATUSES:
+        raise HTTPException(status_code=422,
+                            detail=f"非法状态：{patch['status']!r}")
+    if "members" in patch and patch["members"] is not None:
+        members = [_FactorMember(**m) for m in patch["members"]]
+        _validate_factor_payload("cf", "", members, patch.get("direction", 1))
+    if "direction" in patch and patch["direction"] not in (1, -1):
+        raise HTTPException(status_code=422, detail="direction 仅支持 1（高好）或 -1（低好）")
+    try:
+        return dict(_factors_api().update_factor(user_id, factor_id, patch))
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/factors/{factor_id}")
+def delete_factor(factor_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    """删除自定义因子（仅 uf_*/cf_* 用户因子；builtin 不可删）。"""
+    if not _FACTOR_ID_RE.fullmatch(factor_id):
+        raise HTTPException(status_code=400,
+                            detail=f"内置因子不可删除：{factor_id!r}")
+    try:
+        _factors_api().delete_factor(user_id, factor_id)
+        return {"deleted": True, "id": factor_id}
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
+
