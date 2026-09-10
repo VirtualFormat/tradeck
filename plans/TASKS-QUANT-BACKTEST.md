@@ -273,6 +273,29 @@
 
 ## 开发实施记录（2026-09-10，主 agent 总负责 + 4 子 agent 并行）
 
+## 阶段 H1 review 明细（2026-09-10，主 agent 亲测复核）
+
+实施：子 agent Pauli。主 agent 亲测（非仅信自报）：
+
+- **默认口径零变化**：`minute_fill=False` 与日K 基线逐分不差（entry/exit 价完全一致）。
+- **降级路径**：minute_fill=True 但无 loader/分钟数据缺失 → 成交价与基线一致，fallback 计数正确。
+- **VWAP 口径**：合成第5天 open 10.0→close 11.0 线性分钟K，minute_fill 买入价 10.5（当日 VWAP，
+  更贴近真实成交均价），日K基线 10.0（次日 open）——方向可解释（VWAP 成交优于开盘追价）。
+- **参考线穿越价**：buy 高点触及 ref→ref 价、开盘已穿越→open、未穿越→close；sell 对称，全对。
+- **minute_trigger 防未来函数**：MA5 跌破触发线 = (5·ma5−close)/4 = 10.25（全部昨日已知量）；
+  分钟收盘确认下穿 → 下一分钟 open 10.05 成交（早于当日收盘 10.02、更早于次日开盘）；
+  白名单外信号触发线 NaN 自动降级 open_t+1。
+- **架构**：matcher 纯计算不做 IO（minute_loader 注入，`(symbol, date) → 2D 数组`），
+  runner 在 async 上下文经 get_minute_bars 预拉（与 benchmark/names 同模式）。
+
+已知边界（知情接受）：
+- dev 环境分钟数据为空（A 股近 10 年分钟数据在生产 VPS 冷层/温层），H1 全部用合成数据验证逻辑；
+  真实数据端到端联调待部署 VPS 后做。
+- 信号 id 白名单 4 个（signal_ma5/10/20_breakdown、signal_ma_dead_5_20）登记为权威定义，
+  tradeck 此前无既有信号 id 体系。
+
+---
+
 分工：G1 复权源切换（Helmholtz）/ G2 精确涨跌停（Carver）/ G3 分钟数据客户端（Averroes）/
 G4 多用户骨架 + worker 池 + 移动止损（Linnaeus）。主 agent 亲测复核（非仅信子 agent 自报）。
 
@@ -495,7 +518,8 @@ Review 处置（2 项）：
 | F 加固 | 已并入 v2 阶段 G–K | 无 | 无 | F3→H、F4→J、其余→I/K | 2026-09-10 |
 | G 数据层收敛 + 多用户骨架 | ✅ 验收通过 | 见下 | 已处置 | **复权/涨跌停/分钟/多用户/worker 全链路实测全绿** | 2026-09-10 |
 | G review 门禁 | ✅ 通过（修复后） | 4 P1 + 6 P2，无 P0 | 已处置 | **Lovelace 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
-| H 分钟级回测 | 未开始 | 无 | 无 | 无 | — |
+| H1 分钟成交价修正 | ✅ 验收通过 | 无 | — | **minute_fill 穿越价/VWAP + minute_trigger 盘中触发，默认口径零变化对拍全绿** | 2026-09-10 |
+| H2 分钟频策略回放 | 未开始 | 无 | 无 | 无 | — |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |

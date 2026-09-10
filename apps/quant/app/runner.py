@@ -9,9 +9,14 @@ import logging
 from datetime import date
 from pathlib import Path
 
+import polars as pl
+
 from app.data import client, factors, store
 from app.engine import (
     MatcherConfig, MinuteLoader, compute, forward_adjust, simulate,
+)
+from app.engine.minute_replay import (
+    MINUTE_BARS_PARAM_KEY, MinuteReplayResult, replay_minute_strategy,
 )
 from app.matrix import build, enrich
 from app.strategy import StrategyRegistry
@@ -168,6 +173,102 @@ async def _fetch_names(symbols: list[str]) -> dict[str, str]:
 _MINUTE_COLS = ["open", "high", "low", "close", "volume", "amount"]
 
 
+# ---------------------------------------------------------------------------
+# 分钟频策略回放（阶段 H2）
+# ---------------------------------------------------------------------------
+
+# 日线面板加载余量：daily_bars 个交易日约需 2× 自然日（周末/节假日），再留预热
+_MINUTE_PANEL_CAL_FACTOR = 2
+_MINUTE_PANEL_CAL_MARGIN = 30
+
+
+def _minute_panel_start(start: date, daily_bars: int) -> date:
+    """分钟回放的日线面板加载起点：覆盖首个回放日的 daily_bars 根完成态日K 窗口。"""
+    from datetime import timedelta
+    return start - timedelta(days=max(daily_bars, 1) * _MINUTE_PANEL_CAL_FACTOR
+                             + _MINUTE_PANEL_CAL_MARGIN)
+
+
+def _minute_replay_result_dict(strategy_id: str, symbols: list[str],
+                               start: date, end: date,
+                               res: MinuteReplayResult) -> dict:
+    """MinuteReplayResult → API 返回 dict（分钟回放专属结构，与日K 回测结果区分）。"""
+    return {
+        "mode": "minute_replay",
+        "strategy": strategy_id,
+        "symbols": symbols,
+        "range": [start.isoformat(), end.isoformat()],
+        "replayed_days": res.replayed_days,
+        "skipped_days": [d.isoformat() for d in res.skipped_days],
+        "buy_limit_up": res.buy_limit_up,
+        "unadjusted": res.unadjusted,
+        "elapsed_ms": res.elapsed_ms,
+        "hits": [
+            {
+                "trade_date": h.trade_date.isoformat(),
+                "symbol": h.symbol,
+                "entry_price": h.entry_price,
+                "trigger_time": h.trigger_time,
+                "score": h.score,
+            }
+            for h in res.hits
+        ],
+    }
+
+
+async def _run_minute_replay(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None,
+    registry: StrategyRegistry,
+    progress_cb=None,
+    cancel_event=None,
+) -> dict:
+    """分钟频策略回放管线（H2）：预拉日K 面板 + 分钟K，逐日回放策略出盘中命中。
+
+    数据降级语义（与日K 回测一致）：任一环节失败/为空都返回结构完整的空结果，
+    绝不抛错。日K 面板从 store 缓存直接读（调用方应先经 fetch 备数，缺失标的缺席）；
+    分钟K 经 client_minute.get_minute_bars（带缓存 + 缺口补拉）。
+    """
+    from app.data.client_minute import get_minute_bars
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    strategy = reg.get(strategy_id)
+    empty = _minute_replay_result_dict(strategy_id, symbols, start, end, MinuteReplayResult())
+
+    panel_start = _minute_panel_start(start, strategy.minute_daily_bars)
+    daily: dict[str, pl.DataFrame] = {}
+    for s in symbols:
+        df = store.load(s)
+        if df.is_empty():
+            continue
+        df = df.filter((pl.col("date") >= panel_start) & (pl.col("date") <= end))
+        if not df.is_empty():
+            daily[s] = df
+    if not daily:
+        logger.warning("分钟回放 %s：日线面板为空（store 无缓存），返回空结果", strategy_id)
+        return empty
+
+    try:
+        minute = await get_minute_bars(sorted(daily), start, end, use_cache=True)
+    except Exception as e:  # 分钟通路故障返回空结果（优雅降级）
+        logger.warning("分钟回放 %s：分钟K 预拉失败，返回空结果：%s", strategy_id, e)
+        return empty
+    if not minute:
+        logger.warning("分钟回放 %s：分钟K 为空，返回空结果", strategy_id)
+        return empty
+
+    fac = {s: factors.load(s) for s in daily}
+
+    res = replay_minute_strategy(
+        strategy, daily=daily, minute=minute, start=start, end=end,
+        params=params, factors=fac, progress_cb=progress_cb, cancel_event=cancel_event,
+    )
+    return _minute_replay_result_dict(strategy_id, symbols, start, end, res)
+
+
 def _build_minute_loader(
     cfg: MatcherConfig, minute_bars: dict[str, "pl.DataFrame"] | None
 ) -> MinuteLoader | None:
@@ -217,8 +318,20 @@ def run_backtest(
     minute_bars：{symbol: 分钟K DataFrame}（阶段 H1，由 run_backtest_async 预拉），
     仅 config.minute_fill 或 exit_fill="signal_next_minute" 时需要；缺省 None 时
     分钟口径整体降级日K（不抛错）。
+
+    分钟频策略（META timeframes 含 "1m"）不走本函数（矩阵回测），
+    由 run_backtest_async 分流到 _run_minute_replay（阶段 H2 回放路径）。
+    若误以分钟策略调本同步入口，按「分钟数据不可用」优雅降级为分钟回放空结果。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
+    sdef = reg.get(strategy_id)
+    if sdef.is_minute_strategy:
+        logger.warning(
+            "分钟频策略 %s 需走异步入口 run_backtest_async（分钟K 预拉需协程）；"
+            "同步入口降级为空分钟回放结果", strategy_id,
+        )
+        return _minute_replay_result_dict(strategy_id, symbols, start, end, MinuteReplayResult())
+
     matrix = build(symbols, start, end)
     if not matrix.dates:
         logger.warning("区间 %s ~ %s 无缓存数据，返回空结果", start, end)
@@ -324,7 +437,14 @@ async def run_backtest_async(
     分钟K 预拉（阶段 H1）：config.minute_fill 或 exit_fill="signal_next_minute"
     时经 data/client_minute.get_minute_bars 拉全区间分钟K（带本地缓存）；
     拉取失败/为空时优雅降级（matcher 无 loader 走日K 口径）。
+
+    分钟频策略分流（阶段 H2）：META timeframes 含 "1m" 的策略改走
+    _run_minute_replay（逐日回放日线窗口 + 当日分钟流），不进矩阵回测路径。
     """
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    if reg.get(strategy_id).is_minute_strategy:
+        return await _run_minute_replay(symbols, strategy_id, start, end, params, reg)
+
     benchmark = await _fetch_benchmark(symbols, start, end)
     names = await _fetch_names(symbols)
     minute_bars: dict | None = None
@@ -337,7 +457,7 @@ async def run_backtest_async(
             logger.warning("分钟K 预拉失败，分钟口径降级日K：%s", e)
             minute_bars = None
     return run_backtest(
-        symbols, strategy_id, start, end, params, config, registry, benchmark, names,
+        symbols, strategy_id, start, end, params, config, reg, benchmark, names,
         minute_bars=minute_bars,
     )
 

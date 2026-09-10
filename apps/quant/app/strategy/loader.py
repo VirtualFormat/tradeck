@@ -42,6 +42,11 @@ class StrategyDef:
     source: str
     file_path: Path
     params_schema: list[dict] = field(default_factory=list)
+    # 归一化后的时间维度：["1d"]（默认）/ ["1m"] / ["1d","1m"]；
+    # 含 "1m" 的策略走分钟回放路径（engine/minute_replay），纯 "1d" 走矩阵回测。
+    timeframes: list[str] = field(default_factory=lambda: ["1d"])
+    # 分钟回放的日线窗口长度（T-1 往前的完成态日K 根数）；0/None = 不用日线窗口
+    minute_daily_bars: int = 0
 
     @property
     def strategy_id(self) -> str:
@@ -60,6 +65,38 @@ class StrategyDef:
     def max_hold_days(self) -> int | None:
         v = self.meta.get("max_hold_days")
         return int(v) if v is not None else None
+
+    @property
+    def is_minute_strategy(self) -> bool:
+        """是否分钟频策略（timeframes 含 "1m"）：走分钟回放而非矩阵回测。"""
+        return "1m" in self.timeframes
+
+
+def _normalize_timeframes(raw: Any, sid: str) -> list[str]:
+    """把 META["timeframes"] 归一化为 ["1d"]/["1m"]/["1d","1m"]（缺省 ["1d"]）。
+
+    容错（与 _normalize_params 同风格）：只认 "1d"/"1m"，其余值告警丢弃；
+    全部非法时降级 ["1d"]（纯日频），绝不让 META 写法问题崩加载。
+    """
+    if raw is None:
+        return ["1d"]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("策略 %s 的 timeframes 非标准格式（%s），已降级 [\"1d\"]", sid, type(raw).__name__)
+        return ["1d"]
+    valid = [t for t in raw if t in ("1d", "1m")]
+    bad = [t for t in raw if t not in ("1d", "1m")]
+    if bad:
+        logger.warning("策略 %s 的 timeframes 含未知值 %s，已忽略", sid, bad)
+    if not valid:
+        return ["1d"]
+    # 去重保序
+    out: list[str] = []
+    for t in valid:
+        if t not in out:
+            out.append(t)
+    return out
 
 
 def _normalize_params(raw: Any, sid: str) -> list[dict]:
@@ -159,12 +196,21 @@ class StrategyRegistry:
         mod = _load_module(path)
         meta = _validate_meta(getattr(mod, "META", None), path)
         compute_fn = _wrap_compute(mod, path)
+        sid = str(meta["id"])
+        # 分钟回放日线窗口长度：非正数一律按 0（不用日线窗口）容错
+        try:
+            daily_bars = int(meta.get("minute_daily_bars") or 0)
+        except (TypeError, ValueError):
+            logger.warning("策略 %s 的 minute_daily_bars 非整数，已按 0 处理", sid)
+            daily_bars = 0
         return StrategyDef(
             meta=meta,
             compute_fn=compute_fn,
             source=source,
             file_path=path,
-            params_schema=_normalize_params(meta.get("params"), meta["id"]),
+            params_schema=_normalize_params(meta.get("params"), sid),
+            timeframes=_normalize_timeframes(meta.get("timeframes"), sid),
+            minute_daily_bars=max(daily_bars, 0),
         )
 
     def get(self, strategy_id: str) -> StrategyDef:
