@@ -281,6 +281,49 @@
 
 ### 独立 review 门禁（Laplace，2026-09-10）
 
+## 阶段 J review 明细（2026-09-10，主 agent 亲测复核）
+
+实施：J1-J3 后端因子体系（子 agent Pascal）+ J4 API+前端（子 agent Banach）并行。
+主 agent 集成收口 + 亲测复核（非仅信自报）。
+
+**J1-J3 后端（Pascal）**：
+- 注册表：23 个 base 因子预注册（6 OHLCV + 17 enriched 指标），FactorSpec 单一事实源。
+- DSL 编译器：公式→AST→numpy 矩阵 evaluator（时序算子 sliding_window_view 沿 dates 轴、
+  截面算子沿 symbols 轴），24 算子白名单，错误码 E001-E016。亲测：合法公式编译求值形状
+  正确、**防未来函数**（篡改 T≥25 数据前 25 日值逐位不变）、非法公式错误码全对
+  （E005 负 shift / E009 截面嵌时序 / E001 未知列 / E002 未知算子）。
+- 存储：uf_*/cf_* 落 users/{uid}/factors/，复合因子 ≤8 成员 + 循环引用检测，状态机
+  draft→active→watch→retired。
+
+**J4 API + 前端（Banach）**：
+- API 契约：/api/factors CRUD + compile-preview（编译诊断恒 200 + 样例预览 mean/std/
+  valid_ratio/sample_values）。factors 模块未就位时 503 优雅降级（启动不崩）。
+- 前端：/quant 页加「因子编辑器」Tab + 侧边栏入口；列表表格 + 新建/编辑对话框 +
+  删除确认；公式防抖 500ms 自动编译预览。lint 0 错误 0 警告；UI 检查清单全绿
+  （零裸元素/零手搓/图表经 ChartContainer/空态统一 EmptyState/图标全 phosphor）。
+
+**主 agent 集成收口（三方集成的关键）**：
+- factors/api.py 门面：Pascal 只做了 registry/dsl/store 三层，Banach 的 API 假设了
+  五函数门面（list/create/compile_preview/update/delete）——我补 app/factors/api.py，
+  含 direction 双向映射（HTTP 1/-1 ↔ registry high/low/none）+ compile_preview 样例预览
+  （读真实缓存标的，缺失合成降级）。
+
+**主 agent 发现并修复的集成 bug（Ohm 实现）**：
+- **多用户隔离泄漏（真实 bug）**：registry._REGISTRY 全局单例，用户因子注册进全局表，
+  实测 default 建的 uf 因子 u2 可见（G4 隔离铁律被破坏）。修复：注册表改「builtin 全局
+  共享 + 用户私有层（{user_id:{...}}）」，DSL 因子引用解析带 user_id 上下文（引用他人
+  私有因子报 E001）。亲测：default 24 因子（23 builtin+1 私有）/ u2 23（仅 builtin，
+  不含 default 私有）/ u2 建同名不干扰 / 跨用户引用拦截。
+
+**端到端**：HTTP API 全链路（编译预览/创建/列表/更新 version+1/删除/用户隔离）实测全绿。
+
+已知边界：
+- 因子编辑器的 DSL 因子**尚未接入挖掘目录与策略评分**（注册表是单一事实源，但 mining
+  factor_catalog / strategy scoring 还没消费用户因子）——四端贯通留待后续阶段。
+- 复合因子预览为成员有效性校验（无独立公式，实际合成在矩阵层）。
+
+---
+
 结论：**需修复后合并 → 修复后通过**。无 P0（purge/embargo 切分本身真实有效、内层折约束在
 外层训练段内、stats.py 与参照逐行对拍一致），6 P1 + 5 P2。修复分工：主 agent（P1-2/3/5/6）
 + 子 agent Aristotle（P1-1/4、P2-7/10）。
@@ -647,6 +690,7 @@ Review 处置（2 项）：
 | H review 门禁 | ✅ 通过（修复后） | 4 P1 + 5 P2，无 P0 | 已处置 | **Ramanujan 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计+优化器+walk-forward） | ✅ 验收通过 | 无 | — | **嵌套折/purge/统计检验/优化器/walk-forward + 端到端挖掘全绿** | 2026-09-10 |
 | I review 门禁 | ✅ 通过（修复后） | 6 P1 + 5 P2，无 P0 | 已处置 | **Laplace 独立 review + 主 agent/Aristotle 修复验证全绿** | 2026-09-10 |
+| J 因子编辑器 | ✅ 验收通过 | 1 集成 bug（多用户隔离） | 已处置 | **DSL 编译器/注册表/存储/编辑器 UI + 防未来函数/隔离验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
