@@ -279,6 +279,43 @@
 
 ## 阶段 I review 明细（2026-09-10，主 agent 亲测复核）
 
+### 独立 review 门禁（Laplace，2026-09-10）
+
+结论：**需修复后合并 → 修复后通过**。无 P0（purge/embargo 切分本身真实有效、内层折约束在
+外层训练段内、stats.py 与参照逐行对拍一致），6 P1 + 5 P2。修复分工：主 agent（P1-2/3/5/6）
++ 子 agent Aristotle（P1-1/4、P2-7/10）。
+
+主 agent 修复并实测：
+- **[P1-3] 统计检验透出 API**（I2 产出死端）：`/api/mining/run` 响应补 `factor_ic_stats`
+  （NW t/p/BH-FDR q）+ 候选 `dsr` + `n_trials`——原统计结果计算了但没透出，用户/前端不可见。
+- **[P1-6] optimizer 空骨架哨兵**：`run_backtest` 无数据返回全零骨架（days=0）其 sharpe=0.0
+  原会被当真实目标值混入排名（空区间可能赢过真实亏损区间）。已修：days==0 视同失败隔离
+  排末位。实测：真实亏损（sharpe-0.5）胜出、空骨架排末位。
+- **[P1-5] walk-forward 日历天数语义锁定**：train_days/test_days/step_days 是日历天数
+  （252 ≈ 172 交易日），注释强化防误读（不改字段名避免破坏既有调用）。
+- **[P1-2] walk-forward IS lookahead —— 误报确认**：tradeck 的 `run_backtest` 矩阵严格按
+  `[start,end]` 截取，训练折未平仓持仓在 train_end 期末强平（exit_reason=end），**不用
+  train_end 之后的 K 线**。参照的 position 模式问题（未平仓持仓用 OOS 区间真实 K 线平仓）
+  在 tradeck 不存在——矩阵 build 天然截断，无未来数据污染。
+
+Aristotle 修复并实测（22 项自测全过）：
+- **[P1-1] 内层调参隔离带前置**：内层有效训练边界收窄为 `outer_train_stop - purge_bars`，
+  内层折数 <2 的外层折降级跳过——修复内层首折测试段紧贴 outer train 尾部导致 purge 对
+  调参侧形同虚设。实测：默认配置 3 外层折内层全满足 `embargo_end <= train_end - purge`；
+  对照组确认修复前泄漏真实存在。
+- **[P1-4] DSR n_trials 窄口径注释**：外层去重候选数低估真实搜索空间（各折 beam 池 × 折数），
+  N 低估 → DSR 偏乐观，非严格多重检验校正（注释标明）。
+- **[P2-7]** NestedValidationConfig 补 outer/inner_train_bars >= min_train_bars 校验。
+- **[P2-10]** optimizer direction 校验 in {min,max}（原 "MIN"/"maximum" 静默当 max）。
+
+修复后综合回归（主 agent）：嵌套折内层前置隔离带生效（内层不越界）、端到端挖掘闭环
+（真实 A 股 555天×8只，3折3候选14因子统计含 DSR）、imports 全绿。
+
+入 backlog 的 P2（不阻塞合并）：统计黄金向量数值测试未随迁（参照 test_stats_v2.py）——
+建议后续为 quant 建 tests/ 目录时随迁；walk-forward 空折 consistency=0.0 口径（继承参照）。
+
+---
+
 实施：I1+I2（子 agent Carver，mining/）+ I3（子 agent Darwin，engine/）并行。主 agent 亲测：
 
 **I1 防泄漏加固**：
@@ -609,6 +646,7 @@ Review 处置（2 项）：
 | H2 分钟频策略回放 | ✅ 验收通过 | 无 | — | **分钟频回放 + 防未来函数/涨停拒买/日K对拍全绿** | 2026-09-10 |
 | H review 门禁 | ✅ 通过（修复后） | 4 P1 + 5 P2，无 P0 | 已处置 | **Ramanujan 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计+优化器+walk-forward） | ✅ 验收通过 | 无 | — | **嵌套折/purge/统计检验/优化器/walk-forward + 端到端挖掘全绿** | 2026-09-10 |
+| I review 门禁 | ✅ 通过（修复后） | 6 P1 + 5 P2，无 P0 | 已处置 | **Laplace 独立 review + 主 agent/Aristotle 修复验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
