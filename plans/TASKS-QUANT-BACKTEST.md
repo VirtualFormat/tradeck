@@ -277,6 +277,38 @@
 
 ## 阶段 H2 review 明细（2026-09-10，主 agent 亲测复核）
 
+## 阶段 I review 明细（2026-09-10，主 agent 亲测复核）
+
+实施：I1+I2（子 agent Carver，mining/）+ I3（子 agent Darwin，engine/）并行。主 agent 亲测：
+
+**I1 防泄漏加固**：
+- 嵌套折结构：外层 504 训练 + 30 purge 隔离带 + 126 测试 + 5 embargo，内层 3 折全在
+  outer train 内（`outer.train_start <= inner.train_start` 且 `inner.embargo_end <= outer.train_end`）。
+- 防泄漏：`test_start - train_end = 30 = purge_bars`，forward return 窗口被隔离带截断不跨边界；
+  反例 purge=3<horizon=5 时确实跨界（证明隔离带必要）。
+- 自适应缩窗 `_auto_validation_config`：天数不足优雅降级返回空，purge 恒 >= horizon 不可让步。
+
+**I2 统计检验**（mining/stats.py，零依赖 numpy，照搬参照 stats_v2）：
+- 黄金向量对账：NW t max_err 4.4e-16（对参照第二实现）、BH-FDR 误差 0.0、DSR 退化 1.9e-8。
+- 性质断言：NW t 惩罚自相关（实测 |NW t|=6.82 < |naive t|=12.79）；BH-FDR q 单调递增正确。
+- 挖掘报告：因子 IC 带 NW t/p/BH-FDR q（多重检验校正），候选带 DSR 通缩夏普。
+
+**I3 优化器 + walk-forward**：
+- 优化器：参数网格三写法（list/values/min-max-step）+ 边界校验 + 组合爆炸预判（>2000 拒绝）；
+  顺带修复参照 `step=0` 被 `or` 当缺省的 bug（改显式 `is None`）。合成行情 8 组合扫描排序正确。
+- walk-forward：滚动折 test_start=train_end 次日堵前视泄漏（亲测 9 折全部 test_start>train_end、
+  滚动 step 正确）；样本外净值复利拼接与手工逐折累乘一致；param_stability 观测参数漂移；
+  degradation=0.5676（样本外退化，过拟合信号符合预期）。
+- runner 接线：run_optimize/run_sensitivity/run_walkforward，组合数 >8 走 worker 池（对齐 G4）。
+
+**端到端**：真实 A 股数据（555 天 × 8 只 tracked，全复权）跑 run_mining 完整闭环——
+3 折嵌套、3 候选、14 因子统计（含 NW t + BH q），全程优雅降级。
+
+已知边界：挖掘样本外评估用 `_backtest_top_n` 轻量口径（每日持 top_n 等权）非完整撮合
+（阶段 D 验收时已知情接受，挖掘期快速比较用）；候选发布后的正式回测才走完整撮合。
+
+---
+
 ### 独立 review 门禁（Ramanujan，2026-09-10）
 
 开发完成后由独立 review agent（未参与开发）严格审查（含与参照 tick-stock-panel 逐函数对拍）。
@@ -576,6 +608,7 @@ Review 处置（2 项）：
 | H1 分钟成交价修正 | ✅ 验收通过 | 无 | — | **minute_fill 穿越价/VWAP + minute_trigger 盘中触发，默认口径零变化对拍全绿** | 2026-09-10 |
 | H2 分钟频策略回放 | ✅ 验收通过 | 无 | — | **分钟频回放 + 防未来函数/涨停拒买/日K对拍全绿** | 2026-09-10 |
 | H review 门禁 | ✅ 通过（修复后） | 4 P1 + 5 P2，无 P0 | 已处置 | **Ramanujan 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
+| I 研究严谨性（防泄漏+统计+优化器+walk-forward） | ✅ 验收通过 | 无 | — | **嵌套折/purge/统计检验/优化器/walk-forward + 端到端挖掘全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
