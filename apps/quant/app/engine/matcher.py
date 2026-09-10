@@ -130,6 +130,13 @@ class SimResult:
     unadjusted: list[str] = field(default_factory=list)  # 无复权降级标的（报告标注用）
     # 分钟成交覆盖统计（阶段 H1）：used = 实际走了分钟口径的笔数，
     # fallback = 开了分钟口径但分钟数据缺失/无效而降级日K 的笔数。
+    # 分钟口径计数（阶段 H1）：entry/exit 分开统计（review P1 修复——合并计数会让
+    # 「exit_fill=signal_next_minute 且 minute_fill=False」时误显示开仓走了分钟口径）
+    minute_entry_used: int = 0
+    minute_entry_fallback: int = 0
+    minute_exit_used: int = 0
+    minute_exit_fallback: int = 0
+    # 兼容字段（旧消费方）：entry+exit 合并口径
     minute_fill_used: int = 0
     minute_fill_fallback: int = 0
 
@@ -182,8 +189,11 @@ def simulate(
     trades: list[Trade] = []
     equity_dates: list[date] = []
     equity: list[float] = []
-    minute_used = 0
-    minute_fallback = 0
+    # entry/exit 分开计数（review P1 修复计数混淆）
+    minute_entry_used = 0
+    minute_entry_fallback = 0
+    minute_exit_used = 0
+    minute_exit_fallback = 0
     # 分钟口径开关：signal_next_minute 依赖分钟数据确认触发，无 loader 时整体降级
     minute_trigger_mode = (
         config.exit_fill == "signal_next_minute" and minute_loader is not None
@@ -227,21 +237,21 @@ def simulate(
 
     def minute_entry_price(i: int, j: int, sym: str, daily_price: float) -> tuple[float, str]:
         """开仓分钟精确成交：有参考线→穿越价，无参考线→VWAP；缺失降级日K。"""
-        nonlocal minute_used, minute_fallback
+        nonlocal minute_entry_used, minute_entry_fallback
         if not minute_fill_on:
             return daily_price, "daily"
         marr = minute_arr_of(sym, i)
         if marr is None or len(marr) == 0:
-            minute_fallback += 1
+            minute_entry_fallback += 1
             return daily_price, "daily"
         # 参考价取信号日（open_t+1 口径为昨日，close_t 口径为当日）
         sig_i = i - 1 if config.entry_fill == "open_t+1" else i
         ref = ref_of(entry_refs, sym, sig_i)
         precise = resolve_minute_fill(marr, ref, "buy")
         if precise is None:
-            minute_fallback += 1
+            minute_entry_fallback += 1
             return daily_price, "daily"
-        minute_used += 1
+        minute_entry_used += 1
         return precise, _minute_mode(marr, ref, "buy")
 
     def minute_exit_price(
@@ -251,35 +261,37 @@ def simulate(
 
         signal_next_minute（仅 reason=="signal" 的卖出信号生效）：
         分钟收盘确认下穿触发线 → 下一分钟开盘成交；当日未确认/数据缺失 →
-        当日不可成交（won't fill），后续交易日按 open_t+1 口径继续尝试。
+        当日不可成交（won't fill），由调用方置 pending_exit 挂单、次日开盘价强制退出
+        （对齐参照 pending_exit 语义：signal 已确认要卖，盘中未触发不无限重评估，
+        避免退出时序系统性后移）。
         minute_fill（其余退出路径；signal_next_minute 的 signal 卖出已由上面接管）：
         触发日分钟K 优化成交价，缺失降级日K。
         """
-        nonlocal minute_used, minute_fallback
+        nonlocal minute_exit_used, minute_exit_fallback
         sig_i = i - 1 if config.exit_fill == "open_t+1" else i
         if minute_trigger_mode and reason == "signal":
             marr = minute_arr_of(sym, i)
             if marr is None or len(marr) == 0:
-                minute_fallback += 1
+                minute_exit_fallback += 1
                 return daily_price, "daily", False  # 降级 open_t+1（本日开盘价）
             ref = ref_of(exit_refs, sym, sig_i)
             trig = resolve_minute_exit_trigger(marr, ref)
             if trig is not None:
-                minute_used += 1
+                minute_exit_used += 1
                 return trig, "minute_trigger", False
-            # 当日未盘中确认 → 当日不成交（明日按 open_t+1 再试）
+            # 当日未盘中确认 → 当日不成交，置 pending_exit 挂单（次日开盘价强制退出）
             return daily_price, "daily", True
         if minute_fill_on:
             marr = minute_arr_of(sym, i)
             if marr is None or len(marr) == 0:
-                minute_fallback += 1
+                minute_exit_fallback += 1
                 return daily_price, "daily", False
             ref = ref_of(exit_refs, sym, sig_i)
             precise = resolve_minute_fill(marr, ref, "sell")
             if precise is None:
-                minute_fallback += 1
+                minute_exit_fallback += 1
                 return daily_price, "daily", False
-            minute_used += 1
+            minute_exit_used += 1
             return precise, _minute_mode(marr, ref, "sell"), False
         return daily_price, "daily", False
 
@@ -314,6 +326,30 @@ def simulate(
             if np.isnan(c):
                 continue  # 停牌：不可操作，继续持有
             reason = None
+            # pending_exit 挂单（参照语义）：signal_next_minute 昨日 signal 已确认要卖但
+            # 盘中未触发，今日以开盘价强制退出（优先级最高，先于风控/signal 重评估）。
+            if pos.get("pending_exit"):
+                reason = pos.get("pending_exit_reason") or "signal"
+                # 直接以今日开盘成交（走下方成交段，跳过分钟触发重评估）
+                if config.t1 and _is_cn(sym) and pos["entry_idx"] == i:
+                    continue
+                if blocked_by_limit(i, j, "sell"):
+                    continue  # 跌停无法成交，挂单保留到明日
+                px = exit_price_of(i, j)
+                if np.isnan(px):
+                    continue
+                value = pos["shares"] * px
+                cost = _cost_of(sym, config.commission_pct).sell_cost(value)
+                cash += value - cost
+                pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
+                trades.append(Trade(
+                    symbol=sym, entry_date=pos["entry_date"], exit_date=dates[i],
+                    entry_price=pos["entry_price"], exit_price=px, shares=pos["shares"],
+                    pnl=pnl, ret=pnl / (pos["entry_price"] * pos["shares"]),
+                    exit_reason=reason,
+                ))
+                del positions[sym]
+                continue
             ret_now = c / pos["entry_price"] - 1.0
             # 峰值跟踪：持仓期最高价（日K 口径用当日 high，缺失降级 close；
             # 参照 tick-stock-panel 用 max_high，同口径）
@@ -365,7 +401,11 @@ def simulate(
                 continue
             px, exit_mode, no_fill = minute_exit_price(i, j, sym, exit_price_of(i, j), reason)
             if no_fill:
-                continue  # signal_next_minute 当日未盘中确认：次日按 open_t+1 再试
+                # signal_next_minute 当日未盘中确认：置 pending_exit 挂单，
+                # 次日开盘价强制退出（对齐参照 pending_exit 语义，不无限重评估）。
+                pos["pending_exit"] = True
+                pos["pending_exit_reason"] = reason
+                continue
             if np.isnan(px):
                 continue
             value = pos["shares"] * px
@@ -454,7 +494,10 @@ def simulate(
     result = SimResult(
         trades=trades, equity_dates=equity_dates, equity=equity,
         final_value=equity[-1] if equity else config.initial_capital,
-        minute_fill_used=minute_used, minute_fill_fallback=minute_fallback,
+        minute_entry_used=minute_entry_used, minute_entry_fallback=minute_entry_fallback,
+        minute_exit_used=minute_exit_used, minute_exit_fallback=minute_exit_fallback,
+        minute_fill_used=minute_entry_used + minute_exit_used,
+        minute_fill_fallback=minute_entry_fallback + minute_exit_fallback,
     )
     if adjusted_flags is not None:
         result.unadjusted = sorted(s for s, ok in adjusted_flags.items() if not ok)

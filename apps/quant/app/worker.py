@@ -51,6 +51,29 @@ def _decode_config(payload: dict[str, Any]):
     return MatcherConfig(**payload)
 
 
+def _load_minute_cache(
+    symbols: list[str], start: date, end: date
+) -> dict[str, Any] | None:
+    """子进程内读分钟K 本地缓存（纯文件读，不补拉网络）。
+
+    返回 {symbol: DataFrame}；全空返回 None（matcher 降级日K 口径）。
+    """
+    from app.data.client_minute import load_minute
+
+    out: dict[str, Any] = {}
+    for symbol in symbols:
+        frames = [
+            df
+            for year in range(start.year, end.year + 1)
+            if not (df := load_minute(symbol, year)).is_empty()
+        ]
+        if frames:
+            import polars as pl
+
+            out[symbol] = pl.concat(frames).sort("datetime")
+    return out or None
+
+
 def make_backtest_task(
     symbols: list[str],
     strategy_id: str,
@@ -84,14 +107,27 @@ def _worker_entry(task: dict[str, Any], event_queue) -> None:
         if task["kind"] != "backtest":
             raise ValueError(f"不支持的 worker 任务类型：{task['kind']}")
         reg = StrategyRegistry(user_strategy_dirs(task.get("user_id")))
+        config = _decode_config(task.get("config") or {})
+        # 分钟口径（minute_fill / signal_next_minute）：子进程内从本地分钟缓存读
+        # （load_minute 纯文件读，spawn 安全）；缓存缺失则 matcher 无 loader 降级日K。
+        # 注意：子进程不补拉网络数据（避免子进程做 IO / 与主进程缓存写竞争），
+        # 分钟K 需调用方预拉（HTTP API 入口）或读历史缓存。
+        minute_bars = None
+        if config.minute_fill or config.exit_fill == "signal_next_minute":
+            minute_bars = _load_minute_cache(
+                task["symbols"],
+                date.fromisoformat(task["start"]),
+                date.fromisoformat(task["end"]),
+            )
         result = run_backtest(
             task["symbols"], task["strategy_id"],
             date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
             params=task.get("params"),
-            config=_decode_config(task.get("config") or {}),
+            config=config,
             registry=reg,
             benchmark=task.get("benchmark"),
             names=task.get("names"),
+            minute_bars=minute_bars,
         )
         result.setdefault("worker", {})["pid"] = os.getpid()
         event_queue.put({"type": "result", "payload": result})

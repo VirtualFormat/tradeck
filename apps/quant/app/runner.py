@@ -261,10 +261,12 @@ async def _run_minute_replay(
         return empty
 
     fac = {s: factors.load(s) for s in daily}
+    names = await _fetch_names(sorted(daily))
 
     res = replay_minute_strategy(
         strategy, daily=daily, minute=minute, start=start, end=end,
-        params=params, factors=fac, progress_cb=progress_cb, cancel_event=cancel_event,
+        params=params, factors=fac, names=names,
+        progress_cb=progress_cb, cancel_event=cancel_event,
     )
     return _minute_replay_result_dict(strategy_id, symbols, start, end, res)
 

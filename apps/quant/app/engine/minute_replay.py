@@ -117,24 +117,27 @@ def _placeholder_matrix(symbols: list[str], day: date) -> MarketMatrix:
 
 
 def _adj_factor_of(
-    symbol: str, day: date, factors: dict[str, pl.DataFrame] | None
+    symbol: str, day: date, factors: dict[str, pl.DataFrame] | None, ref_end: date
 ) -> float:
-    """当日复权折算比例 = 前复权口径 factor[day] / factor[T_last]（与 adjust.py 同口径）。
+    """当日复权折算比例 = 前复权口径 factor[day] / factor[ref_end]。
 
-    分钟价为未复权真实价，乘以该比例折算到复权价系，与日线出场价同尺度
-    （参照实现用面板 close/raw_close 比例，此处日K 缓存全为原始价、无 raw_close 列，
-    用因子比例同义实现）。因子缺失 → 1.0（降级原始价）。
+    分母取**回测区间末日 ref_end**（而非因子表最末行），与 adjust.py 的
+    forward_adjust（series[-1] = 区间末日因子）同口径——保证 H2 命中价与 H1/日频
+    引擎的出场价在同一复权价系，历史回测不随因子表更新漂移（若取因子表最末行，
+    T_end 之后除权会导致同区间今天跑和三个月后跑命中价不同）。
+    分钟价为未复权真实价，乘以该比例折算到复权价系，与日线出场价同尺度。
+    因子缺失 → 1.0（降级原始价）。
     """
     if not factors:
         return 1.0
     fac = factors.get(symbol)
     if fac is None or fac.is_empty():
         return 1.0
-    series = _factor_series(fac, [day])
-    last_f = fac["ex_factor"].to_numpy()[-1]
-    if last_f == 0:
+    # 分子分母同一次对齐（searchsorted 规则一致），分母用区间末日因子
+    pair = _factor_series(fac, [day, ref_end])
+    if pair[1] == 0:
         return 1.0
-    return float(series[0] / last_f)
+    return float(pair[0] / pair[1])
 
 
 def replay_minute_strategy(
@@ -146,6 +149,7 @@ def replay_minute_strategy(
     end: date,
     params: dict | None = None,
     factors: dict[str, pl.DataFrame] | None = None,
+    names: dict[str, str] | None = None,
     progress_cb: Callable[[dict], None] | None = None,
     cancel_event=None,
 ) -> MinuteReplayResult:
@@ -154,11 +158,13 @@ def replay_minute_strategy(
     daily：{symbol: 日K DataFrame}（原始价，调用方应覆盖 [start - 窗口预热, end]）；
     minute：{symbol: 分钟K DataFrame}（datetime/open/high/low/close/volume/amount）；
     factors：{symbol: 复权因子缓存帧}（缺省/缺失标的降级原始价折算）。
+    names：{symbol: 证券简称}（涨停拒买的 ST 分档用；缺省空 dict 按非 ST 口径）。
     progress_cb 每回放日回调 {"day": i, "total": n, "date": "YYYY-MM-DD"}；
     cancel_event.is_set() 时提前终止（已产出的命中保留）。
     """
     t0 = time.perf_counter()
     result = MinuteReplayResult()
+    names = names or {}
 
     # 合并参数默认值（与 registry.run 同语义）
     merged = {**{p["id"]: p.get("default") for p in strategy.params_schema}, **(params or {})}
@@ -261,19 +267,19 @@ def replay_minute_strategy(
                 raw_close = float(row["close"][0])
             if not np.isfinite(raw_close) or raw_close <= 0:
                 continue
-            # 涨停拒买：触发分钟收盘已达当日涨停价（limit_pct + T-1 原始收盘）
+            # 涨停拒买：触发分钟收盘已达当日涨停价（limit_pct + T-1 原始收盘，
+            # name 用于 ST 分档——主板 ST ±5%，缺名按非 ST）
             prev_row = frames[sym].filter(pl.col("date") < day).tail(1)
             if not prev_row.is_empty():
                 prev_close = float(prev_row["close"][0])
                 if prev_close > 0:
-                    limit_up = prev_close * (1 + limit_pct(sym, day, ""))
+                    limit_up = prev_close * (1 + limit_pct(sym, day, names.get(sym, "")))
                     if raw_close >= limit_up - 1e-9:
                         result.buy_limit_up += 1
                         continue
-            adj = _adj_factor_of(sym, day, factors)
-            if factors is not None and adj == 1.0 and (
-                factors.get(sym) is None or factors.get(sym).is_empty()
-            ):
+            adj = _adj_factor_of(sym, day, factors, end)
+            # unadjusted 与日频口径一致：因子缓存缺失（含空表）即标注
+            if factors is None or factors.get(sym) is None or factors.get(sym).is_empty():
                 unadjusted.add(sym)
             try:
                 score = float(sig.score[last, j])
