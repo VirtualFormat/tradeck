@@ -277,6 +277,42 @@
 
 ## 阶段 H2 review 明细（2026-09-10，主 agent 亲测复核）
 
+### 独立 review 门禁（Ramanujan，2026-09-10）
+
+开发完成后由独立 review agent（未参与开发）严格审查（含与参照 tick-stock-panel 逐函数对拍）。
+结论：**需修复后合并 → 修复后通过**。无 P0（无真未来函数、无崩溃路径），4 P1 + 5 P2。
+
+主 agent 修复并实测验证：
+- **[P1] H2 复权口径漂移**：`_adj_factor_of` 分母原用因子表最末行（≈最新交易日），与
+  `forward_adjust` 的区间末日口径不一致——T_end 之后除权会导致历史回测命中价漂移。
+  已修：分母锚定回测区间末日（`_factor_series(fac,[day,end])` 同次对齐）。实测：区间外未来
+  除权（因子翻倍 2.0）不再影响历史命中价（命中价 10.5 锚定区间末日，而非错误的 5.25）。
+- **[P1] signal_next_minute 补 pending_exit 挂单**：原「signal 盘中未确认 → 当日不成交 →
+  次日重评估」，但次日若风控触发则 signal 永久失效（挂单语义丢失、退出时序后移）。已修：
+  对齐参照 pending_exit——盘中未确认置挂单，次日开盘价强制退出（优先级最高）。实测：
+  signal 触发日线远离触发线 → 当日未确认 → 次日开盘价强制退出。
+- **[P1] 分钟计数混淆**：entry/exit 合并计数导致「minute_fill=False + signal_next_minute」
+  时误显示开仓走分钟口径。已修：拆为 minute_entry_used/fallback + minute_exit_used/fallback
+  独立统计（保留合并兼容字段）。实测：exit_used=1、entry_used=0 正确分离。
+- **[P2] 分钟回放涨停拒买传 names**：原硬编码空 name，ST 股按 ±10% 判涨停（应为 ±5%）。
+  已修：`_run_minute_replay` 预拉 names 传入 replay_minute_strategy。
+- **[P2] unadjusted 判定口径**：空 dict/空表现统一标注（与日频 adjusted_flags 一致）。
+
+主 agent 额外收口（review 之外的集成断点）：
+- **worker 分钟断点**：API 回测走 worker 子进程（同步 run_backtest），minute_fill 拿不到
+  预拉分钟K 永远降级。已修：worker 加 `_load_minute_cache`，子进程内读本地分钟缓存
+  （load_minute 纯文件读 spawn 安全；子进程不补拉网络避免 IO/缓存写竞争）。
+
+修复后回归：日K 对拍 trades=2、ret=-0.012 与基线逐分一致、复权生效（unadjusted=[]）——全绿。
+
+接受为「有意偏离/后续跟进」的项：
+- exit_ref 当前无策略产出（build_minute_exit_reference 引入但未接入信号管线）——白名单
+  信号缺 ref 时降级 open_t+1，已注释说明；接入信号管线留待后续（与策略 exit_ref 产出一起）。
+- skipped_days 混装「无分钟分区」与「策略异常」两类、纯分钟策略预热期窗口截短无告警——
+  可接受，注释已说明。
+
+---
+
 实施：子 agent Poincare。主 agent 亲测（非仅信自报）：
 
 - **防未来函数（关键）**：日线窗口严格截至 T-1。合成用例把当日日K 收盘从 12.4 改成 0.01
@@ -539,6 +575,7 @@ Review 处置（2 项）：
 | G review 门禁 | ✅ 通过（修复后） | 4 P1 + 6 P2，无 P0 | 已处置 | **Lovelace 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | H1 分钟成交价修正 | ✅ 验收通过 | 无 | — | **minute_fill 穿越价/VWAP + minute_trigger 盘中触发，默认口径零变化对拍全绿** | 2026-09-10 |
 | H2 分钟频策略回放 | ✅ 验收通过 | 无 | — | **分钟频回放 + 防未来函数/涨停拒买/日K对拍全绿** | 2026-09-10 |
+| H review 门禁 | ✅ 通过（修复后） | 4 P1 + 5 P2，无 P0 | 已处置 | **Ramanujan 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
