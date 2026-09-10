@@ -73,8 +73,9 @@ def _definition_of(user_id: str, spec: dict) -> dict:
         "group": spec.get("group", "自定义"),
         "kind": "composite" if spec.get("kind") == "cf" else "custom",
         "formula": spec.get("formula", ""),
-        "components": (
-            [(m["id"], float(m.get("weight", 1.0))) for m in spec["members"]]
+        # store.to_spec 的 composite 成员期望 dict {member_id: weight}（2~8 个）
+        "members": (
+            {m["id"]: float(m.get("weight", 1.0)) for m in spec["members"]}
             if spec.get("members") else None
         ),
         "direction": _DIR_TO_REG.get(int(spec.get("direction", 1)), "high"),
@@ -108,9 +109,11 @@ def update_factor(user_id: str, factor_id: str, patch: dict) -> dict:
             current[key] = patch[key]
             changed = True
     if patch.get("members") is not None:
-        current["components"] = [
-            (m["id"], float(m.get("weight", 1.0))) for m in patch["members"]
-        ]
+        # store.to_spec 的 composite 成员期望 dict {member_id: weight}
+        current["members"] = {
+            m["id"]: float(m.get("weight", 1.0)) for m in patch["members"]
+        }
+        current.pop("components", None)  # 清掉派生的 components，避免与 members 不一致
         changed = True
     if patch.get("direction") is not None:
         current["direction"] = _DIR_TO_REG.get(int(patch["direction"]), "high")

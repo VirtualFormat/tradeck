@@ -172,17 +172,21 @@ def to_spec(definition: dict, user_id: str | None = None) -> FactorSpec:
         if get_factor(member_id, user_id) is None and member_id not in BASE_COLUMNS:
             raise ValueError(f"未知成员因子: {member_id}")
         components.append((member_id, weight))
-    # 环检测沿 components 链走（依赖已展开，看不到链路成员）
-    seen = {factor_id}
+    # 环检测只沿 composite 链走（review P1-2 修复：叶子成员 base/custom 不参与 seen 判重，
+    # 否则「两个 composite 共享底层成员」或「composite 与其直接成员有交集」的合法组合
+    # 会被误判成环）。只有「成员是 composite 且沿链回到祖先」才是真环。
+    seen_composites = {factor_id}
     frontier = [member_id for member_id, _ in components]
     while frontier:
         current = frontier.pop()
-        if current in seen:
-            raise ValueError("composite 成员存在循环引用")
-        seen.add(current)
         current_spec = get_factor(current, user_id)
-        if current_spec is not None and current_spec.kind == "composite":
-            frontier.extend(member_id for member_id, _ in current_spec.components)
+        # 只递归 composite 成员；叶子（base/custom/基准列）是终点，不构成环
+        if current_spec is None or current_spec.kind != "composite":
+            continue
+        if current in seen_composites:
+            raise ValueError("composite 成员存在循环引用")
+        seen_composites.add(current)
+        frontier.extend(member_id for member_id, _ in current_spec.components)
     dependencies = factor_dependencies([member_id for member_id, _ in components], user_id)
     warmup = max(
         ((get_factor(m, user_id).warmup_bars if get_factor(m, user_id) else 1) for m, _ in components),
@@ -230,16 +234,30 @@ def create_factor(user_id: str, definition: dict, cache_dir: str | None = None) 
     spec = to_spec(definition, user_id=user_id)  # 先验证，失败不落盘
     existing = get_factor(spec.id, user_id)  # 只查「builtin + 本人」，不越界看他人
     if existing is not None:
-        # 公式/成员变更走版本升级；未变更则幂等拒绝
-        changed = (
+        # 公式/成员变更走版本升级（进缓存键）；元数据（label/group/direction）变更
+        # 不升 version 但也算 changed（review P1-3：只改名/改方向的更新不应被误拒）。
+        formula_changed = (
             existing.formula_text != spec.formula_text
             or existing.components != spec.components
         )
+        meta_changed = (
+            existing.label != spec.label
+            or existing.group != spec.group
+            or existing.direction != spec.direction
+        )
+        changed = formula_changed or meta_changed
         if not changed:
             raise ValueError(f"因子已存在且定义未变更: {spec.id}")
-        definition["version"] = existing.version + 1
+        if formula_changed:
+            definition["version"] = existing.version + 1
+        else:
+            definition["version"] = existing.version  # 元数据变更保持版本
         spec = to_spec(definition, user_id=user_id)
     save_one(user_id, definition, cache_dir)
+    # 元数据变更保持原版本：register_factor 对同版本会拒绝，需先注销再注册
+    # （公式/成员变更版本已 +1，直接注册）。
+    if existing is not None and spec.version == existing.version:
+        unregister_factor(spec.id, user_id)
     register_factor(spec, user_id)
     return spec
 

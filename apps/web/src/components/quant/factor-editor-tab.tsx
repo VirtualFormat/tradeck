@@ -99,8 +99,8 @@ const FACTOR_ID_RE = /^(uf|cf)_[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
 const MAX_CF_MEMBERS = 8;
 // 复合因子初始引用两条内置动量因子（示意，可改）
 const DEFAULT_CF_MEMBERS = [
-  { id: "mom_20", weight: 1 },
-  { id: "mom_60", weight: 1 },
+  { id: "momentum_5d", weight: 1 },
+  { id: "momentum_20d", weight: 1 },
 ];
 
 const STATUS_LABEL: Record<string, string> = {

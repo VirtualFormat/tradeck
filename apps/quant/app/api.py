@@ -447,9 +447,10 @@ def update_factor(factor_id: str, req: FactorUpdateRequest,
         return dict(_factors_api().update_factor(user_id, factor_id, patch))
     except HTTPException:
         raise
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
     except ValueError as e:
+        # 门面对不存在的因子抛 ValueError("因子不存在: ...")，此处区分为 404
+        if "不存在" in str(e):
+            raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -466,4 +467,3 @@ def delete_factor(factor_id: str, user_id: str = Depends(current_user_id)) -> di
         raise
     except KeyError:
         raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
-
