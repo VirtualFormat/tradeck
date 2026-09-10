@@ -25,10 +25,15 @@ class StrategySignals:
 
     entry/exit 为 bool 矩阵（True=当日收盘产生信号）；score 为当日评分
     （选股排序用，通常只在信号日有意义，其余可 NaN）。
+    entry_ref/exit_ref 为可选的信号参考价（float，如触发买入/卖出的 MA5 值），
+    仅信号日有意义；供阶段 H 分钟精确成交（minute_fill / minute_trigger）使用。
+    None 表示策略不提供参考线（分钟成交走 VWAP 口径）。
     """
     entry: np.ndarray
     exit: np.ndarray
     score: np.ndarray
+    entry_ref: np.ndarray | None = None
+    exit_ref: np.ndarray | None = None
 
 
 @dataclass

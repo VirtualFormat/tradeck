@@ -10,7 +10,9 @@ from datetime import date
 from pathlib import Path
 
 from app.data import client, factors, store
-from app.engine import MatcherConfig, compute, forward_adjust, simulate
+from app.engine import (
+    MatcherConfig, MinuteLoader, compute, forward_adjust, simulate,
+)
 from app.matrix import build, enrich
 from app.strategy import StrategyRegistry
 
@@ -162,6 +164,39 @@ async def _fetch_names(symbols: list[str]) -> dict[str, str]:
     return names
 
 
+# 分钟K 帧固定数值列序（与 engine/minute_fill.resolve_minute_fill 的整数索引约定一致）
+_MINUTE_COLS = ["open", "high", "low", "close", "volume", "amount"]
+
+
+def _build_minute_loader(
+    cfg: MatcherConfig, minute_bars: dict[str, "pl.DataFrame"] | None
+) -> MinuteLoader | None:
+    """把预拉的分钟K 帧装配成 matcher 的 minute_loader。
+
+    仅在分钟口径启用（minute_fill 或 exit_fill="signal_next_minute"）且有数据时
+    返回加载器；否则返回 None（matcher 全程日K 口径）。加载器本身纯查表：
+    按当日日期切片缓存，缺席返回 None（由 matcher 降级日K 口径）。
+    """
+    import numpy as np
+
+    need = cfg.minute_fill or cfg.exit_fill == "signal_next_minute"
+    if not need or not minute_bars:
+        return None
+    # 预索引：{symbol: {date: float64 2D 数组}}（只留数值列，datetime 用于分组）
+    index: dict[str, dict[date, "np.ndarray"]] = {}
+    for sym, df in minute_bars.items():
+        if df is None or df.is_empty():
+            continue
+        day_map: dict[date, "np.ndarray"] = {}
+        for day, part in df.group_by(df["datetime"].dt.date(), maintain_order=True):
+            day_map[day[0]] = part.select(_MINUTE_COLS).to_numpy().astype(np.float64)
+        if day_map:
+            index[sym] = day_map
+    if not index:
+        return None
+    return lambda sym, d: index.get(sym, {}).get(d)
+
+
 def run_backtest(
     symbols: list[str],
     strategy_id: str,
@@ -172,12 +207,16 @@ def run_backtest(
     registry: StrategyRegistry | None = None,
     benchmark: dict | None = None,
     names: dict[str, str] | None = None,
+    minute_bars: dict[str, "pl.DataFrame"] | None = None,
 ) -> dict:
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
 
     数据来自本地 Parquet 缓存（调用方应先经 fetch 备数；缺数标的在矩阵层降级为全 NaN 列）。
     benchmark / names 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
     names 缺省 None 时撮合按无名称（非 ST）分档，保持历史行为。
+    minute_bars：{symbol: 分钟K DataFrame}（阶段 H1，由 run_backtest_async 预拉），
+    仅 config.minute_fill 或 exit_fill="signal_next_minute" 时需要；缺省 None 时
+    分钟口径整体降级日K（不抛错）。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     matrix = build(symbols, start, end)
@@ -194,6 +233,9 @@ def run_backtest(
 
     signals = reg.run(strategy_id, enriched, params)
     cfg = config or MatcherConfig()
+    # 分钟精确成交/盘中触发（阶段 H1）：把预拉的分钟K 帧装配成 matcher 的
+    # minute_loader（symbol, date → float64 2D 数组），matcher 保持纯计算不做 IO。
+    minute_loader = _build_minute_loader(cfg, minute_bars)
     result = simulate(
         adjusted_matrix,
         {s: signals.entry[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
@@ -201,6 +243,15 @@ def run_backtest(
         cfg,
         adjusted_flags=adjusted_flags,
         names=names,
+        entry_refs=(
+            {s: signals.entry_ref[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
+            if signals.entry_ref is not None else None
+        ),
+        exit_refs=(
+            {s: signals.exit_ref[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
+            if signals.exit_ref is not None else None
+        ),
+        minute_loader=minute_loader,
     )
     stats = compute(result)
     # 净值曲线（逐日，叠加基准归一化到同一起点便于对比）
@@ -231,6 +282,8 @@ def run_backtest(
             "ret": t.ret,
             "hold_days": (t.exit_date - t.entry_date).days,
             "exit_reason": t.exit_reason,
+            "entry_fill_mode": t.entry_fill_mode,
+            "exit_fill_mode": t.exit_fill_mode,
         }
         for t in result.trades
     ]
@@ -251,6 +304,9 @@ def run_backtest(
         "trades": trades,
         "equity_curve": equity_curve,
         "benchmark": benchmark_out,
+        # 分钟成交覆盖统计（阶段 H1）：used=走分钟口径笔数，fallback=降级日K 笔数
+        "minute_fill_used": result.minute_fill_used,
+        "minute_fill_fallback": result.minute_fill_fallback,
     }
 
 
@@ -263,11 +319,26 @@ async def run_backtest_async(
     config: MatcherConfig | None = None,
     registry: StrategyRegistry | None = None,
 ) -> dict:
-    """async 包装：先拉基准再跑同步回测（HTTP API 用）。"""
+    """async 包装：先拉基准/名称/分钟K（如需）再跑同步回测（HTTP API 用）。
+
+    分钟K 预拉（阶段 H1）：config.minute_fill 或 exit_fill="signal_next_minute"
+    时经 data/client_minute.get_minute_bars 拉全区间分钟K（带本地缓存）；
+    拉取失败/为空时优雅降级（matcher 无 loader 走日K 口径）。
+    """
     benchmark = await _fetch_benchmark(symbols, start, end)
     names = await _fetch_names(symbols)
+    minute_bars: dict | None = None
+    cfg = config or MatcherConfig()
+    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+        from app.data.client_minute import get_minute_bars
+        try:
+            minute_bars = await get_minute_bars(symbols, start, end, use_cache=True)
+        except Exception as e:  # 分钟通路故障不阻塞回测，全程日K 口径降级
+            logger.warning("分钟K 预拉失败，分钟口径降级日K：%s", e)
+            minute_bars = None
     return run_backtest(
-        symbols, strategy_id, start, end, params, config, registry, benchmark, names
+        symbols, strategy_id, start, end, params, config, registry, benchmark, names,
+        minute_bars=minute_bars,
     )
 
 
