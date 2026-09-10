@@ -225,6 +225,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 | A 股公告（东财全市场公告过滤 tracked 30 只，直调 akshare；当天空则试前一自然日） | 10:30 每天 | akshare | announcements |
 | A 股券商研报（30 只串行限速 0.5s，直调 akshare，只留近 90 天） | 周一 09:00 | akshare | research_reports |
 | 市场宽度（乐咕涨跌家数快照，直调 akshare，UPSERT 当天行） | 每 30 分钟 | akshare | market_breadth |
+| 证券中文名称同步（同花顺 ticker_list 全市场 A 股，灌 instrument_master + 回填 quote_snapshots.name） | 07:00 每天 | hithink | instrument_master/quote_snapshots |
 | 市场宽度（US/HK，读 daily_prices 全市场计算，CROSS JOIN LATERAL 走索引） | 09:05 / 22:05 每天 | —（本地计算） | market_breadth |
 | 数据清理（TTL） | 03:00 每天 | — | 各表 |
 
@@ -304,10 +305,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 - [ ] **AmazingData 正式账户开通后接入**：当前试用账号权限不全（行情/复权受阻，见 TASKS-AMAZINGDATA-CN.md 验收记录），代码保留但默认禁用；待正式账户开通、权限补齐并逐值对拍后，再评估 AmazingData 主用、findb fallback。
 - [ ] **CN 指数迁 TickFlow（可选 P3）**：`000001.SH`/`399006.SZ` 等（免费档实测可用），减少 yfinance 依赖；存量 `.SS` 数据处理需先决策。
 - [ ] **个股页市值货币符号**：`fmtBigNumber` 硬编码 `$`，CNY/HKD 资产应按 currency 显示（cosmetic）。
-- [ ] **A 股证券中文名称源（ST 判定前置）**：quant 精确涨跌停的 ST ±5% 判定（engine/limits.py）
-  需要中文简称判 "ST"，但当前 `quote_snapshots.name` 对 A 股为 null、`equity_profiles` 存英文名、
-  akshare 被东财断连（已知坑 #5）——ST 判定逻辑正确但空转。待接中文名称源（同花顺/东财恢复后
-  批量灌入 instrument_master 或 quote_snapshots），见 plans/TASKS-QUANT-BACKTEST.md 阶段 G 验收记录。
 
 ## 相关文档
 
