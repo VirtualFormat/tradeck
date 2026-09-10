@@ -283,6 +283,36 @@
 
 ## 阶段 J review 明细（2026-09-10，主 agent 亲测复核）
 
+### 独立 review 门禁（Epicurus，2026-09-10）
+
+结论：**需修复后合并 → 修复后通过**。无 P0（编译器/求值器防未来函数方向正确、红线全部
+生效、多用户隔离可靠），3 P1 + 4 P2（全部实测复现）。修复：主 agent。
+
+主 agent 修复并实测：
+- **[P1-1] 复合因子断链**：门面 `_definition_of`/`update_factor` 产出 `components`(list)，
+  但 `store.to_spec` 期望 `members`(dict)——cf 创建/更新经 HTTP 层必败。统一为 dict
+  `{member_id: weight}`。（主 agent 在 review 前已独立发现此 bug 并修复，Epicurus 实测确认。）
+- **[P1-2] 环检测误杀合法嵌套**：原把所有成员（含 base/custom 叶子）加入 seen 判重，
+  「composite 共享底层成员」「composite 与直接成员交集」的合法组合被误判成环。已修：
+  只对 composite 链做环检测（叶子不参与 seen）。实测：合法嵌套创建成功、真环仍被拒。
+- **[P1-3] 元数据更新误拒**：create_factor 变更检测只比 formula/components，只改
+  label/group/direction 恒 400。已修：纳入元数据变更（不升 version，同版本走先注销再注册）。
+  实测：只改 label/direction 不升版本不拒绝、公式变更正确升 version。
+- **[P2] 前端 cf 默认成员 id** mom_20/mom_60 不存在 → momentum_5d/momentum_20d。
+- **[P2] PUT 404 死分支**：门面抛 ValueError 而非 KeyError——区分「不存在」为 404。
+
+亲测确认「无发现」的维度：DSL 防未来函数（ts_delay 只向后看/ts_mean 右端含当日/截面 rank
+当日截面）、编译红线全生效、多用户隔离（bob 不可见 alice 因子/跨用户引用 E001）。
+
+入 backlog 的 P2（不阻塞合并）：compile_formula_cached 丢 user_id 维度（当前无调用方）；
+前端编译诊断 useEffect 依赖过宽（改不相关字段也触发防抖）。
+
+**流程改进**：Epicurus 指出三个 P1 都可由门面级集成测试（HTTP→facade→store 创建 uf + cf +
+改名）一次性暴露——后续阶段为 quant 建 tests/ 目录时应补这类集成测试（当前 quant 无测试目录，
+阶段验收全依赖临时脚本，不可持续）。
+
+---
+
 实施：J1-J3 后端因子体系（子 agent Pascal）+ J4 API+前端（子 agent Banach）并行。
 主 agent 集成收口 + 亲测复核（非仅信自报）。
 
@@ -691,6 +721,7 @@ Review 处置（2 项）：
 | I 研究严谨性（防泄漏+统计+优化器+walk-forward） | ✅ 验收通过 | 无 | — | **嵌套折/purge/统计检验/优化器/walk-forward + 端到端挖掘全绿** | 2026-09-10 |
 | I review 门禁 | ✅ 通过（修复后） | 6 P1 + 5 P2，无 P0 | 已处置 | **Laplace 独立 review + 主 agent/Aristotle 修复验证全绿** | 2026-09-10 |
 | J 因子编辑器 | ✅ 验收通过 | 1 集成 bug（多用户隔离） | 已处置 | **DSL 编译器/注册表/存储/编辑器 UI + 防未来函数/隔离验证全绿** | 2026-09-10 |
+| J review 门禁 | ✅ 通过（修复后） | 3 P1 + 4 P2，无 P0 | 已处置 | **Epicurus 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
