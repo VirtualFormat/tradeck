@@ -14,6 +14,11 @@ from app.engine import MatcherConfig, compute, forward_adjust, simulate
 from app.matrix import build, enrich
 from app.strategy import StrategyRegistry
 
+__all__ = [
+    "run_backtest", "run_backtest_async", "compute_empty",
+    "user_strategy_dirs", "migrate_legacy_strategy_dirs", "run_backtest_offloaded",
+]
+
 logger = logging.getLogger(__name__)
 
 # 主市场基准指数（用于超额收益与净值对比；按标的池多数市场选取）
@@ -28,16 +33,75 @@ def _dominant_market(symbols: list[str]) -> str:
     return max((("CN", cn), ("HK", hk), ("US", us)), key=lambda x: x[1])[0]
 
 
-def _default_strategy_dirs() -> dict[str, Path]:
-    """三层策略目录：builtin 随包，custom/ai 在缓存卷（容器 /data/cache，本地 QUANT_CACHE_DIR）。"""
+def _default_user() -> str:
+    """未指定用户时的回落值（与 settings.QUANT_DEFAULT_USER 对齐）。"""
     from app.config import settings
+    return settings.QUANT_DEFAULT_USER
+
+
+def _user_root(user_id: str) -> Path:
+    """用户命名空间根目录：{QUANT_CACHE_DIR}/users/{user_id}。"""
+    from app.config import settings
+    return Path(settings.QUANT_CACHE_DIR) / "users" / user_id
+
+
+def user_strategy_dirs(user_id: str | None = None) -> dict[str, Path]:
+    """按用户合成三层策略目录：builtin 全局共享（随包），custom/ai 进用户命名空间。"""
+    uid = user_id or _default_user()
     pkg_builtin = Path(__file__).resolve().parent / "strategy" / "builtin"
-    cache = Path(settings.QUANT_CACHE_DIR) / "strategies"
+    base = _user_root(uid) / "strategies"
     return {
         "builtin": pkg_builtin,
-        "custom": cache / "custom",
-        "ai": cache / "ai",
+        "custom": base / "custom",
+        "ai": base / "ai",
     }
+
+
+# 兼容旧引用（cli/screener/jobs 等仍用 _default_strategy_dirs）
+_default_strategy_dirs = user_strategy_dirs
+
+
+def migrate_legacy_strategy_dirs() -> None:
+    """把旧的全局策略目录 {cache}/strategies/{custom,ai} 一次性迁移到 default 用户命名空间。
+
+    幂等：目标已存在（即已迁移过/新结构已建）则跳过；启动时调用一次并 logger.info。
+    """
+    from app.config import settings
+    legacy = Path(settings.QUANT_CACHE_DIR) / "strategies"
+    target_root = _user_root(_default_user()) / "strategies"
+    for sub in ("custom", "ai"):
+        src = legacy / sub
+        dst = target_root / sub
+        if not src.exists():
+            continue
+        if dst.exists():
+            logger.info("策略目录迁移跳过（目标已存在）：%s → %s", src, dst)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        logger.info("策略目录已迁移到 default 用户命名空间：%s → %s", src, dst)
+
+
+def run_backtest_offloaded(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: "MatcherConfig | None" = None,
+    user_id: str | None = None,
+) -> dict:
+    """经 worker 池跑回测的同步入口（CLI/非事件循环场景用）。
+
+    已在运行事件循环的上下文（HTTP API）请直接 await worker_pool.run_backtest_in_worker。
+    """
+    import asyncio
+
+    from app.worker import run_backtest_in_worker
+
+    return asyncio.run(run_backtest_in_worker(
+        symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
+    ))
 
 
 async def _fetch_benchmark(
@@ -67,6 +131,23 @@ async def _fetch_benchmark(
     }
 
 
+async def _fetch_names(symbols: list[str]) -> dict[str, str]:
+    """批量拉证券简称（经 data-api /api/quotes，用于 ST 判定），失败降级空 dict。
+
+    /api/quotes 返回行只含快照表已有标的；缺失标的由撮合层按无名称（非 ST）降级。
+    """
+    if not symbols:
+        return {}
+    data = await client.get_json("/api/quotes", {"symbols": ",".join(symbols)})
+    if not isinstance(data, list):
+        return {}
+    return {
+        row["symbol"]: row["name"]
+        for row in data
+        if isinstance(row, dict) and row.get("symbol") and row.get("name")
+    }
+
+
 def run_backtest(
     symbols: list[str],
     strategy_id: str,
@@ -76,11 +157,13 @@ def run_backtest(
     config: MatcherConfig | None = None,
     registry: StrategyRegistry | None = None,
     benchmark: dict | None = None,
+    names: dict[str, str] | None = None,
 ) -> dict:
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
 
     数据来自本地 Parquet 缓存（调用方应先经 fetch 备数；缺数标的在矩阵层降级为全 NaN 列）。
-    benchmark 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
+    benchmark / names 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
+    names 缺省 None 时撮合按无名称（非 ST）分档，保持历史行为。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     matrix = build(symbols, start, end)
@@ -103,6 +186,7 @@ def run_backtest(
         {s: signals.exit[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
         cfg,
         adjusted_flags=adjusted_flags,
+        names=names,
     )
     stats = compute(result)
     # 净值曲线（逐日，叠加基准归一化到同一起点便于对比）
@@ -167,7 +251,10 @@ async def run_backtest_async(
 ) -> dict:
     """async 包装：先拉基准再跑同步回测（HTTP API 用）。"""
     benchmark = await _fetch_benchmark(symbols, start, end)
-    return run_backtest(symbols, strategy_id, start, end, params, config, registry, benchmark)
+    names = await _fetch_names(symbols)
+    return run_backtest(
+        symbols, strategy_id, start, end, params, config, registry, benchmark, names
+    )
 
 
 def compute_empty() -> dict:

@@ -1,6 +1,6 @@
 """量化引擎 CLI。
 
-fetch：拉取日K（经 data-api /api/bars）与除权因子（TickFlow）到本地 Parquet 缓存。
+fetch：拉取日K（经 data-api /api/bars）与复权因子（/api/factors）到本地 Parquet 缓存。
 run：运行策略回测。
 screen：策略选股（取最新交易日截面，按 score 排序输出 Top N）。
 """
@@ -141,7 +141,7 @@ def main() -> int:
     p_fetch.add_argument("--symbols", required=True, help="逗号分隔的规范代码，如 AAPL,600519.SH")
     p_fetch.add_argument("--start", required=True, help="开始日期 YYYY-MM-DD")
     p_fetch.add_argument("--end", default="", help="结束日期 YYYY-MM-DD（默认今天）")
-    p_fetch.add_argument("--with-factors", action="store_true", help="同时拉除权因子（需 TICKFLOW_API_KEY）")
+    p_fetch.add_argument("--with-factors", action="store_true", help="同时拉复权因子（经 data-api /api/factors）")
     p_fetch.set_defaults(func=_cmd_fetch)
 
     p_list = sub.add_parser("list", help="列出全部策略")

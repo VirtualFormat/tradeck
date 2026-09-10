@@ -222,7 +222,6 @@ services:
       BACKEND_API_URL: http://data-api:8080
       # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；dev 留空内网放行
       SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
-      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
       # Parquet 缓存目录（行情/因子缓存 + enriched 矩阵 + 报告/候选库）
       QUANT_CACHE_DIR: /data/cache
       # AI 策略生成（可选）：全部留空即关闭

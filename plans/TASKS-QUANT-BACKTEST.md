@@ -106,8 +106,222 @@
 |---|---|---|
 | F1 参数优化器 | 参数网格扫描 + 敏感性分析（参照 optimizer.py），按 universe 分批 | 策略调参需求出现时 |
 | F2 walk-forward | 滚动训练/验证窗，样本外净值拼接（参照 walkforward.py） | 策略过拟合存疑时 |
-| F3 分钟K 精确成交 | 信号触发日用分钟K 优化成交价（VWAP/穿越价，参照 minute_fill），读冷层 Parquet | 冷层 + 付费档落地后 |
-| F4 因子目录扩展 | 涨停基因/情绪周期等 A 股实证维度，新数据源因子 | 首版因子研究出结论后 |
+| ~~F3 分钟K 精确成交~~ | 已升级为阶段 H（v2） | — |
+| ~~F4 因子目录扩展~~ | 已升级为阶段 K 因子编辑器（v2） | — |
+
+---
+
+# v2 阶段（2026-09-10 修订）
+
+> 背景：数据底座就位（A 股近 10 年分钟K 温冷分层 + 同花顺复权因子入 PG），
+> 新增需求：多用户架构预留、因子编辑器、分钟级回测。设计见 `docs/QUANT-BACKTEST.md` v2。
+> 阶段 A–E 验收结论不变；以下阶段沿用同一流程（任务卡 → review 门禁 → 验收记录）。
+
+## 阶段 G：数据层收敛 + 多用户骨架（地基，最高优先）
+
+**目标**：引擎与数据底座对齐（复权源、分钟数据、精确涨跌停），多用户结构预留落地。
+**关键路径**：G1 → G2 串行；G3 与 G4 可并行（写范围不重叠）。
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| G1 复权源切换 | data-api 新增 `/api/factors` 出因子序列；quant `data/factors.py` 从 TickFlow ex_factors 切换到 data-api，引擎零改动（raw/adjusted 双口径不变）；US/HK 沿用降级路径；退役付费档依赖 | `apps/backend/app/api/**`、`apps/quant/app/data/**` | — |
+| G2 精确涨跌停 | 引擎涨跌停判定从统一 ±10%/±20% 升级为按板块/日期/ST 精确分档（主板 ±10%/创业科创 ±20%/ST ±5%/北交所 ±30%），ST 判定用名称数据（参照 price_limit_pct） | `apps/quant/app/engine/**` | — |
+| G3 分钟数据客户端 | `data/client_minute.py`：在线 `/api/bars/minute`（分片/截断沿用日K模式）+ 冷层 Parquet/DuckDB 批量扫；缓存 `minute/market=CN/symbol=X/year=YYYY.parquet` | `apps/quant/app/data/**` | — |
+| G4 多用户骨架 | `user_id` 贯穿请求上下文（header `X-User-Id`，缺省 `QUANT_DEFAULT_USER`）；存储布局迁移 `data/users/{uid}/{strategies,factors,candidates}`；加载器按 builtin + user 目录合成视图；worker 池骨架（spawn 子进程任务，`QUANT_WORKER_POOL_SIZE=1` 起步）+ 移动止损/移动止盈补齐 | `apps/quant/app/**`（不动 matrix/mining 算法） | G1 |
+
+**验收标准**：
+
+1. A 股回测复权因子走 data-api（600519.SH 分红日无跳空，与 G1 前结果对账一致）；
+   因子缺失标的降级路径仍显式标注。
+2. ST 股 ±5%、创业板 ±20% 涨跌停判定逐案正确（合成用例）。
+3. 分钟客户端：温层在线读 + 冷层批量扫各一条链路跑通，缓存命中零补拉。
+4. 两个 user_id 各建策略/因子互不可见；缺省 header 回落 default 兼容现有调用。
+5. 回测任务走 worker 子进程执行，杀子进程后主进程存活并报错明确；
+   移动止损/移动止盈用例正确（含退出优先级）。
+6. 铁律 grep：quant 无 asyncpg / DATABASE_URL；多用户命名空间外零写入。
+
+## 阶段 H：分钟级回测（核心兑现，拆两子阶段）
+
+**目标**：分钟K 数据兑现为回测真实性。
+**关键路径**：H1 → H2 串行（H2 依赖 H1 的分钟数据通路）。
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| H1 分钟成交价修正 | `minute_fill`（信号触发日分钟K：有参考线→穿越价、无参考线→VWAP，缺失降级日K）+ `minute_trigger`（卖出信号盘中触发：MA 跌破反推触发价线→分钟收盘确认→下一分钟开盘成交，信号白名单起步仅 MA 类卖出信号） | `apps/quant/app/engine/**` | G3 |
+| H2 分钟频策略回放 | 策略协议扩 `timeframe="1m"`：日线窗口截至 T-1 + 当日分钟流喂策略，分钟级涨停拒买 + 复权折算（参照 minute_replay.py MinuteSignalReplayer） | `apps/quant/app/engine/**`、`apps/quant/app/strategy/**` | H1 |
+
+**验收标准**：
+
+1. minute_fill：有/无参考线两种用例成交价符合穿越价/VWAP 语义；分钟数据缺失日
+   自动降级日K口径且结果标注。
+2. minute_trigger：MA 跌破卖出在盘中触发（早于次日开盘），白名单外信号不受影响。
+3. 与纯日K口径同策略同区间对拍：差异方向可解释（分钟修正应更贴近真实成交）。
+4. H2：分钟频策略逐日回放产出入场命中（含触发时刻、涨停拒买计数），
+   跳过无分钟分区日不中断。
+
+## 阶段 I：研究严谨性（防泄漏 + 统计检验，插队在 H 大规模使用前）
+
+**目标**：补上当前挖掘实现的金融正确性缺口（防泄漏隔离 + 显著性检验）。
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| I1 防泄漏加固 | `make_nested_folds` 加 purge_bars=30 + embargo_bars=5 隔离带；升级为真嵌套（外层评估 + 内层调参双层，参照 generate_nested_folds） | `apps/quant/app/mining/**` | — |
+| I2 统计检验 | Newey-West HAC t 值 + BH-FDR q 值 + DSR 通缩夏普（零依赖 numpy 手写，参照 stats_v2.py，黄金参考向量锁数值）；挖掘报告带出显著性列 | `apps/quant/app/mining/**` | I1 |
+| I3 参数优化器 + walk-forward | 参数网格扫描 + 敏感性分析（参照 optimizer.py）；滚动训练/验证窗样本外净值拼接（参照 walkforward.py）；走 worker 池 | `apps/quant/app/engine/**` | G4 |
+
+**验收标准**：
+
+1. purge/embargo 用例：forward return 窗口跨边界时训练/测试不共享标签；
+   嵌套内层调参结果不直接进外层评估。
+2. NW t 值 / BH-FDR q 值 / DSR 与黄金参考向量误差 < 1e-6（固定测试向量）。
+3. 48 因子批量挖掘报告含 FDR 校正后显著性标注。
+4. 优化器/walk-forward 在 worker 池跑通，结果含敏感性分析与样本外拼接净值。
+
+## 阶段 J：因子编辑器（用户声明因子的一等能力）
+
+**目标**：不写代码、用公式表达式定义因子，与策略编辑并列。
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| J1 因子注册表 | `factors/registry.py`（FactorSpec：id/label/group/公式/方向/预热/版本），选股评分/回测/挖掘/web 四端统一从注册表取，消灭各处硬编码清单 | `apps/quant/app/factors/**` + 四端接线 | G4 |
+| J2 DSL 编译器 | 文本→AST→语义检查→Polars Expr，结构化错误码（E001-E016）；算子白名单（ts_*/截面/算术）；编译期红线照搬参照（负 shift 拒绝/嵌套窗口两阶段物化/截面禁嵌时序/深度窗口 token 硬上限） | `apps/quant/app/factors/dsl.py` | J1 |
+| J3 自定义因子存储 + 生命周期 | `uf_*`（DSL 因子）/`cf_*`（复合 ≤8 成员加权）落 `data/users/{uid}/factors/*.json`；draft→active→watch→retired 状态机字段 | `apps/quant/app/factors/store.py` | J2 |
+| J4 编辑器 UI + API | `/factors` CRUD + 编译诊断（错误码定位）+ 样例数据即时预览（因子值曲线/分布）；公式变更 version+1 进缓存键；遵守 UI 强制规则 | `apps/quant/app/api.py`、`apps/web/src/components/quant/**` | J3 |
+
+**验收标准**：
+
+1. DSL 编译：合法公式编译为 Polars Expr 可执行；各类非法公式（负 shift/嵌套窗口/
+   截面嵌时序/超深 AST）返回对应错误码不抛裸异常。
+2. 用户因子创建后：选股评分可用、回测可用、挖掘目录出现、web 展示——四端同源。
+3. 复合因子 ≤8 成员加权正确；成员引用 uf/base/virtual 解析正确。
+4. 两个 user_id 因子互不可见；公式改 version+1 后旧缓存不命中。
+5. 挖掘候选「显式确认才发布」纪律不被编辑器绕过（编辑器产物进注册表但
+   不自动进策略）。
+
+## 阶段 K：web 集成收尾 + 运维加固
+
+| 任务 | 内容 | 写范围 | 依赖 |
+|---|---|---|---|
+| K1 quant lifespan + 信号 cron | 每日信号 cron 注册进 quant lifespan（E4 欠账） | `apps/quant/app/main.py`、`apps/quant/app/jobs.py` | G4 |
+| K2 stats 第三方对账 | 回测统计与 empyrical 口径对账（阶段 B 挂账） | `apps/quant/app/engine/stats.py` | — |
+| K3 分钟回测 web 展示 | 成交明细带 intraday fill 价/触发时刻列；分钟频回放结果页 | `apps/web/src/components/quant/**` | H2、J4 |
+| K4 composite 叠加策略 | 8 子策略上限；entry union/intersect + score 排名归一加权 + exit 来源投影（防幽灵平仓，照搬参照 composite.py 口径） | `apps/quant/app/strategy/composite.py` | G4 |
+
+**验收标准**：
+
+1. 信号 cron 定时触发产出记录，web 可查。
+2. 统计指标与 empyrical 对账误差在约定阈值内，口径差异注释标注。
+3. composite：来源投影用例（B 的退出信号平不掉 A 的仓位）；union/intersect 语义正确。
+4. UI 检查清单全绿。
+
+## 中期可选（登记，不进当前排期）
+
+| 项 | 说明 | 启动条件 |
+|---|---|---|
+| regime 市场环境过滤 | 5 档市场状态作回测入场过滤（T-1 对齐 fail-closed，参照 regime_builder.py）；A 股策略不过滤环境回测基本失真，但依赖全市场聚合数据 | market_breadth 数据齐备后 |
+| 因子 DSL 用于挖掘 | 机器自动生成公式因子（vs 编辑器是用户手工声明） | 编辑器稳定 + 挖掘出结论后 |
+| 财务因子 as-of 精确化 | data-api metrics 出公告日精确点时口径（参照 fundamentals.py 模板：公告次日生效/join_asof/缺失 null 不填 0） | 数据层阶段四快照化 |
+| 多用户正式功能 | 鉴权/注册/配额/行级权限/策略市场 | 真实多用户需求出现时 |
+| numba 内核加速 | 矩阵物化编译内核（参照 matrix.py @njit） | Polars 路径实测成瓶颈后（当前判定：不引） |
+
+---
+
+# 阶段 A–E 验收记录（v1，2026-08-25 全部通过）
+
+## 阶段 G review 明细（2026-09-10，主 agent 总负责 + 4 子 agent 并行）
+
+### 独立 review 门禁（Lovelace，2026-09-10）
+
+开发完成后由独立 review agent（未参与开发）做严格 code review，主 agent 复现/修复/验证。
+结论：**需修复后合并 → 修复后通过**。无 P0，4 个 P1 + 6 个 P2。
+
+主 agent 修复并实测验证的项：
+- **[P1] X-User-Id 路径穿越 + loader 任意文件执行面**（复现确认：`../../etc` 直通目录逃逸，
+  loader 会 exec_module 该路径 .py）→ 已修：`current_user_id` 加白名单正则
+  `^[A-Za-z0-9_-]{1,32}$`，恶意输入 400 拒绝（实测 `../../etc`/`a/b`/`..` 全拒，
+  `u2`/`default`/`valid_user-1` 正常）。
+- **[P1] `/api/factors` 无 limit 防全历史大响应**（200 只 A 股全历史单请求数百 MB）→
+  已修：backend 加 `limit`（默认 20 万，上限 50 万）+ `truncated` 标记；quant `fetch_factors`
+  配套对半切窗递归（与 bars 同模式）。实测默认 limit 不截断（2429 行 truncated=False）、
+  limit=100 正确截断（truncated=True）。
+- **[P1] worker 池 Semaphore 跨事件循环绑定** → 已修（防御性）：Semaphore 改为按 loop 惰性
+  重建（`_semaphore()` 记录绑定 loop，跨 loop 重建）。注：本机 Python 3.12 实测连续
+  `asyncio.run()` 未复现崩溃（3.12 Semaphore 惰性绑定 loop），但持锁态/其他版本有风险，
+  防御性修复保留。
+- **[P1] 退出优先级重排对拍**（review 要求确认行为变化）→ 已对拍：合成数据 signal 与
+  stop_loss 同日成立时，新口径记 `stop_loss`（风控优先），旧口径记 `signal`——收益数值不变
+  （同日同价退出），仅归因标签变化，方向正确（保护性离场先于主动卖点）。
+- **[P2] worker exitcode 误导**（终态消息送达但走 terminate 分支时带 -SIGTERM）→ 已修：
+  结果正常送达时 exitcode 记 None。
+
+主 agent 复核确认「无需修/接受」的项：
+- qfq→ex_factor 复权基准随回测区间终点漂移（同区间自洽、收益率/绩效不受影响，仅绝对价位
+  口径）——非金融错误，已在 factors.py docstring 点明。
+- 移动止损「收盘触发、当日 open 成交」的 open_t+1 时序错位——日K 固有近似（参照同样），
+  H 阶段分钟精确成交后消除。
+- ST 判定空转（A 股中文名无源）——数据底座缺口，已登记 backlog（AGENTS.md 待优化项）。
+- 涨跌停分档日期边界（创业板注册制当天/科创板开板当天）——逐案核对无 off-by-one。
+
+主 agent 额外收口（review 之外的集成断点）：
+- worker 的 names（ST 判定）透传断点（G2/G4 集成断裂）——已修 worker/api 两处。
+- TickFlow 残留引用清理（dev/prod compose 的 quant TICKFLOW_API_KEY，quant 已不消费）。
+
+回归验证（修复后）：worker 链路回测 trades=2、复权生效（unadjusted=[]）、子进程 pid/exitcode=0
+正常、双用户隔离、恶意 user_id 拒绝、`/api/factors` limit 截断正确——全绿。
+
+---
+
+## 开发实施记录（2026-09-10，主 agent 总负责 + 4 子 agent 并行）
+
+分工：G1 复权源切换（Helmholtz）/ G2 精确涨跌停（Carver）/ G3 分钟数据客户端（Averroes）/
+G4 多用户骨架 + worker 池 + 移动止损（Linnaeus）。主 agent 亲测复核（非仅信子 agent 自报）。
+
+前置数据准备（主 agent）：dev 库 `adjust_factors`/`corporate_action_events`/`instrument_master`
+全空 → 手动触发 `run_adjust_factors_full_job` 首次全量初始化（同花顺公司行为 dump，
+57157 事件 → 1027 万行日频因子），G1 端到端才得以实测。
+
+G1 复核（复权源切换 TickFlow→data-api）：
+- `/api/factors` 实测：600519.SH 最新日 qfq=1.0（前复权基准）、历史日 0.942（除权折算）、
+  hfq 1.16→1.234 累积，语义正确。
+- **复权对账（关键金融验证）**：quant 引擎矩阵复权价 1498.9126 与 data-api
+  `/api/bars?adjust=qfq` 1498.9126 **逐分一致**——引擎内动态复权与 data-api 静态复权同口径。
+- 端到端回测：`unadjusted` 从 `[全部]`（旧 TickFlow 无 key 降级）变为 `[]`（复权真正生效）。
+- TickFlow SDK 依赖与 import 全清除（grep 干净）；降级路径（缺标的缺席+标注）保留。
+
+G2 复核（精确涨跌停）：
+- `engine/limits.py` 分档正确：北交所 ±30%/科创板(2019-07-22 起)±20%/创业板(2020-08-24
+  注册制起 ±20% 前 ±10%)/主板 ±10%/主板 ST ±5%（2026-07-06 新规前）。
+- ST 口径照搬参照 price_limits.py（名称含 "ST"，仅主板特判，其余板块跟随板块档）。
+- 集成：`_fetch_names`（GET /api/quotes）经 runner 传入 simulate，降级语义保留。
+
+G3 复核（分钟数据客户端）：在线 `/api/bars/minute` 拉取（分片/切窗/truncated 递归/退避
+重试）+ Parquet 缓存层（market/symbol/year 布局、命中判定、缺口补拉、去重合并）；
+审查并修复上一轮 client.py 已有 fetch_minute_bars 的 3 个实质 bug（窗口未切分静默丢数/
+truncated 未递归/无重试）。铁律 grep 干净（无 clickhouse/duckdb 直连）。
+
+G4 复核（多用户骨架 + worker + 移动止损）：
+- user_id 贯穿（X-User-Id header，缺省回落 default）；存储命名空间 users/{uid}/；
+  加载器视图 builtin 全局 + user 目录合成；旧路径幂等迁移。
+- worker 池：spawn 子进程跑回测，Semaphore 限并发；子进程崩溃/异常主进程存活报错明确。
+- 移动止损/止盈（peak 用当日 high 跟踪，缺失降级 close）+ 退出优先级按参照重排
+  （风控 > signal > max_hold > end）。
+- **语义变化（已确认接受）**：旧实现 signal 优先于固定止损，本次按参照重排为风控优先——
+  同日同价退出收益不变，仅 exit_reason 归因标签变化。
+
+主 agent 跨任务集成收口（超出单任务卡范围的断点）：
+- **修复 worker names 透传断点**：G2 的 ST 判定（names）未透传进 G4 的 worker 子进程，
+  API 路径下 ST 失效。已修 make_backtest_task/run_backtest_in_worker/api.py 三处加 names。
+- worker 端到端实测：子进程（pid 2738/2875）跑回测返回结果、total_return 与基线一致、
+  names 透传生效、双用户（default/u2）隔离、主进程在子进程失败后存活。
+
+已知边界（知情接受）：
+- **ST 判定当前空转**（数据底座缺口，非代码问题）：A 股证券中文名称无可用数据源——
+  quote_snapshots.name 对 A 股为 null、equity_profiles 存英文名、akshare 被东财断连
+  （AGENTS.md 已知坑 #5）。ST ±5% 判定逻辑正确但永远拿不到中文名。已记入 backlog：
+  待接中文名称源（同花顺/东财恢复后批量灌入 instrument_master/quote_snapshots）。
+- worker spawn 测试须以真实文件/模块入口运行（stdin heredoc 会因子进程重导入 __main__
+  失败）；生产 uvicorn 模块入口无此问题。
+- 分钟K 回测（H 阶段）尚未开始，client_minute 缓存层待 H1 实际消费验证。
 
 ## 验收记录
 
@@ -278,4 +492,10 @@ Review 处置（2 项）：
 | C 策略体系与 AI 生成 | ✅ 验收通过 | 见下 | 已处置 | **联动验收全绿（加载→策略→安全闸→回测）** | 2026-08-25 |
 | D 选股与挖掘 | ✅ 验收通过 | 见下 | 已处置 | **选股复核全绿 + 挖掘闭环含发布纪律实测** | 2026-08-25 |
 | E 服务化与 web 集成 | ✅ 验收通过 | 见下 | 已处置 | **HTTP API + 代理 + 前端页端到端全绿（宿主机实测）** | 2026-08-25 |
-| F 加固 | 未开始 | 无 | 无 | 无 | 无 |
+| F 加固 | 已并入 v2 阶段 G–K | 无 | 无 | F3→H、F4→J、其余→I/K | 2026-09-10 |
+| G 数据层收敛 + 多用户骨架 | ✅ 验收通过 | 见下 | 已处置 | **复权/涨跌停/分钟/多用户/worker 全链路实测全绿** | 2026-09-10 |
+| G review 门禁 | ✅ 通过（修复后） | 4 P1 + 6 P2，无 P0 | 已处置 | **Lovelace 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
+| H 分钟级回测 | 未开始 | 无 | 无 | 无 | — |
+| I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
+| J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
+| K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |

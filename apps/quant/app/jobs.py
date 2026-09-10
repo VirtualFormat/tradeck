@@ -15,7 +15,7 @@ from pathlib import Path
 import polars as pl
 
 from app.config import settings
-from app.runner import _default_strategy_dirs
+from app.runner import user_strategy_dirs
 from app.screener import screen
 from app.strategy import StrategyRegistry
 
@@ -27,13 +27,15 @@ _SIGNALS_SCHEMA = {
 }
 
 
-def _signals_file() -> Path:
-    return Path(settings.QUANT_CACHE_DIR) / "signals" / "latest.parquet"
+def _signals_file(user_id: str | None = None) -> Path:
+    """信号快照路径（多用户骨架 G4：用户命名空间隔离，缺省回落 QUANT_DEFAULT_USER）。"""
+    uid = user_id or settings.QUANT_DEFAULT_USER
+    return Path(settings.QUANT_CACHE_DIR) / "users" / uid / "signals" / "latest.parquet"
 
 
-def load_signals() -> pl.DataFrame:
+def load_signals(user_id: str | None = None) -> pl.DataFrame:
     """读最新信号表（web 展示用）；不存在或损坏返回空表。"""
-    f = _signals_file()
+    f = _signals_file(user_id)
     if not f.exists():
         return pl.DataFrame(schema=_SIGNALS_SCHEMA)
     try:
@@ -44,10 +46,11 @@ def load_signals() -> pl.DataFrame:
 
 
 def run_daily_signals(
-    symbols: list[str], strategy_ids: list[str] | None = None
+    symbols: list[str], strategy_ids: list[str] | None = None,
+    user_id: str | None = None,
 ) -> int:
     """对 universe 跑策略，把当日 entry 信号写信号表（覆盖式最新快照）。返回写入行数。"""
-    reg = StrategyRegistry(_default_strategy_dirs())
+    reg = StrategyRegistry(user_strategy_dirs(user_id))
     ids = strategy_ids or [s.strategy_id for s in reg.all()]
     rows = []
     today = date.today()
@@ -65,7 +68,7 @@ def run_daily_signals(
                     "market": r.market,
                 })
     df = pl.DataFrame(rows, schema=_SIGNALS_SCHEMA) if rows else pl.DataFrame(schema=_SIGNALS_SCHEMA)
-    f = _signals_file()
+    f = _signals_file(user_id)
     f.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(f)
     logger.info("每日信号扫描完成：%d 策略 × %d 标的 → %d 条信号", len(ids), len(symbols), df.height)

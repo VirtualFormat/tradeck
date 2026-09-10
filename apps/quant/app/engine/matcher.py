@@ -14,6 +14,7 @@ from datetime import date
 
 import numpy as np
 
+from app.engine.limits import limit_pct
 from app.matrix import MarketMatrix
 
 
@@ -75,6 +76,13 @@ class MatcherConfig:
     lot_size: bool = True            # CN 整手 100 股
     stop_loss_pct: float | None = None    # 止损（如 -0.08），None 关闭
     take_profit_pct: float | None = None  # 止盈，None 关闭
+    # 移动止损：相对持仓期峰值价（含当日 high）回撤超过该比例即离场（如 0.05 表示
+    # 从峰值回落 5% 触发）；None 关闭。语义对齐参照 tick-stock-panel MatcherConfig。
+    trailing_stop_pct: float | None = None
+    # 移动止盈（回撤止盈）：峰值收益先达到 activate_pct 才激活（如 0.10 = 峰值浮盈
+    # ≥10% 激活），激活后从峰值回撤超过 drawdown_pct 触发离场；两者须同时设置，None 关闭。
+    trailing_take_profit_activate_pct: float | None = None
+    trailing_take_profit_drawdown_pct: float | None = None
     max_hold_days: int | None = None      # 最长持有交易日数，None 不限
 
 
@@ -88,7 +96,8 @@ class Trade:
     shares: float
     pnl: float           # 净盈亏（已扣双边成本）
     ret: float           # 收益率（净）
-    exit_reason: str     # signal / stop_loss / take_profit / max_hold / end
+    exit_reason: str     # signal / stop_loss / take_profit / trailing_stop /
+                         # trailing_take_profit / max_hold / end
 
 
 @dataclass
@@ -100,14 +109,11 @@ class SimResult:
     unadjusted: list[str] = field(default_factory=list)  # 无复权降级标的（报告标注用）
 
 
-def _cn_limit_prices(prev_close: float, symbol: str) -> tuple[float, float]:
-    """CN 涨跌停价（±10% 主板，±20% 创业板/科创板/北交所按代码前缀粗判）。
-
-    精确口径需板块/注册制信息，按代码前缀粗判（688/300/301/8/4/920 → 20%），
-    够用且保守（宁可多拦不可错放）。
-    """
-    code = symbol.split(".")[0]
-    pct = 0.20 if code.startswith(("688", "300", "301", "8", "4", "920")) else 0.10
+def _cn_limit_prices(
+    prev_close: float, symbol: str, trade_date: date, name: str = ""
+) -> tuple[float, float]:
+    """CN 涨跌停价（板块/日期/ST 分档见 engine.limits.limit_pct）。"""
+    pct = limit_pct(symbol, trade_date, name)
     return prev_close * (1 - pct), prev_close * (1 + pct)
 
 
@@ -117,17 +123,23 @@ def simulate(
     exits: dict[str, np.ndarray],
     config: MatcherConfig,
     adjusted_flags: dict[str, bool] | None = None,
+    names: dict[str, str] | None = None,
 ) -> SimResult:
     """组合撮合模拟：现金统一池，逐日先卖后买，等权分配。
 
     entries/exits：{symbol: bool 数组}，长度 = len(matrix.dates)，与日期轴对齐
     （信号在收盘后产生）。open_t+1 口径下用「昨日信号 + 今日 open」成交。
+    names：symbol → 证券简称（键用 symbol 原样查找）。缺省 None 或缺失标的时
+    按无名称降级——即一律按非 ST 分档（宁少拦 ST 不臆造），与历史行为兼容。
     """
+    names = names or {}
     dates = matrix.dates
     n = len(dates)
     symbols = matrix.symbols
     close = matrix.close
     openp = matrix.open
+    # 峰值跟踪用当日 high；矩阵暂无 high 字段时降级 close（与参照 max_high 口径最接近）
+    high = getattr(matrix, "high", None)
     sym_idx = {s: j for j, s in enumerate(symbols)}
 
     cash = config.initial_capital
@@ -154,7 +166,7 @@ def simulate(
         pc, c = close[i - 1, j], close[i, j]
         if np.isnan(pc) or np.isnan(c):
             return False
-        lo, hi = _cn_limit_prices(pc, symbols[j])
+        lo, hi = _cn_limit_prices(pc, symbols[j], dates[i], names.get(symbols[j], ""))
         # 一字板判定：收盘价顶死涨/跌停（日K 只能保守判，精确口径需盘中价）
         return c >= hi - 1e-9 if side == "buy" else c <= lo + 1e-9
 
@@ -168,10 +180,43 @@ def simulate(
                 continue  # 停牌：不可操作，继续持有
             reason = None
             ret_now = c / pos["entry_price"] - 1.0
-            if signal_fired(exits.get(sym), i, config.exit_fill):
+            # 峰值跟踪：持仓期最高价（日K 口径用当日 high，缺失降级 close；
+            # 参照 tick-stock-panel 用 max_high，同口径）
+            h = high[i, j] if high is not None else np.nan
+            if not np.isnan(h):
+                pos["peak"] = max(pos["peak"], h)
+            elif not np.isnan(c):
+                pos["peak"] = max(pos["peak"], c)
+            peak = pos["peak"]
+            # 风控线（止损/移动止损/移动止盈）同日多条成立时取最紧（触发价最高者），
+            # 与参照 _risk_exit 的 max(risk_lines) 口径一致。
+            risk_lines: list[tuple[float, str]] = []
+            if config.stop_loss_pct is not None:
+                # 固定止损线（沿用旧语义：stop_loss_pct 为负值，如 -0.08）
+                sl_line = pos["entry_price"] * (1 + config.stop_loss_pct)
+                if ret_now <= config.stop_loss_pct:
+                    risk_lines.append((sl_line, "stop_loss"))
+            if config.trailing_stop_pct is not None and peak > 0:
+                ts_line = peak * (1 - abs(config.trailing_stop_pct))
+                if c <= ts_line:
+                    risk_lines.append((ts_line, "trailing_stop"))
+            if (config.trailing_take_profit_activate_pct is not None
+                    and config.trailing_take_profit_drawdown_pct is not None
+                    and peak > pos["entry_price"] > 0):
+                peak_ret = peak / pos["entry_price"] - 1.0
+                if peak_ret >= abs(config.trailing_take_profit_activate_pct):
+                    tp_line = peak * (1 - abs(config.trailing_take_profit_drawdown_pct))
+                    if c <= tp_line:
+                        risk_lines.append((tp_line, "trailing_take_profit"))
+            # 退出优先级（高→低，对齐参照 tick-stock-panel engine.py TradeRecord 注释：
+            # 风控(止损/移动止损/移动止盈) > signal(卖点) > max_hold(到期) > end；
+            # 参照另有 pending_exit 历史挂单最高，本引擎无挂单概念故无此项。
+            # 注意：旧实现是 signal 优先于固定止损，与参照相反，本次按参照重排——
+            # 风控是保护性离场，必须先于策略主动卖点。
+            if risk_lines:
+                reason = max(risk_lines, key=lambda x: x[0])[1]
+            elif signal_fired(exits.get(sym), i, config.exit_fill):
                 reason = "signal"
-            elif config.stop_loss_pct is not None and ret_now <= config.stop_loss_pct:
-                reason = "stop_loss"
             elif config.take_profit_pct is not None and ret_now >= config.take_profit_pct:
                 reason = "take_profit"
             elif config.max_hold_days is not None and i - pos["entry_idx"] >= config.max_hold_days:
@@ -235,6 +280,7 @@ def simulate(
                     positions[sym] = {
                         "shares": shares, "entry_price": px,
                         "entry_date": dates[i], "entry_idx": i, "entry_cost": cost,
+                        "peak": px,  # 移动止损/移动止盈的峰值跟踪（含当日 high 更新）
                     }
 
         # 逐日净值（停牌按成本价估值，保守）

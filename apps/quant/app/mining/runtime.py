@@ -7,7 +7,8 @@
 4. 嵌套样本外验证比较组合；已有策略作对照轨独立评估，不参与因子竞争。
 5. 运行持久化（可重连）；候选入候选库——显式确认且过门槛才发布，永不自动上线。
 
-候选库：cache/mining/candidates.parquet（status: pending/published/rejected）。
+候选库：{cache}/users/{uid}/mining/candidates.parquet（status: pending/published/rejected，
+多用户骨架 G4：按用户命名空间隔离，默认 default）。
 """
 from __future__ import annotations
 
@@ -182,12 +183,14 @@ _CANDIDATES_SCHEMA = {
 }
 
 
-def _candidates_file() -> Path:
-    return Path(settings.QUANT_CACHE_DIR) / "mining" / "candidates.parquet"
+def _candidates_file(user_id: str | None = None) -> Path:
+    """候选库路径（用户命名空间隔离；缺省回落 QUANT_DEFAULT_USER）。"""
+    uid = user_id or settings.QUANT_DEFAULT_USER
+    return Path(settings.QUANT_CACHE_DIR) / "users" / uid / "mining" / "candidates.parquet"
 
 
-def load_candidates() -> pl.DataFrame:
-    f = _candidates_file()
+def load_candidates(user_id: str | None = None) -> pl.DataFrame:
+    f = _candidates_file(user_id)
     if not f.exists():
         return pl.DataFrame(schema=_CANDIDATES_SCHEMA)
     try:
@@ -197,11 +200,11 @@ def load_candidates() -> pl.DataFrame:
         return pl.DataFrame(schema=_CANDIDATES_SCHEMA)
 
 
-def save_candidate(c: core.CandidateResult) -> str:
+def save_candidate(c: core.CandidateResult, user_id: str | None = None) -> str:
     """候选入库（status=pending，永不自动发布）。返回 candidate_id。"""
     cid = "cand_" + "_".join(c.combo)[:40]
     ok, reasons = core.evaluate_gate(c)
-    df = load_candidates()
+    df = load_candidates(user_id)
     row = pl.DataFrame({
         "candidate_id": [cid], "combo": [json.dumps(list(c.combo))],
         "directions": [json.dumps(c.directions)], "status": ["pending"],
@@ -213,20 +216,20 @@ def save_candidate(c: core.CandidateResult) -> str:
     }, schema={**_CANDIDATES_SCHEMA, "published_at": pl.String})
     out = df.filter(pl.col("candidate_id") != cid)
     out = pl.concat([out, row])
-    f = _candidates_file()
+    f = _candidates_file(user_id)
     f.parent.mkdir(parents=True, exist_ok=True)
     out.write_parquet(f)
     logger.info("候选 %s 入库（pending，gate=%s）", cid, "达标" if ok else "未达标")
     return cid
 
 
-def publish_candidate(candidate_id: str) -> tuple[bool, str]:
+def publish_candidate(candidate_id: str, user_id: str | None = None) -> tuple[bool, str]:
     """发布候选为独立策略（唯一发布入口）。
 
     铁律：必须过晋级门槛才发布；未达标返回原因。发布动作本身是用户显式触发的
     （本函数由 CLI/API 调用，挖掘流程永不自动调用）。
     """
-    df = load_candidates()
+    df = load_candidates(user_id)
     row = df.filter(pl.col("candidate_id") == candidate_id)
     if row.is_empty():
         return False, f"候选不存在 {candidate_id!r}"
@@ -253,6 +256,6 @@ def publish_candidate(candidate_id: str) -> tuple[bool, str]:
         pl.when(pl.col("candidate_id") == candidate_id)
         .then(pl.lit(date.today().isoformat())).otherwise(pl.col("published_at")).alias("published_at"),
     )
-    out.write_parquet(_candidates_file())
+    out.write_parquet(_candidates_file(user_id))
     logger.info("候选 %s 已发布", candidate_id)
     return True, "已发布"

@@ -4,32 +4,65 @@
 - 轻量 FastAPI，单进程（与引擎纪律一致），仅经 data-api 读数，绝不直连 DB。
 - 消费方身份：出站调 data-api 时带 X-Service-Token（见 data/client）。
 - 优雅降级：策略执行/数据缺失返回空结果，不 500；参数错返回 4xx。
+- 多用户骨架（G4）：X-User-Id 头贯穿到策略目录/候选库/信号表（命名空间隔离），
+  缺省回落 QUANT_DEFAULT_USER；重计算（回测）走 spawn 子进程池（app.worker）。
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.mining import load_candidates, publish_candidate, run_mining
 from app.mining.runtime import save_candidate
-from app.runner import _default_strategy_dirs, run_backtest_async
+from app.runner import (
+    _fetch_benchmark,
+    _fetch_names,
+    migrate_legacy_strategy_dirs,
+    user_strategy_dirs,
+)
 from app.screener import screen
 from app.strategy import StrategyRegistry
+from app.worker import BacktestWorkerError, run_backtest_in_worker
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="tradeck quant", version="0.1.0")
+app = FastAPI(title="tradeck quant", version="0.2.0")
+
+# 用户 id 白名单：防目录穿越（users/{uid}/ 直接拼路径）与 loader 任意路径 exec_module。
+# 内网阶段虽不鉴权，但 id 形态必须先收口，别等鉴权阶段才堵这个洞。
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
-def _registry() -> StrategyRegistry:
+@app.on_event("startup")
+def _startup() -> None:
+    """启动一次性维护：旧全局策略目录迁移到 default 用户命名空间（幂等）。"""
+    try:
+        migrate_legacy_strategy_dirs()
+    except Exception as e:  # 迁移失败不阻塞服务（只记日志，下次启动重试）
+        logger.warning("策略目录迁移失败（不阻塞启动）：%s", e)
+
+
+def current_user_id(x_user_id: str | None = Header(default=None, alias="X-User-Id")) -> str:
+    """解析用户身份：X-User-Id 头缺省/空白时回落 QUANT_DEFAULT_USER（G4 不鉴权）。"""
+    uid = (x_user_id or "").strip()
+    if not uid:
+        return settings.QUANT_DEFAULT_USER
+    if not _USER_ID_RE.fullmatch(uid):
+        raise HTTPException(status_code=400, detail=f"非法 user_id：{uid!r}")
+    return uid
+
+
+def _registry(user_id: str) -> StrategyRegistry:
     """每次请求重建注册表（策略文件热加载；注册表本身轻量，扫描三层目录）。"""
-    return StrategyRegistry(_default_strategy_dirs())
+    return StrategyRegistry(user_strategy_dirs(user_id))
 
 
 @app.get("/health")
@@ -38,9 +71,9 @@ def health() -> dict:
 
 
 @app.get("/api/strategies")
-def list_strategies() -> list[dict]:
+def list_strategies(user_id: str = Depends(current_user_id)) -> list[dict]:
     """列出全部策略（含 params schema，供前端自动生成参数表单）。"""
-    reg = _registry()
+    reg = _registry(user_id)
     out = []
     for s in reg.all():
         out.append({
@@ -69,9 +102,9 @@ class ScreenRequest(_SymbolRequest):
 
 
 @app.post("/api/screen")
-def api_screen(req: ScreenRequest) -> dict:
+def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)) -> dict:
     """选股：返回最新交易日截面入选标的（score 降序）。"""
-    reg = _registry()
+    reg = _registry(user_id)
     try:
         res = screen(req.strategy_id, req.symbols, end_date=req.end,
                      params=req.params or None, registry=reg)
@@ -95,10 +128,10 @@ class BacktestRequest(_SymbolRequest):
 
 
 @app.post("/api/backtest")
-async def api_backtest(req: BacktestRequest) -> dict:
-    """回测：数据→矩阵→复权→策略→撮合→统计。"""
+async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user_id)) -> dict:
+    """回测：数据→矩阵→复权→策略→撮合→统计（G4 起走 spawn 子进程池，主进程不崩）。"""
     from app.engine import MatcherConfig
-    reg = _registry()
+    reg = _registry(user_id)
     if req.strategy_id not in {s.strategy_id for s in reg.all()}:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
     cfg = MatcherConfig(
@@ -107,8 +140,18 @@ async def api_backtest(req: BacktestRequest) -> dict:
         commission_pct=req.commission_pct,
     )
     end = req.end or date.today()
-    return await run_backtest_async(req.symbols, req.strategy_id, req.start, end,
-                                    params=req.params or None, config=cfg, registry=reg)
+    benchmark = await _fetch_benchmark(req.symbols, req.start, end)
+    names = await _fetch_names(req.symbols)
+    try:
+        return await run_backtest_in_worker(
+            req.symbols, req.strategy_id, req.start, end,
+            params=req.params or None, config=cfg, user_id=user_id, benchmark=benchmark,
+            names=names,
+        )
+    except BacktestWorkerError as e:
+        # 子进程失败 → 结构化错误（不 500；与全局优雅降级口径一致）
+        logger.warning("回测 worker 失败：%s", e)
+        return {"error": str(e), "stats": None, "trades": [], "equity_curve": []}
 
 
 class AIGenerateRequest(BaseModel):
@@ -127,9 +170,9 @@ async def api_ai_generate(req: AIGenerateRequest):
 
 
 @app.get("/api/mining/candidates")
-def list_candidates() -> list[dict]:
+def list_candidates(user_id: str = Depends(current_user_id)) -> list[dict]:
     """候选库列表（pending/published/rejected）。"""
-    df = load_candidates()
+    df = load_candidates(user_id)
     if df.is_empty():
         return []
     return json.loads(df.write_json())
@@ -140,9 +183,9 @@ class PublishRequest(BaseModel):
 
 
 @app.post("/api/mining/publish")
-def api_publish(req: PublishRequest) -> dict:
+def api_publish(req: PublishRequest, user_id: str = Depends(current_user_id)) -> dict:
     """发布候选为独立策略（唯一发布入口；未达门槛拒绝）。"""
-    ok, msg = publish_candidate(req.candidate_id)
+    ok, msg = publish_candidate(req.candidate_id, user_id)
     if not ok:
         return {"published": False, "reason": msg}
     return {"published": True, "reason": msg}
@@ -199,7 +242,7 @@ class SaveCandidateRequest(BaseModel):
 
 
 @app.post("/api/mining/candidates/save")
-def api_save_candidate(req: SaveCandidateRequest) -> dict:
+def api_save_candidate(req: SaveCandidateRequest, user_id: str = Depends(current_user_id)) -> dict:
     """候选入库（pending；发布仍需过门槛 + 显式确认）。"""
     from app.mining import core
     c = core.CandidateResult(combo=tuple(req.combo), directions=req.directions)
@@ -209,5 +252,5 @@ def api_save_candidate(req: SaveCandidateRequest) -> dict:
                         oos_trades=req.oos_trades, oos_positive=True)
         for i in range(req.valid_folds)
     ]
-    cid = save_candidate(c)
+    cid = save_candidate(c, user_id)
     return {"candidate_id": cid}

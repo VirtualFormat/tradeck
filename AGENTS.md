@@ -304,6 +304,10 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 - [ ] **AmazingData 正式账户开通后接入**：当前试用账号权限不全（行情/复权受阻，见 TASKS-AMAZINGDATA-CN.md 验收记录），代码保留但默认禁用；待正式账户开通、权限补齐并逐值对拍后，再评估 AmazingData 主用、findb fallback。
 - [ ] **CN 指数迁 TickFlow（可选 P3）**：`000001.SH`/`399006.SZ` 等（免费档实测可用），减少 yfinance 依赖；存量 `.SS` 数据处理需先决策。
 - [ ] **个股页市值货币符号**：`fmtBigNumber` 硬编码 `$`，CNY/HKD 资产应按 currency 显示（cosmetic）。
+- [ ] **A 股证券中文名称源（ST 判定前置）**：quant 精确涨跌停的 ST ±5% 判定（engine/limits.py）
+  需要中文简称判 "ST"，但当前 `quote_snapshots.name` 对 A 股为 null、`equity_profiles` 存英文名、
+  akshare 被东财断连（已知坑 #5）——ST 判定逻辑正确但空转。待接中文名称源（同花顺/东财恢复后
+  批量灌入 instrument_master 或 quote_snapshots），见 plans/TASKS-QUANT-BACKTEST.md 阶段 G 验收记录。
 
 ## 相关文档
 

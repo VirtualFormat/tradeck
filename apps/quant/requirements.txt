@@ -9,5 +9,3 @@ pyarrow>=15.0
 pydantic>=2.9
 # pydantic v2 的 BaseSettings 已拆到独立包，config.py 依赖它
 pydantic-settings>=2.5
-# 除权因子（ex_factors）走 TickFlow 官方 SDK，与 data-collector 同款；免费档 TickFlow.free()
-tickflow[all]>=0.1
