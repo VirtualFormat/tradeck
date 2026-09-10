@@ -140,16 +140,22 @@ def aggregate_oos(fold_records: list[dict], objective: str, direction: str = "ma
 
 @dataclass
 class WalkForwardConfig:
-    """Walk-forward 配置（与参照 WalkForwardConfig 对齐，轻量化）。"""
+    """Walk-forward 配置（与参照 WalkForwardConfig 对齐，轻量化）。
+
+    注意（review P1 修复）：train_days/test_days/step_days 是**日历天数**（含周末节假日），
+    非交易日数——train_days=252 实际约 172 个交易日。回测内部按真实交易日轴截取，
+    窗口内有效交易日数由数据决定。若需精确交易日口径，改用 mining 的 NestedValidationConfig
+    （bars 语义）。字段保留日历天数语义与参照对齐，改名会破坏既有调用，故加强注释锁定。
+    """
     strategy_id: str
     symbols: list[str]
     start: date
     end: date
     param_grid: dict
     objective: str = "sharpe"
-    train_days: int = 252
-    test_days: int = 63
-    step_days: int = 63
+    train_days: int = 252   # 日历天数（非交易日；~172 交易日）
+    test_days: int = 63     # 日历天数（~43 交易日）
+    step_days: int = 63     # 日历天数
     direction: str | None = None
     base_params: dict = field(default_factory=dict)
     config: Any = None                    # MatcherConfig（撮合配置，透传）

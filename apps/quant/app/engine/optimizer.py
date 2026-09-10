@@ -155,6 +155,25 @@ def default_direction(objective: str) -> str:
     return "min" if objective in _MINIMIZE_OBJECTIVES else "max"
 
 
+# 合法优化方向集合（cfg.direction 显式传入时校验）
+VALID_DIRECTIONS = {"min", "max"}
+
+
+def _validated_direction(cfg: "OptimizeConfig") -> str:
+    """取优化方向：None 由 objective 推断；显式传入须为 "min"/"max"（大小写敏感）。
+
+    非法值直接抛 ValueError，避免 objective_value 静默按 max 处理（direction=="min"
+    之外的任何字符串都走 max 分支，拼写错误会被吞掉）。
+    """
+    if cfg.direction is None:
+        return default_direction(cfg.objective)
+    if cfg.direction not in VALID_DIRECTIONS:
+        raise ValueError(
+            f"非法优化方向 '{cfg.direction}'，可选：{sorted(VALID_DIRECTIONS)}"
+        )
+    return cfg.direction
+
+
 def objective_value(stats: dict, objective: str, direction: str) -> float:
     """从 stats 提取目标值并转为「越大越好」的可比分数（None/缺失/nan/inf -> 最差）。"""
     raw = stats.get(objective)
@@ -202,7 +221,7 @@ def optimize(
     t0 = time.perf_counter()
     if cfg.objective not in VALID_OBJECTIVES:
         raise ValueError(f"不支持的优化目标 '{cfg.objective}'，可选：{sorted(VALID_OBJECTIVES)}")
-    direction = cfg.direction or default_direction(cfg.objective)
+    direction = _validated_direction(cfg)
     combos = expand_param_grid(params_meta, cfg.param_grid)
     n_total = len(combos)
 
@@ -216,6 +235,11 @@ def optimize(
             stats = res.get("stats") or {}
             if cfg.objective not in stats:
                 raise ValueError(f"回测结果缺少优化目标字段 '{cfg.objective}'")
+            # 空骨架哨兵（review P1 修复）：run_backtest 无数据时返回全零骨架不抛异常，
+            # 其 objective_raw=0.0 若当真实目标值参与排名，空区间可能赢过真实亏损区间。
+            # days==0 视同无数据，按失败隔离排末位。
+            if stats.get("days", 0) == 0:
+                raise ValueError("回测区间无数据（空骨架），不参与排名")
             row = {
                 "params": combo,
                 "objective_raw": stats.get(cfg.objective),
@@ -276,7 +300,7 @@ def sensitivity(
     t0 = time.perf_counter()
     if cfg.objective not in VALID_OBJECTIVES:
         raise ValueError(f"不支持的优化目标 '{cfg.objective}'，可选：{sorted(VALID_OBJECTIVES)}")
-    direction = cfg.direction or default_direction(cfg.objective)
+    direction = _validated_direction(cfg)
     by_id = {p["id"]: p for p in params_meta}
     if param_id not in by_id:
         raise ValueError(f"参数 '{param_id}' 在该策略中不存在")

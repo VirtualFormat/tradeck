@@ -218,11 +218,16 @@ def api_mining_run(req: MiningRequest) -> dict:
             "oos_max_drawdown": c.oos_max_drawdown, "oos_trades": c.oos_trades,
             "positive_fold_ratio": c.positive_fold_ratio,
             "gate_pass": ok, "gate_reasons": reasons,
+            # I2 统计：候选 DSR 通缩夏普（多重试验校正后的夏普显著性）
+            "dsr": (result.candidate_dsr or {}).get("+".join(c.combo)),
         })
     return {
         "n_factors": result.n_factors, "kept_factors": result.kept_factors,
         "factor_ics": result.factor_ics, "n_folds": result.n_folds,
         "candidates": cands,
+        # I2 统计检验透出：因子 IC 的 NW t/p/BH-FDR q；DSR 试验数
+        "factor_ic_stats": result.factor_ic_stats or {},
+        "n_trials": result.n_trials,
     }
 
 

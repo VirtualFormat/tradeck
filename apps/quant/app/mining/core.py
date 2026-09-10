@@ -285,6 +285,18 @@ class NestedValidationConfig:
             raise ValueError(f"嵌套验证 bar 数必须为正：{invalid}")
         if self.purge_bars < 0 or self.embargo_bars < 0:
             raise ValueError("purge_bars 与 embargo_bars 不能为负")
+        # 训练段不能低于 min_train_bars（对齐参照 mining.py:117-120 的校验）：
+        # 训练窗口过短会使因子 IC/方向估计退化为噪声，嵌套评估失去意义
+        if self.outer_train_bars < self.min_train_bars:
+            raise ValueError(
+                f"outer_train_bars({self.outer_train_bars}) 不能小于 "
+                f"min_train_bars({self.min_train_bars})"
+            )
+        if self.inner_train_bars < self.min_train_bars:
+            raise ValueError(
+                f"inner_train_bars({self.inner_train_bars}) 不能小于 "
+                f"min_train_bars({self.min_train_bars})"
+            )
 
 
 @dataclass
@@ -349,10 +361,15 @@ def make_nested_folds(
     config = config or NestedValidationConfig()
     outer_required = config.outer_train_bars + config.purge_bars + config.outer_test_bars
     inner_required = config.inner_train_bars + config.purge_bars + config.inner_test_bars
-    if n_days < outer_required or config.outer_train_bars < inner_required:
+    # 内层调参的有效训练边界比 outer_train_stop 再提前 purge_bars（隔离带前置）：
+    # 否则内层末折的测试段可紧贴外层训练段终点，内层测试窗选出的最优组合在外层
+    # 测试段首窗内兑现收益，purge 隔离带对调参侧形同虚设（review P1-1）。
+    # 前置后每个内层折满足 test_end + embargo + purge <= outer_train_stop。
+    if n_days < outer_required or config.outer_train_bars - config.purge_bars < inner_required:
         logger.warning(
-            "天数 %d 不足以切嵌套折（外层至少需 %d 天，外层训练段至少容纳一个内层折 %d 天），返回空",
-            n_days, outer_required, inner_required,
+            "天数 %d 不足以切嵌套折（外层至少需 %d 天，外层训练段扣除前置隔离带后"
+            "至少容纳一个内层折 %d 天），返回空",
+            n_days, outer_required, config.purge_bars + inner_required,
         )
         return []
 
@@ -370,15 +387,27 @@ def make_nested_folds(
         inner_start = outer_start
         inner_index = 0
         outer_train_stop = outer_start + config.outer_train_bars
-        while inner_start + inner_required <= outer_train_stop:
+        inner_train_stop = outer_train_stop - config.purge_bars  # 隔离带前置后的内层有效边界
+        while inner_start + inner_required <= inner_train_stop:
             inner_folds.append(_make_validation_fold(
                 level="inner", outer_index=outer_index, inner_index=inner_index,
                 train_start=inner_start, train_bars=config.inner_train_bars,
                 test_bars=config.inner_test_bars, purge_bars=config.purge_bars,
-                embargo_bars=config.embargo_bars, hard_stop=outer_train_stop,
+                embargo_bars=config.embargo_bars, hard_stop=inner_train_stop,
             ))
             inner_index += 1
             inner_start += config.inner_step_bars
+        # 单折调参无法形成有效的样本外比较（无第二个内层折交叉验证所选组合），
+        # 该外层折降级跳过（优雅降级：记日志，不抛错，不拖垮其余外层折）
+        if len(inner_folds) < 2:
+            logger.warning(
+                "外层折 %d 内层折数 %d < 2（外层训练段扣除前置 purge=%d 后过短），"
+                "降级跳过该外层折",
+                outer_index, len(inner_folds), config.purge_bars,
+            )
+            outer_index += 1
+            outer_start += config.outer_step_bars
+            continue
         nested.append(NestedFold(outer=outer, inner=inner_folds))
         outer_index += 1
         outer_start += config.outer_step_bars

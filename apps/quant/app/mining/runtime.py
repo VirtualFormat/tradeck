@@ -122,7 +122,9 @@ def _select_combo_inner(
     返回 (组合, 方向, 去重后保留因子, 去重剔除记录)；选不定（因子不足/无有效组合）
     返回 None，调用方跳过该外层折。
     """
-    if not nested.inner:
+    # 防御：单折调参无法形成有效的样本外比较（make_nested_folds 已按 <2 跳过，
+    # 这里再兜一层，防止调用方绕过折生成直接构造 NestedFold）
+    if len(nested.inner) < 2:
         return None
     # 内层训练段因子 IC 与方向（第一个内层折定方向与去重，候选池共享以控成本）
     first = nested.inner[0]
@@ -301,7 +303,12 @@ def run_mining(
     kept = sorted(kept_counts, key=lambda n: (-kept_counts[n], n))
     dropped = sorted(dropped_counts, key=lambda p: (-dropped_counts[p], p))
 
-    # 4. DSR 通缩夏普：候选样本外夏普对多重试验校正（N = 外层评估的候选总数）
+    # 4. DSR 通缩夏普：候选样本外夏普对多重试验校正
+    # N 口径说明（review P1-4）：这里取窄口径——外层评估的去重候选数
+    # （各折内层独立选出的不同组合数）。真实搜索空间是各折内层 beam 池
+    # （每折约 beam_width 条路径 × max_size 层 × 折数），远大于此。
+    # 因此 N 被低估、DSR 偏乐观，仅为近似的多重检验通缩，不是严格的多重检验校正；
+    # 解读 DSR 结果时需知悉该口径偏差（低估 N → expected_max_sharpe 偏低 → DSR 偏高）。
     n_trials = max(len(results), 1)
     sharpes = [
         c.oos_sharpe / np.sqrt(252)  # 日化夏普（DSR 矩口径与收益频率一致）
