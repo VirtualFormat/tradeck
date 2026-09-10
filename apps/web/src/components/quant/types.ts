@@ -137,6 +137,10 @@ export interface BacktestTrade {
   ret: number | null;
   hold_days: number | null;
   exit_reason: string | null;
+  /** 成交口径标注（阶段 H1 分钟口径）：daily / minute_ref / minute_vwap /
+   *  minute_close / minute_trigger；旧响应缺省视为 daily */
+  entry_fill_mode?: string | null;
+  exit_fill_mode?: string | null;
 }
 
 export interface EquityPoint {
@@ -163,6 +167,9 @@ export interface BacktestResult {
   trades?: BacktestTrade[];
   equity_curve?: EquityPoint[];
   benchmark?: BacktestBenchmark | null;
+  /** 分钟成交覆盖统计（阶段 H1）：走分钟口径笔数 / 分钟数据缺失降级日K 笔数 */
+  minute_fill_used?: number | null;
+  minute_fill_fallback?: number | null;
 }
 
 /** 卖出原因英文 key → 中文文案 */
@@ -177,4 +184,32 @@ export const EXIT_REASON_LABELS: Record<string, string> = {
 export function exitReasonLabel(reason: string | null | undefined): string {
   if (!reason) return "—";
   return EXIT_REASON_LABELS[reason] ?? reason;
+}
+
+/* ---------- 分钟成交口径（阶段 H1/H3） ---------- */
+
+/** 卖出成交价口径请求值 → 中文标签（BacktestRequest.exit_fill） */
+export const EXIT_FILL_OPTIONS: { value: string; label: string }[] = [
+  { value: "open_t+1", label: "次日开盘（默认）" },
+  { value: "close_t", label: "当日收盘" },
+  { value: "signal_next_minute", label: "盘中触发（分钟确认）" },
+];
+
+/** 逐笔成交口径标注 → 中文标签 */
+export const FILL_MODE_LABELS: Record<string, string> = {
+  daily: "日K",
+  minute_ref: "穿越价",
+  minute_vwap: "VWAP",
+  minute_close: "分钟收盘",
+  minute_trigger: "盘中触发",
+};
+
+export function fillModeLabel(mode: string | null | undefined): string {
+  if (!mode) return FILL_MODE_LABELS.daily;
+  return FILL_MODE_LABELS[mode] ?? mode;
+}
+
+/** 是否为分钟口径（非 daily 标注），用于 Badge 高亮区分 */
+export function isMinuteFillMode(mode: string | null | undefined): boolean {
+  return !!mode && mode !== "daily";
 }

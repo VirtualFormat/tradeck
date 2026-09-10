@@ -335,7 +335,9 @@ def simulate(
                     continue
                 if blocked_by_limit(i, j, "sell"):
                     continue  # 跌停无法成交，挂单保留到明日
-                px = exit_price_of(i, j)
+                # 强平恒用当日开盘价（不看 exit_fill——signal_next_minute 口径下
+                # exit_price_of 会返回收盘价，与「次日开盘价强制退出」语义不符）。
+                px = openp[i, j]
                 if np.isnan(px):
                     continue
                 value = pos["shares"] * px

@@ -2,6 +2,7 @@
 
 /**
  * 回测交易明细表：代码 / 买卖日期价 / 股数 / 持仓天数 / 盈亏 / 收益率 / 卖出原因
+ * 阶段 K3：加入场/出场成交口径列（日K / VWAP / 穿越价 / 盘中触发），分钟口径高亮
  * 超过 20 行简单分页（上一页 / 下一页）
  */
 import { useState } from "react";
@@ -20,20 +21,34 @@ import {
 
 import {
   exitReasonLabel,
+  fillModeLabel,
   fmtMoney,
   fmtNum,
   fmtPct,
+  isMinuteFillMode,
   pnlStyle,
   type BacktestTrade,
 } from "./types";
 
 const PAGE_SIZE = 20;
 
+/** 成交口径 Badge：分钟口径用默认实心 Badge 高亮，日K 用描边弱化 */
+function FillModeBadge({ mode }: { mode: string | null | undefined }) {
+  const minute = isMinuteFillMode(mode);
+  return (
+    <Badge variant={minute ? "default" : "outline"}>{fillModeLabel(mode)}</Badge>
+  );
+}
+
 export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
   const [page, setPage] = useState(0);
   const pageCount = Math.ceil(trades.length / PAGE_SIZE);
   const safePage = Math.min(page, Math.max(pageCount - 1, 0));
   const rows = trades.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  // 全部日K 口径时隐藏口径列（未开分钟口径的回测不多占两列）
+  const showFillMode = trades.some(
+    (t) => isMinuteFillMode(t.entry_fill_mode) || isMinuteFillMode(t.exit_fill_mode)
+  );
 
   return (
     <div className="space-y-3">
@@ -50,6 +65,8 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
             <TableHead className="text-right">盈亏</TableHead>
             <TableHead className="text-right">收益率</TableHead>
             <TableHead>卖出原因</TableHead>
+            {showFillMode && <TableHead>入场口径</TableHead>}
+            {showFillMode && <TableHead>出场口径</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -95,6 +112,16 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
                   {exitReasonLabel(trade.exit_reason)}
                 </Badge>
               </TableCell>
+              {showFillMode && (
+                <TableCell>
+                  <FillModeBadge mode={trade.entry_fill_mode} />
+                </TableCell>
+              )}
+              {showFillMode && (
+                <TableCell>
+                  <FillModeBadge mode={trade.exit_fill_mode} />
+                </TableCell>
+              )}
             </TableRow>
           ))}
         </TableBody>

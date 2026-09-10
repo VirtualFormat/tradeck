@@ -125,6 +125,10 @@ class BacktestRequest(_SymbolRequest):
     initial_capital: float = Field(default=1_000_000.0, gt=0)
     max_positions: int = Field(default=10, ge=1, le=100)
     commission_pct: float | None = Field(default=None, ge=0, le=0.01)  # 佣金率覆盖（小数）
+    # 分钟口径（阶段 H1，透传 MatcherConfig）：minute_fill=信号成交日分钟K 优化成交价；
+    # exit_fill 卖出成交价口径 open_t+1（默认）/ close_t / signal_next_minute（盘中触发）
+    minute_fill: bool = False
+    exit_fill: str = Field(default="open_t+1", pattern="^(open_t\\+1|close_t|signal_next_minute)$")
 
 
 @app.post("/api/backtest")
@@ -138,6 +142,8 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
         initial_capital=req.initial_capital,
         max_positions=req.max_positions,
         commission_pct=req.commission_pct,
+        minute_fill=req.minute_fill,
+        exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
     benchmark = await _fetch_benchmark(req.symbols, req.start, end)

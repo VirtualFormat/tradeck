@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -25,6 +26,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -41,6 +50,7 @@ import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
 import { TradesTable } from "./trades-table";
 import {
   buildParamsPayload,
+  EXIT_FILL_OPTIONS,
   exitReasonLabel,
   fmtMoney,
   fmtNum,
@@ -88,6 +98,9 @@ export function BacktestTab({
   const [endDate, setEndDate] = useState("");
   const [initialCapital, setInitialCapital] = useState("100000");
   const [commissionPct, setCommissionPct] = useState("");
+  // 分钟口径（阶段 K3）：信号成交日分钟K 优化成交价 + 卖出成交价口径
+  const [minuteFill, setMinuteFill] = useState(false);
+  const [exitFill, setExitFill] = useState("open_t+1");
   const [startOpen, setStartOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -122,6 +135,9 @@ export function BacktestTab({
           initial_capital: Number(initialCapital) || undefined,
           // 佣金按 % 输入，后端要小数（0.025% → 0.00025）
           commission_pct: commissionPct ? Number(commissionPct) / 100 : undefined,
+          minute_fill: minuteFill,
+          // 默认口径不传（与后端 MatcherConfig 缺省一致）
+          exit_fill: exitFill === "open_t+1" ? undefined : exitFill,
         }),
       });
       if (!res.ok) {
@@ -258,6 +274,43 @@ export function BacktestTab({
               />
             </div>
           </div>
+          {/* 分钟口径设置（阶段 K3，对应 MatcherConfig.minute_fill / exit_fill） */}
+          <Separator />
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-fg-dim">成交口径（分钟）</p>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="quant-bt-minute-fill"
+                checked={minuteFill}
+                onCheckedChange={(checked) => setMinuteFill(checked === true)}
+                disabled={loading}
+              />
+              <Label htmlFor="quant-bt-minute-fill" className="font-normal">
+                分钟精确成交价（信号日分钟K 优化）
+              </Label>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quant-bt-exit-fill">卖出成交价口径</Label>
+              <Select
+                value={exitFill}
+                onValueChange={(v: string | null) =>
+                  setExitFill(v ?? "open_t+1")
+                }
+                disabled={loading}
+              >
+                <SelectTrigger id="quant-bt-exit-fill" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {EXIT_FILL_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <Button
             className="w-full"
             onClick={runBacktest}
@@ -329,6 +382,10 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
   const equityCurve = result.equity_curve ?? [];
   const exitStats = stats.exit_stats ?? {};
   const hasExcess = benchmark?.excess_return != null;
+  // 分钟成交覆盖统计（阶段 K3）：仅开了分钟口径（used+fallback>0）时标注
+  const minuteUsed = result.minute_fill_used ?? 0;
+  const minuteFallback = result.minute_fill_fallback ?? 0;
+  const showMinuteCoverage = minuteUsed + minuteFallback > 0;
 
   const metrics: {
     label: string;
@@ -391,6 +448,19 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
               }}
             >
               {unadjusted.length} 只未复权
+            </Badge>
+          )}
+          {showMinuteCoverage && (
+            <Badge
+              variant="outline"
+              style={{
+                color: "var(--chart-1)",
+                borderColor:
+                  "color-mix(in oklch, var(--chart-1) 50%, transparent)",
+              }}
+            >
+              分钟精确成交 {minuteUsed} 笔
+              {minuteFallback > 0 && ` · 降级日K ${minuteFallback} 笔`}
             </Badge>
           )}
         </CardContent>
