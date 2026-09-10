@@ -289,6 +289,33 @@
 
 ## 阶段 J review 明细（2026-09-10，主 agent 亲测复核）
 
+## 阶段 K review 明细（2026-09-10，主 agent 亲测复核）
+
+分工：K1 信号 cron（Fermat）/ K2 stats 对账（Nash）/ K4 composite（Huygens）/
+K6 用户因子贯通（Galileo）/ K3 分钟回测 web 展示（Sartre）/ K5 测试目录（Poincare）。
+主 agent 亲测复核（非仅信自报）。
+
+- **K1 信号 cron**：quant lifespan 挂 AsyncIOScheduler，每日信号 22:30 UTC；starlette 1.6
+  下自定义 lifespan 接管 on_event，显式调用 api._startup 迁移不重复。实测：生产形态 quant
+  服务启动注册 cron、scheduler 正常、现有端点不受影响、job 失败优雅降级。
+- **K2 stats 对账**：empyrical 在 Python 3.12 装不上（SafeConfigParser 已移除），改手算
+  第二实现对拍——total/annual/mdd/vol/sharpe/sortino/calmar 位级一致（abs diff=0）；
+  口径差异（ddof=0/sortino 定义）注释锁定。新建 quant 首个测试文件 test_stats.py（11 用例）。
+- **K4 composite 叠加**：亲测防幽灵平仓——A 持仓窗口内 B 的退出信号被来源投影吃掉
+  （合并 exit 仅 [t=3]，对照组直接 OR 产生 t=2 幽灵平仓）；union/intersect/8 上限正确。
+- **K6 用户因子贯通**：挖掘目录（14 内置 + 用户 active uf）+ 策略白名单动态合成；
+  多用户隔离正确（bob/无 user_id 不可见 alice 因子）。
+- **K3 分钟回测展示**：回测加分钟口径开关 + 成交明细口径列 + 覆盖标注；前端 lint/tsc 全绿。
+- **K5 测试目录**：83 用例（test_adjust/limits/matcher/mining/factors/composite/stats）。
+  **测试目录立即兑现价值——抓出真实 bug**：pending_exit 强平在 exit_fill=signal_next_minute
+  时误用当日收盘价（exit_price_of 在该口径返回 close），matcher 改恒取当日开盘价，
+  修复后 83 用例全绿。另甄别 2 处测试数据设计错位（非 app bug），已修正。
+
+已知边界：H2 分钟回放的 hits.trigger_time 未在 web 展示（回放是独立的 minute_replay 响应
+结构，无 trades/stats），如需展示回放结果另起回放结果区块——登记为后续项。
+
+---
+
 ### 独立 review 门禁（Epicurus，2026-09-10）
 
 结论：**需修复后合并 → 修复后通过**。无 P0（编译器/求值器防未来函数方向正确、红线全部
@@ -728,6 +755,7 @@ Review 处置（2 项）：
 | I review 门禁 | ✅ 通过（修复后） | 6 P1 + 5 P2，无 P0 | 已处置 | **Laplace 独立 review + 主 agent/Aristotle 修复验证全绿** | 2026-09-10 |
 | J 因子编辑器 | ✅ 验收通过 | 1 集成 bug（多用户隔离） | 已处置 | **DSL 编译器/注册表/存储/编辑器 UI + 防未来函数/隔离验证全绿** | 2026-09-10 |
 | J review 门禁 | ✅ 通过（修复后） | 3 P1 + 4 P2，无 P0 | 已处置 | **Epicurus 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
+| K web 集成收尾 + 运维加固（含 K5 测试目录 + K6 用户因子贯通扩展） | ✅ 验收通过 | 1 真实 bug（pending_exit） | 已处置 | **K1-K6 全绿 + 测试目录 83 用例** | 2026-09-10 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
