@@ -206,6 +206,8 @@
 | K2 stats 第三方对账 | 回测统计与 empyrical 口径对账（阶段 B 挂账） | `apps/quant/app/engine/stats.py` | — |
 | K3 分钟回测 web 展示 | 成交明细带 intraday fill 价/触发时刻列；分钟频回放结果页 | `apps/web/src/components/quant/**` | H2、J4 |
 | K4 composite 叠加策略 | 8 子策略上限；entry union/intersect + score 排名归一加权 + exit 来源投影（防幽灵平仓，照搬参照 composite.py 口径） | `apps/quant/app/strategy/composite.py` | G4 |
+| K5 quant 测试目录 | 建 `apps/quant/tests/`（unittest 或 pytest，与 data-collector 对齐用标准库 unittest）；把 G–J 验收脚本固化为回归测试（复权对账/涨跌停分档/移动止损/分钟成交/嵌套折防泄漏/DSL 编译红线/因子 CRUD/多用户隔离）+ 门面级集成测试（HTTP→facade→store 创建 uf+cf+改名，Epicurus 指出可一次性暴露 J 的三个 P1）；CI 或手动可重复跑 | `apps/quant/tests/**` | G–J |
+| K6 用户因子四端贯通 | 编辑器的 DSL/复合因子（注册表）接入挖掘目录（mining factor_catalog）与策略评分（strategy scoring 白名单）——用户因子可被挖掘/选股/回测消费（§0.5 四端消费）；挖掘侧用户因子参与 IC/去重/组合搜索，策略侧 scoring 白名单扩展为用户因子 | `apps/quant/app/mining/factors.py`、`apps/quant/app/strategy/**`、`apps/quant/app/factors/**` | J |
 
 **验收标准**：
 
@@ -213,6 +215,10 @@
 2. 统计指标与 empyrical 对账误差在约定阈值内，口径差异注释标注。
 3. composite：来源投影用例（B 的退出信号平不掉 A 的仓位）；union/intersect 语义正确。
 4. UI 检查清单全绿。
+5. quant 测试目录可重复跑（`python -m unittest discover` 全绿），覆盖 G–J 关键验收点 +
+   门面级集成测试。
+6. 用户因子四端贯通：编辑器创建的 DSL 因子能被挖掘目录发现（参与 IC/组合搜索）、
+   被策略 scoring 引用（选股/回测可用）。
 
 ## 中期可选（登记，不进当前排期）
 

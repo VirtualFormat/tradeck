@@ -65,6 +65,18 @@ def list_factors(user_id: str) -> list[dict]:
     ]
 
 
+def scoring_fields(user_id: str) -> dict:
+    """策略评分可用字段（阶段 K6）：内置字段 + 当前用户 active 用户因子 id。
+
+    供策略编辑/AI 生成 UI 透出白名单，与 loader.allowed_scoring_fields 同源。
+    返回 {"builtin": [...], "user": [...]}（user 按 id 排序，仅 active 状态）。
+    """
+    from app.strategy.loader import ALLOWED_SCORING_FIELDS
+    from app.mining.factors import active_user_factors  # 延迟导入，防顶层环
+    user_ids = sorted(spec.id for spec in active_user_factors(user_id))
+    return {"builtin": sorted(ALLOWED_SCORING_FIELDS), "user": user_ids}
+
+
 def _definition_of(user_id: str, spec: dict) -> dict:
     """HTTP spec（direction 1/-1）→ store 定义（direction high/low/none）。"""
     return {

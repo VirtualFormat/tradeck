@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     QUANT_WORKER_POOL_SIZE: int = 1
     # 每用户并发回测上限（预留配置，默认 1；G4 阶段不强制校验）
     QUANT_MAX_CONCURRENT_PER_USER: int = 1
+    # 每日信号定时任务总开关：False 时 lifespan 不注册每日信号 job（E4/K1）。
+    QUANT_SIGNAL_ENABLED: bool = True
+    # 每日信号 universe：逗号分隔的规范 symbol（如 AAPL,600519.SH,00700.HK）；
+    # 留空则用 jobs.DEFAULT_SIGNAL_UNIVERSE（collector tracked 100 只的内联子集）。
+    QUANT_SIGNAL_UNIVERSE: str = ""
 
 
 settings = Settings()

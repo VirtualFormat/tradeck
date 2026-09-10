@@ -9,3 +9,5 @@ pyarrow>=15.0
 pydantic>=2.9
 # pydantic v2 的 BaseSettings 已拆到独立包，config.py 依赖它
 pydantic-settings>=2.5
+# 每日信号定时调度（K1：main.py lifespan 内 AsyncIOScheduler，单进程）
+apscheduler>=3.10,<4

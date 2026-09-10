@@ -2,7 +2,8 @@
 
 纪律（与数据层一致）：
 - quant 无 DB（单一写者铁律：DB 只有 collector 写），信号写 quant-cache Parquet。
-- universe 默认 tracked 标的（沿用数据层 100 只的定义，经 data-api 读）；
+- universe 默认 DEFAULT_SIGNAL_UNIVERSE（沿用数据层 tracked 100 只的定义；
+  quant 单 app 不能 import data-collector，这里内联同源拷贝）；
   也可经 QUANT_SIGNAL_UNIVERSE 环境变量覆盖（逗号分隔）。
 - 优雅降级：单策略/单标的失败只记日志，不中断整轮。
 """
@@ -21,10 +22,60 @@ from app.strategy import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+# 默认信号 universe：与 data-collector app/constants.py TRACKED_SYMBOLS 同源拷贝
+#（quant 是独立 app，跨 app import 违反边界；collector 侧若调整需同步这里）。
+DEFAULT_SIGNAL_UNIVERSE: list[str] = [
+    # ── 美股科技（30）──
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "NFLX",
+    "AMD", "INTC", "AVGO", "QCOM", "ADBE", "CRM", "ORCL", "CSCO",
+    "ACN", "IBM", "NOW", "UBER", "LYFT", "SNAP", "PINS", "SHOP",
+    "XYZ", "PYPL", "COIN", "PLTR", "SNOW", "ZM",
+    # ── 美股金融/消费/医疗（20）──
+    "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "V", "MA", "AXP",
+    "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "DIS", "KO", "PEP", "PG",
+    # ── 美股能源/工业（10）──
+    "XOM", "CVX", "COP", "SLB", "EOG", "BA", "CAT", "GE", "HON", "UPS",
+    # ── A 股（30）──（沪市用 .SH，与 TickFlow/业界一致）
+    "600519.SH", "601318.SH", "600036.SH", "000858.SZ", "002594.SZ",
+    "300750.SZ", "601012.SH", "600900.SH", "000001.SZ", "601166.SH",
+    "600276.SH", "601398.SH", "000333.SZ", "600030.SH", "601888.SH",
+    "600031.SH", "000651.SZ", "002415.SZ", "300059.SZ", "600009.SH",
+    "601628.SH", "600585.SH", "000568.SZ", "002714.SZ", "600436.SH",
+    "603259.SH", "601857.SH", "600028.SH", "601088.SH", "600019.SH",
+    # ── 港股（10）──（5 位补零，与 TickFlow/业界一致）
+    "00700.HK", "09988.HK", "01810.HK", "03690.HK", "09618.HK",
+    "00005.HK", "01299.HK", "00883.HK", "00939.HK", "02318.HK",
+]
+
+
+def signal_universe() -> list[str]:
+    """解析每日信号 universe：QUANT_SIGNAL_UNIVERSE 非空时按逗号切分，否则用默认子集。"""
+    raw = settings.QUANT_SIGNAL_UNIVERSE.strip()
+    if not raw:
+        return list(DEFAULT_SIGNAL_UNIVERSE)
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 _SIGNALS_SCHEMA = {
     "date": pl.Date, "strategy_id": pl.String, "symbol": pl.String,
     "score": pl.Float64, "entry": pl.Boolean, "exit": pl.Boolean, "market": pl.String,
 }
+
+
+async def daily_signals_job() -> int:
+    """每日信号定时任务入口（模块级 async def，已知坑#7：APScheduler 只接协程函数）。
+
+    优雅降级：任何失败只记日志返回 0，不向上抛（调度器/API 均不受影响）。
+    """
+    try:
+        symbols = signal_universe()
+        n = run_daily_signals(symbols, user_id=settings.QUANT_DEFAULT_USER)
+        logger.info("每日信号 job done: %d rows（universe=%d，user=%s）",
+                    n, len(symbols), settings.QUANT_DEFAULT_USER)
+        return n
+    except Exception as e:
+        logger.error("每日信号 job 失败（不影响 API，下次 cron 重试）：%s", e)
+        return 0
 
 
 def _signals_file(user_id: str | None = None) -> Path:
