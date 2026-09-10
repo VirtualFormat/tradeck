@@ -33,6 +33,7 @@ from app.jobs.findb_metadata import run_findb_metadata_full_job
 from app.jobs.findb_pool import run_findb_pool_full_job
 from app.jobs.hithink_dump import run_hithink_daily_k_dump_job
 from app.jobs.indices import run_indices_job
+from app.jobs.instrument_names import run_instrument_names_job
 from app.jobs.macro import run_macro_job
 from app.jobs.macro_assets import run_macro_assets_job
 from app.jobs.minute_kline import run_minute_kline_job
@@ -313,6 +314,19 @@ JOB_DEFINITIONS = (
         "A 股盘后 09:15 UTC",
         ("daily_valuations",),
         run_daily_valuation_job,
+    ),
+    JobDefinition(
+        "instrument_names",
+        "证券中文名称同步",
+        "同花顺全市场 A 股中文简称写入 instrument_master，并回填 quote_snapshots.name",
+        "hithink-finance",
+        "每天 07:00 UTC",
+        ("instrument_master", "quote_snapshots"),
+        run_instrument_names_job,
+        allow_manual=True,
+        health_queries=(
+            JobHealthQuery("A 股中文名称", "instrument_master", "source = 'hithink'"),
+        ),
     ),
     JobDefinition(
         "minute_kline",

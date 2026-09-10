@@ -273,8 +273,11 @@ async def fetch_minute_bars(
     return all_bars
 
 
-async def get_json(path: str, params: dict[str, Any]) -> Any:
-    """通用 GET（as-of 查询等公开读接口）；失败返回 None。"""
+async def get_json(path: str, params: dict[str, Any] | list[tuple[str, str]]) -> Any:
+    """通用 GET（as-of 查询等公开读接口）；失败返回 None。
+
+    params 支持 dict（普通查询）或 list[tuple]（重复键，如 FastAPI list 查询参数）。
+    """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(_url(path), params=params, headers=_headers())

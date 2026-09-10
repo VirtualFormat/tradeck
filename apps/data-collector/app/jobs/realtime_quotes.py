@@ -280,7 +280,8 @@ async def fetch_and_store_quotes_by_market(symbols: list[str]) -> dict[str, int]
                  market, data_as_of, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (symbol) DO UPDATE SET
-                name = EXCLUDED.name,
+                -- 缺名称时保留已有值（instrument_names 回填的中文名不被空名覆盖）
+                name = COALESCE(EXCLUDED.name, quote_snapshots.name),
                 last_price = EXCLUDED.last_price,
                 -- 缺涨跌时保留已有值（兜底；yfinance 正常已由 prev_close 现算）
                 change = COALESCE(EXCLUDED.change, quote_snapshots.change),

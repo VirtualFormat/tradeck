@@ -124,6 +124,10 @@ async def _daily_valuation() -> None:
     await run_registered_job("daily_valuation")
 
 
+async def _instrument_names() -> None:
+    await run_registered_job("instrument_names")
+
+
 async def _announcements() -> None:
     await run_registered_job("announcements")
 
@@ -266,6 +270,16 @@ async def start_scheduler() -> None:
         _daily_valuation,
         CronTrigger(hour=9, minute=15, timezone="UTC"),
         id="daily_valuation",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # 证券中文名称同步：每天 07:00 UTC（A 股盘前；名称变动低频，日频足够）
+    _scheduler.add_job(
+        _instrument_names,
+        CronTrigger(hour=7, minute=0, timezone="UTC"),
+        id="instrument_names",
         replace_existing=True,
         coalesce=True,
         max_instances=1,

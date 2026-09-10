@@ -132,20 +132,34 @@ async def _fetch_benchmark(
 
 
 async def _fetch_names(symbols: list[str]) -> dict[str, str]:
-    """批量拉证券简称（经 data-api /api/quotes，用于 ST 判定），失败降级空 dict。
+    """批量拉证券简称（用于 ST 判定），失败降级空 dict。
 
-    /api/quotes 返回行只含快照表已有标的；缺失标的由撮合层按无名称（非 ST）降级。
+    双源：先 /api/quotes（quote_snapshots，tracked 报价池）；缺失标的兜底
+    /api/instruments（instrument_master，全市场含 ST 股）。仍缺由撮合层按无名称
+    （非 ST）降级。
     """
     if not symbols:
         return {}
     data = await client.get_json("/api/quotes", {"symbols": ",".join(symbols)})
-    if not isinstance(data, list):
-        return {}
-    return {
-        row["symbol"]: row["name"]
-        for row in data
-        if isinstance(row, dict) and row.get("symbol") and row.get("name")
-    }
+    names: dict[str, str] = {}
+    if isinstance(data, list):
+        names = {
+            row["symbol"]: row["name"]
+            for row in data
+            if isinstance(row, dict) and row.get("symbol") and row.get("name")
+        }
+    # 兜底：quote_snapshots 未覆盖的标的（非 tracked，如 ST 股）从 instrument_master 取
+    missing = [s for s in symbols if s not in names]
+    if missing:
+        # /api/instruments 用 FastAPI list 查询参数（重复 symbols 键，非逗号分隔）
+        inst = await client.get_json(
+            "/api/instruments", [("symbols", s) for s in missing]
+        )
+        rows = inst.get("instruments", []) if isinstance(inst, dict) else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("symbol") and row.get("name"):
+                names.setdefault(row["symbol"], row["name"])
+    return names
 
 
 def run_backtest(
