@@ -291,6 +291,35 @@
 
 ## 阶段 K review 明细（2026-09-10，主 agent 亲测复核）
 
+### 独立 review 门禁（Anscombe，2026-09-11）
+
+结论：**需修复后合并 → 修复后通过**。无 P0（合并语义 entry/score/exit 投影正确且有金标准
+测试锁定、用户因子求值防未来函数、隔离可靠），2 P1 + 3 P2。修复：主 agent。
+
+主 agent 修复并实测：
+- **[P1] K6 挖掘端断线**：`factor_catalog(user_id)` 在 prod 无调用方（run_mining 和
+  api_mining_run 都没传 user_id）——用户因子进不了挖掘目录，K6「四端贯通」的挖掘端名不副实。
+  已修：run_mining 加 user_id 透传 + api_mining_run 补 user_id 依赖注入。实测：default 挖掘
+  含 uf 因子、u2 不含（隔离正确）。
+- **[P1] composite 退出投影 max_hold 窗口过紧**：原按 entry 日起算 max_hold，open_t+1/
+  涨跌停顺延（1~2 日成交滞后）会把落在「实际买入日+max_hold」内的 exit 误滤掉。已修：
+  窗口加成交滞后余量（_ENTRY_FILL_LAG_BARS=2），并同步修正测试（原测试把 entry 日计窗
+  焊死为预期——Anscombe 指出这是「锁定错误行为」），新增滞后余量生效用例。
+- **[P2] 用户因子热路径重复编译**：_evaluate_user_factor 加编译产物缓存（键含
+  user_id+factor_id+version+formula，version+1 自动失效，用户隔离）。
+- **[P2]** QUANT_SIGNAL_* 补登 .env.example；web 注释阶段标签对齐。
+
+亲测确认「无发现」的维度：composite 合并语义（union/intersect/score 排名归一/中性分）、
+用户因子求值防未来函数（test_no_lookahead_tampering_future_rows 是教科书式对照）、
+多用户隔离、main.py lifespan 与 on_event 共存、pending_exit 修复、K4/K6 在 loader.py 的
+叠加改动兼容（6 内置策略加载零错误）。
+
+**流程亮点**：Anscombe 发现测试里有一条在「锁定错误行为」（composite max_hold 窗口按
+entry 日计窗的预期）——测试越绿越把 bug 焊死。这印证 review 不能只看测试是否通过，
+还要审测试锁定的行为是否正确。修复后 84 用例全绿。
+
+---
+
 分工：K1 信号 cron（Fermat）/ K2 stats 对账（Nash）/ K4 composite（Huygens）/
 K6 用户因子贯通（Galileo）/ K3 分钟回测 web 展示（Sartre）/ K5 测试目录（Poincare）。
 主 agent 亲测复核（非仅信自报）。
@@ -756,6 +785,7 @@ Review 处置（2 项）：
 | J 因子编辑器 | ✅ 验收通过 | 1 集成 bug（多用户隔离） | 已处置 | **DSL 编译器/注册表/存储/编辑器 UI + 防未来函数/隔离验证全绿** | 2026-09-10 |
 | J review 门禁 | ✅ 通过（修复后） | 3 P1 + 4 P2，无 P0 | 已处置 | **Epicurus 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | K web 集成收尾 + 运维加固（含 K5 测试目录 + K6 用户因子贯通扩展） | ✅ 验收通过 | 1 真实 bug（pending_exit） | 已处置 | **K1-K6 全绿 + 测试目录 83 用例** | 2026-09-10 |
+| K review 门禁 | ✅ 通过（修复后） | 2 P1 + 3 P2，无 P0 | 已处置 | **Anscombe 独立 review + 主 agent 修复验证全绿（84 用例）** | 2026-09-11 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
