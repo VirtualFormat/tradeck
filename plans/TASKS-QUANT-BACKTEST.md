@@ -222,6 +222,50 @@
 
 ## 中期可选（登记，不进当前排期）
 
+## prod 部署记录（2026-09-11，主 agent）
+
+阶段 G–K 全部代码部署到 prod（host-thu，腾讯云）。链路：推 develop → CI 构建
+tradeck-quant 多架构镜像 → VPS `docker compose pull && up -d --force-recreate quant`。
+
+**部署中发现的 prod 特有缺口（已逐一处置）**：
+
+1. **tradb 缺 `/api/factors` 与 `/api/instruments` 读出口**（架构错配）：这两个读出口加在
+   tradeck 仓库的 apps/backend（内嵌 data-api），但 prod 的 quant 连的是 tradb（独立仓库
+   VirtualFormat/tradb，缺这两个文件）。已把两文件 + 路由注册同步到 tradb 仓库
+   （commit 187883c），推 main 触发 CI 构建 tradb-data-api 镜像，VPS 重建生效。
+
+2. **prod daily_prices 为空**：prod 的 A 股日K 全在冷层 Parquet（cold-layer-first 拓扑），
+   PG daily_prices 未回填——`/api/bars` 读 PG 故 quant 拿不到日K，复权因子 job 也算不出。
+   已写一次性回填脚本（冷层 2025/2026 → daily_prices UPSERT），灌 224 万行；随后重跑
+   `rebuild_adjustment_factors` 产出 253 万行复权因子。**注意**：cold-layer-first 拓扑下
+   PG daily_prices 与冷层会持续漂移，需评估是否把回填纳入日常 job（待办，见下）。
+
+3. **prod adjust_factors 复权因子 job 首次全量初始化**：57184 事件 → 253 万行因子
+   （daily_prices 回填后重建成功）。
+
+4. **prod instrument_master 为空 + tradb 无 instrument_names job**：把 instrument_names job
+   文件同步到 tradb（拷入容器），跑出 5571 只 A 股中文名（含 204 只 ST 股）+
+   quote_snapshots 回填 30 行。**tradb 仓库需补 instrument_names job 注册**（registry/scheduler），
+   当前只在容器内手动跑了一次（待办，见下）。
+
+5. **tradb-openbb 与 tradeck-openbb 抢 6900 端口**：重建 tradb-data-api 时连带重启了
+   tradb-openbb（它本就不该跑，tradeck-openbb 正常），已 `docker update --restart=no` + stop 停掉。
+   tradb compose 的 openbb 服务应评估加 profile 禁用（避免每次 force-recreate 连带拉起）。
+
+**端到端验证（prod 真实数据）**：quant 回测 600519，复权生效（unadjusted 从降级变为空），
+日K 411 行 + 因子 410 行缓存，worker 子进程跑出交易；`/api/factors` 返回 qfq=1.0 正确；
+`/api/instruments` 返回 ST海王/贵州茅台；quant → tradb data-api 鉴权 + 数据通路正常；
+web → quant（QUANT_API_URL）正常。全部服务健康（tradb-openbb 已按预期停掉）。
+
+**部署后待办**：
+- [ ] tradb 仓库补 instrument_names job 注册（registry.py + scheduler.py cron 07:00 UTC），
+      当前仅容器内手动跑了一次。
+- [ ] PG daily_prices 与冷层的回填纳入日常（cold-layer-first 拓扑下持续漂移），
+      评估 daily_kline job 是否同时写 PG + 冷层，或加定期回填 job。
+- [ ] tradb compose 的 openbb 服务加 profile 禁用（与 tradeck-openbb 端口冲突）。
+
+---
+
 | 项 | 说明 | 启动条件 |
 |---|---|---|
 | regime 市场环境过滤 | 5 档市场状态作回测入场过滤（T-1 对齐 fail-closed，参照 regime_builder.py）；A 股策略不过滤环境回测基本失真，但依赖全市场聚合数据 | market_breadth 数据齐备后 |
