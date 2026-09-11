@@ -66,8 +66,9 @@ class ExitProjectionTest(unittest.TestCase):
         self.assertTrue(merged.exit[4, 0])
 
     def test_exit_clipped_by_max_hold_window(self) -> None:
-        # A 在 t=0 买入标的 0，t=4 发出 exit；max_hold=2 → 持仓窗口 t∈[0,1]，
-        # t=4 已出窗 → exit 不投影（由 max_hold 强平接管）
+        # 窗口 = max_hold(2) + 成交滞后余量(_ENTRY_FILL_LAG_BARS=2) = 4 个交易日。
+        # A 在 t=0 entry，t=4 恰好落在窗口外（窗口 [0,3]，t=4 = max_hold+lag=4 出窗）
+        # → exit 不投影（由 max_hold 强平接管）。
         sig_a = _sig(entry_cells=[(0, 0)], exit_cells=[(4, 0)])
         sig_b = _sig(entry_cells=[(3, 1)], exit_cells=[])
         merged = merge_signal_matrices(
@@ -78,7 +79,18 @@ class ExitProjectionTest(unittest.TestCase):
             max_hold=2,
             shape=SHAPE,
         )
-        self.assertFalse(merged.exit[4, 0], "max_hold 窗口外的 exit 不得投影")
+        self.assertFalse(merged.exit[4, 0], "max_hold+滞后余量窗口外的 exit 不得投影")
+
+    def test_exit_within_fill_lag_margin_projected(self) -> None:
+        # 成交滞后余量生效：max_hold=2，entry t=0，t=3 的 exit 落在
+        # 「entry 日+max_hold=2」外但「+滞后余量 2」内（窗口共 4 日）→ 应投影
+        # （修复前按 entry 日计窗会误滤掉）。
+        sig_a = _sig(entry_cells=[(0, 0)], exit_cells=[(3, 0)])
+        sig_b = _sig(entry_cells=[(1, 1)], exit_cells=[])
+        merged = merge_signal_matrices(
+            [sig_a, sig_b], [1.0, 1.0], "union", 0, 2, SHAPE
+        )
+        self.assertTrue(merged.exit[3, 0], "滞后余量窗口内的 exit 应投影")
 
 
 class MergeModeTest(unittest.TestCase):

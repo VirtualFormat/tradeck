@@ -94,13 +94,26 @@ def _evaluate_user_factor(spec, enriched: EnrichedMatrix, user_id: str) -> np.nd
         if total_w <= 0:
             return None
         return _safe_eval(acc / total_w, shape)
-    from app.factors.dsl import compile_formula
-    compiled = compile_formula(spec.formula_text, user_id=user_id)
+    compiled = _compile_cached(spec.id, spec.formula_text, spec.version, user_id)
     if not compiled.ok:
         logger.warning("用户因子 %s 编译失败，挖掘目录跳过：%s",
                        spec.id, compiled.errors[0].message if compiled.errors else "?")
         return None
     return _safe_eval(compiled.evaluate(enriched), shape)
+
+
+# 编译产物缓存（review P2 修复）：避免每次回测/选股请求对每个用户因子重新
+# tokenizer+parser+编译。键含 (user_id, factor_id, version, formula)——公式或
+# 版本变更自动失效（version+1 进键），用户隔离。模块级字典，quant 单进程内安全。
+_COMPILE_CACHE: dict[tuple, object] = {}
+
+
+def _compile_cached(factor_id: str, formula: str, version: int, user_id: str):
+    from app.factors.dsl import compile_formula
+    key = (user_id, factor_id, version, formula)
+    if key not in _COMPILE_CACHE:
+        _COMPILE_CACHE[key] = compile_formula(formula, user_id=user_id)
+    return _COMPILE_CACHE[key]
 
 
 def _default_get_col(matrix: EnrichedMatrix):

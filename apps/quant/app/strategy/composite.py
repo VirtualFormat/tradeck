@@ -33,6 +33,11 @@ _NEUTRAL_NORM = 0.5
 # 子策略上限：超出在加载期拒绝（loader），合并器兜底，防信号计算成本/OOM 爆炸。
 MAX_COMPOSITE_CHILDREN = 8
 
+# 退出投影窗口的成交滞后余量（交易日）：entry 信号到实际买入在 open_t+1 口径下
+# 滞后 1 日，涨跌停/T+1/分钟不确认顺延再加 1 日。投影窗口按 entry 日起算时须补
+# 这段滞后，否则会把落在「实际买入日+max_hold」内的 exit 误滤掉（review P1）。
+_ENTRY_FILL_LAG_BARS = 2
+
 
 @dataclass
 class CompositeChildResult:
@@ -124,12 +129,19 @@ def merge_screen_results(
 def _hold_masks_from_entries(entries: list[np.ndarray], max_hold: int) -> list[np.ndarray]:
     """计算每个子策略的持仓窗口掩码。
 
-    hold_mask_i[t, a] = True 当且仅当存在 t' <= t 使 entry_i[t', a] 触发，
-    且 t - t' < max_hold（即仍在最长持仓期内，未被 max_hold 强制平仓）。
+    hold_mask_i[t, a] = True 当且仅当存在 t' <= t 使 entry_i[t', a] 触发且仍在
+    投影窗口内。窗口长度 = max_hold + 成交滞后余量（entry→实际买入在 open_t+1/
+    涨跌停顺延下有 1~2 个交易日滞后；若只按 entry 日起算 max_hold，会把落在
+    「实际买入日 + max_hold」内但「entry 日 + max_hold」外的 exit 误滤掉——
+    review P1 指出后加余量对齐参照意图与撮合实际）。
     实现用前向填充：从每个 entry 起向前扩展 max_hold-1 个 bar 为 True。
     """
     if max_hold <= 0:
         max_hold = 1
+    else:
+        # 成交滞后余量（review P1）：entry→实际买入在 open_t+1/涨跌停顺延后约 1~2 日。
+        # 窗口过紧会把「实际买入日+max_hold」内但「entry 日+max_hold」外的 exit 误滤掉。
+        max_hold = max_hold + _ENTRY_FILL_LAG_BARS
     masks: list[np.ndarray] = []
     for entry in entries:
         raw = entry.astype(bool, copy=False)

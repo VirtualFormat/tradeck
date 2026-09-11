@@ -98,7 +98,7 @@ export function BacktestTab({
   const [endDate, setEndDate] = useState("");
   const [initialCapital, setInitialCapital] = useState("100000");
   const [commissionPct, setCommissionPct] = useState("");
-  // 分钟口径（阶段 K3）：信号成交日分钟K 优化成交价 + 卖出成交价口径
+  // 分钟口径（后端能力为阶段 H1，本组件为阶段 K3 展示）：信号成交日分钟K 优化成交价 + 卖出成交价口径
   const [minuteFill, setMinuteFill] = useState(false);
   const [exitFill, setExitFill] = useState("open_t+1");
   const [startOpen, setStartOpen] = useState(false);

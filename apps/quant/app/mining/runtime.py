@@ -217,14 +217,17 @@ def run_mining(
     beam_width: int = 16,
     n_outer: int = 3,
     top_n: int = 5,
+    user_id: str | None = None,
 ) -> MiningRunResult:
     """对一批标的跑完整因子挖掘，返回候选（含真嵌套样本外评估 + 统计检验）。
 
     enriched：复权后的市场矩阵（含指标）。horizon：预测未来 N 日收益。
+    user_id：多用户命名空间（K6）——传入时挖掘目录含该用户的 active 因子，
+    缺省 None 仅内置 14 因子。
     """
     close = enriched.base.close
     n_days = close.shape[0]
-    factors = factor_catalog(enriched)
+    factors = factor_catalog(enriched, user_id=user_id)
     fwd = core.forward_returns(close, horizon)
 
     # 1. 全样本因子 IC（方向由符号定）——仅用于展示，嵌套折内会重算；

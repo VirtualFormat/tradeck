@@ -204,7 +204,7 @@ class MiningRequest(_SymbolRequest):
 
 
 @app.post("/api/mining/run")
-def api_mining_run(req: MiningRequest) -> dict:
+def api_mining_run(req: MiningRequest, user_id: str = Depends(current_user_id)) -> dict:
     """跑因子挖掘：返回因子 IC + 候选（不入库，入库由前端确认后调 candidates/save）。"""
     from datetime import timedelta
     from app.matrix import build, enrich
@@ -214,7 +214,8 @@ def api_mining_run(req: MiningRequest) -> dict:
     if not matrix.dates:
         return {"candidates": [], "factor_ics": {}, "kept_factors": [], "error": "无缓存数据"}
     result = run_mining(enrich(matrix), horizon=req.horizon,
-                        max_size=req.max_size, n_outer=req.n_outer)
+                        max_size=req.max_size, n_outer=req.n_outer,
+                        user_id=user_id)
     cands = []
     for c in result.candidates:
         ok, reasons = _gate_of(c)
