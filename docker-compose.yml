@@ -13,7 +13,10 @@
 services:
   # ── 数据存储 ──────────────────────────────────────
   # 铁律：DB 永不对外暴露宿主机端口，仅内网对 collector / data-api 可见
+  # 【已退役】tradb 独立部署后内嵌数据层（postgres/clickhouse）由 tradb 接管，
+  # 加 legacy profile 默认不启动。
   postgres:
+    profiles: ["legacy"]
     image: postgres:16-alpine
     container_name: tradeck-postgres
     mem_limit: 512m
@@ -35,7 +38,9 @@ services:
   # ClickHouse 温层（单节点；分钟K 在线 1 年窗口，collector 双写 / data-api 读）
   # 与 postgres 同纪律：不映射宿主机端口，仅 collector/data-api 经容器网络可达；
   # 不设密码，仅内网可达——若确需公网暴露必须自行加固（见 docker/clickhouse/.env.example）
+  # 【已退役】tradb 独立部署后由 tradb-clickhouse 接管，加 legacy profile 默认不启动。
   clickhouse:
+    profiles: ["legacy"]
     image: clickhouse/clickhouse-server:25.8-alpine
     container_name: tradeck-clickhouse
     mem_limit: 1g
@@ -58,7 +63,11 @@ services:
     restart: unless-stopped
 
   # ── 数据源代理 ────────────────────────────────────
+  # 【已退役】tradb 独立部署后 openbb 归属 tradb 数据源层（tradb-openbb，
+  # 绑 127.0.0.1:6900）。本服务加 profile 默认不启动，避免与 tradb-openbb 抢 6900；
+  # quant/web 不再 depends_on 本服务。回滚/本地自包含调试用 `--profile openbb-legacy`。
   openbb:
+    profiles: ["legacy"]
     # GHCR 镜像（CI 构建发布；服务器只 pull，不 build）。
     # openbb CI tag 策略：master → edge、v* tag → latest（尚未打 tag，故钉 edge）
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-openbb:edge
@@ -90,6 +99,7 @@ services:
   # web/quant 经 TRADB_API_URL/TRADB_COLLECTOR_URL 指向宿主机回环。切换确认后停用本服务，
   # 见 plans/TASKS-TRADB-DEPLOY.md。不对外映射端口，仅内网可达。
   collector:
+    profiles: ["legacy"]
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-collector:latest
     container_name: tradeck-collector
     # 全量导入（170MB Parquet 解析 + 近千万行）峰值较高，给足但防雪崩
@@ -141,6 +151,7 @@ services:
   # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
   # 【过渡/待退役】tradb 独立部署后由 tradb-data-api 接管（见 plans/TASKS-TRADB-DEPLOY.md）。
   data-api:
+    profiles: ["legacy"]
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-data-api:latest
     container_name: tradeck-data-api
     mem_limit: 512m
@@ -202,11 +213,9 @@ services:
     networks:
       - default
       - tradb_net
-    depends_on:
-      # 不再 depends_on 内嵌 data-api：tradb 独立部署后 quant 经 tradb_net 访问 tradb，
-      # 拉起内嵌 data-api 会连带拉起已退役的内嵌 postgres/clickhouse。
-      openbb:
-        condition: service_healthy
+    # quant 无 depends_on：不依赖内嵌 data-api（经 tradb_net 访问 tradb，拉起内嵌
+    # data-api 会连带拉起已退役的内嵌 postgres/clickhouse），也不依赖 openbb
+    # （openbb 已退役归属 tradb 数据源层，quant 不直连）。
     restart: unless-stopped
 
   # ── 前端 ──────────────────────────────────────────
@@ -240,8 +249,8 @@ services:
     depends_on:
       # 不再 depends_on 内嵌 data-api：tradb 独立部署后 web 经 tradb_net 访问 tradb，
       # 拉起内嵌 data-api 会连带拉起已退役的内嵌 postgres/clickhouse。
-      openbb:
-        condition: service_healthy
+      # 不再 depends_on openbb：openbb 已退役（归属 tradb 数据源层），web 经
+      # backendFetch 读 tradb data-api，不直连 openbb。
       quant:
         condition: service_started
     restart: unless-stopped
