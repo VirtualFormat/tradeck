@@ -258,11 +258,35 @@ tradeck-quant 多架构镜像 → VPS `docker compose pull && up -d --force-recr
 web → quant（QUANT_API_URL）正常。全部服务健康（tradb-openbb 已按预期停掉）。
 
 **部署后待办**：
+- [x] ~~tradb compose 的 openbb 服务与 tradeck-openbb 端口冲突~~ → 2026-09-12 已按正式架构
+      处置：tradeck-openbb 停用（compose 加 legacy profile），tradb-openbb 启用（127.0.0.1:6900），
+      端口冲突消除。tradeck 内嵌数据层（postgres/clickhouse/collector/data-api/openbb）整体
+      加 legacy profile 退役，tradeck 默认启动集 = web + quant（commit 62cfd49）。
 - [ ] tradb 仓库补 instrument_names job 注册（registry.py + scheduler.py cron 07:00 UTC），
       当前仅容器内手动跑了一次。
-- [ ] PG daily_prices 与冷层的回填纳入日常（cold-layer-first 拓扑下持续漂移），
-      评估 daily_kline job 是否同时写 PG + 冷层，或加定期回填 job。
-- [ ] tradb compose 的 openbb 服务加 profile 禁用（与 tradeck-openbb 端口冲突）。
+- [x] ~~PG daily_prices 与冷层漂移~~ → 2026-09-12 复核：daily_kline job 正常双写 PG
+      （prod daily_prices CN 1033 万行、max(date)=当日），部署时的空是一次性状态缺口
+      （findb 冷层历史未回填 PG），非持续漂移。降级为「监控 daily_prices freshness」。
+- [ ] daily_prices freshness 监控：max(date) 落后于当日交易日即告警（防再次出现 PG 空了
+      没人发现）。
+
+### 正式架构（2026-09-12 起生效）
+
+```
+tradb（数据源层 + 数据服务，独立 compose /data/apps/tradb）：
+  tradb-openbb（OpenBB 海外源，127.0.0.1:6900）→ tradb-collector（唯一写者）
+    → tradb-postgres（热层）+ tradb-clickhouse（温层）+ 冷层 Parquet
+    → tradb-data-api（唯一读出口，127.0.0.1:8080，SERVICE_TOKENS 鉴权）
+        ▲ tradb_default 外部网络（tradb_net）
+tradeck（业务层，/data/apps/tradeck，默认启动集 = web + quant）：
+  tradeck-web（:3000，经 tradb_net 读 tradb data-api）
+  tradeck-quant（:8083，经 tradb_net 读 tradb data-api）
+  tradeck-nginx（80/443，deploy/nginx 独立 compose）
+  （内嵌 postgres/clickhouse/collector/data-api/openbb 全部 legacy profile 退役）
+```
+
+openbb 归属澄清：OpenBB 平台镜像的 CI 在 tradeck 仓库（openbb-images.yml，历史原因），
+但运行时 openbb 是 tradb 数据源层组件（tradb-openbb），tradeck 不再跑 openbb。
 
 ---
 
