@@ -55,4 +55,8 @@ def compute(enriched: EnrichedMatrix, params: dict) -> StrategySignals:
         entry=entry,
         exit=dead,
         score=np.where(entry, score, np.nan),
+        # 分钟口径参考线（H1）：金叉买入参考线为 MA20 慢线（收盘上穿它即金叉成立的
+        # 价格线）。死叉卖出是「均线交叉」而非「价格穿越」，策略不直接产出 exit_ref
+        # ——由 runner 经 build_minute_exit_reference 反推防未来函数触发线接线。
+        entry_ref=ma20.astype(np.float64),
     )

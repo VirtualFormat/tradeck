@@ -44,4 +44,9 @@ def compute(enriched: EnrichedMatrix, params: dict) -> StrategySignals:
         entry=entry,
         exit=dead,
         score=np.where(entry, score, np.nan),
+        # 分钟口径参考线（H1）：MACD 交叉是 EMA 指标交叉，无直接价格参考线
+        # （反推需解 EMA 递推，不在本阶段范围）；用 MA5 作近似锚点供 minute_fill
+        # 穿越价口径使用。
+        entry_ref=enriched["ma5"].astype(np.float64),
+        exit_ref=enriched["ma5"].astype(np.float64),
     )

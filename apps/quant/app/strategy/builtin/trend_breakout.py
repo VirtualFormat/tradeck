@@ -39,4 +39,9 @@ def compute(enriched: EnrichedMatrix, params: dict) -> StrategySignals:
         entry=entry,
         exit=exit_,
         score=np.where(entry, score, np.nan),
+        # 分钟口径参考线（H1）：买入触发线为昨日 20 日最高收盘（防未来函数——
+        # 当日已知的盘中突破线；当日 high_20d 含当日收盘，不可以用），
+        # 卖出参考线为 MA20（跌破离场信号的价格穿越线）。
+        entry_ref=_prev(high_20d).astype(np.float64),
+        exit_ref=ma20.astype(np.float64),
     )

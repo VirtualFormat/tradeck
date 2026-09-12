@@ -41,4 +41,8 @@ def compute(enriched: EnrichedMatrix, params: dict) -> StrategySignals:
         entry=entry,
         exit=exit_,
         score=np.where(entry, score, np.nan),
+        # 分钟口径参考线（H1）：买入参考线为布林上轨、卖出参考线为 MA20
+        # （均为当日信号的价格穿越线，供 minute_fill 穿越价成交用）。
+        entry_ref=upper.astype(np.float64),
+        exit_ref=ma20.astype(np.float64),
     )
