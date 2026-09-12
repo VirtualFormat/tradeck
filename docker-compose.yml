@@ -1,189 +1,15 @@
-# tradeck 项目 1 — 市场资讯看板
-# 架构：PostgreSQL + collector（数据管道/写者）+ data-api（读 API）+ OpenBB 数据源 + Next.js 前端
-#
-# 注意：mock 种子（apps/mock）仅 dev 可用，prod 不接 mock——本 compose 恒为 live。
+# tradeck 项目 1 — 市场资讯看板（prod）
+# 架构：Next.js 前端（web）+ 量化引擎（quant）；数据层由 tradb 独立 compose 接管
+# （postgres/clickhouse/openbb/collector/data-api 均已迁出本仓库，勿在本文件复活）。
+# web/quant 经 tradb_default 外部网络访问 tradb data-api/collector，
+# 部署手册与切换记录见 docs/TRADB-DEPLOY.md / plans/TASKS-TRADB-DEPLOY.md。
 #
 # 使用：
-#   cp .env.example .env  # 填 API key（可选，免费源不需要）
-#   docker compose up -d --build
-#   前端：http://localhost:3000
-#   data-api：http://localhost:8080/docs
-#   OpenBB API：http://localhost:6900/docs
+#   cp .env.example .env  # 填 TRADB_* / token
+#   docker compose up -d
+#   前端：http://localhost:3000（仅绑回环，对外经宿主机 nginx 反代）
 
 services:
-  # ── 数据存储 ──────────────────────────────────────
-  # 铁律：DB 永不对外暴露宿主机端口，仅内网对 collector / data-api 可见
-  # 【已退役】tradb 独立部署后内嵌数据层（postgres/clickhouse）由 tradb 接管，
-  # 加 legacy profile 默认不启动。
-  postgres:
-    profiles: ["legacy"]
-    image: postgres:16-alpine
-    container_name: tradeck-postgres
-    mem_limit: 512m
-    environment:
-      POSTGRES_DB: tradeck
-      POSTGRES_USER: tradeck
-      POSTGRES_PASSWORD: tradeck_dev
-    volumes:
-      - ./postgres/data:/var/lib/postgresql/data
-      # schema 所有权归 collector
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tradeck"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # ClickHouse 温层（单节点；分钟K 在线 1 年窗口，collector 双写 / data-api 读）
-  # 与 postgres 同纪律：不映射宿主机端口，仅 collector/data-api 经容器网络可达；
-  # 不设密码，仅内网可达——若确需公网暴露必须自行加固（见 docker/clickhouse/.env.example）
-  # 【已退役】tradb 独立部署后由 tradb-clickhouse 接管，加 legacy profile 默认不启动。
-  clickhouse:
-    profiles: ["legacy"]
-    image: clickhouse/clickhouse-server:25.8-alpine
-    container_name: tradeck-clickhouse
-    mem_limit: 1g
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      # 初始化 SQL（建库 tradeck + minute_bars 表），仅首次启动执行
-      - ./docker/clickhouse/initdb:/docker-entrypoint-initdb.d:ro
-      # IPv4 监听（见该目录注释）
-      - ./docker/clickhouse/config.d:/etc/clickhouse-server/config.d:ro
-      # 放开 default 用户容器网络访问（否则 entrypoint 锁死 localhost-only，
-      # collector/data-api 经容器 IP 访问会 401；prod 公网暴露须自行加固）
-      - ./docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
-    healthcheck:
-      # 注意用 127.0.0.1 而非 localhost：CH 只监听 IPv4（config.d 覆写），
-      # 容器内 localhost 会解析到 ::1 导致 connection refused
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # ── 数据源代理 ────────────────────────────────────
-  # 【已退役】tradb 独立部署后 openbb 归属 tradb 数据源层（tradb-openbb，
-  # 绑 127.0.0.1:6900）。本服务加 profile 默认不启动，避免与 tradb-openbb 抢 6900；
-  # quant/web 不再 depends_on 本服务。回滚/本地自包含调试用 `--profile openbb-legacy`。
-  openbb:
-    profiles: ["legacy"]
-    # GHCR 镜像（CI 构建发布；服务器只 pull，不 build）。
-    # openbb CI tag 策略：master → edge、v* tag → latest（尚未打 tag，故钉 edge）
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-openbb:edge
-    container_name: tradeck-openbb
-    ports:
-      - "6900:6900"
-    volumes:
-      - ./openbb/config:/root/.openbb_platform
-    environment:
-      - FMP_API_KEY=${FMP_API_KEY:-}
-      - FRED_API_KEY=${FRED_API_KEY:-}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
-      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
-      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
-      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
-      - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
-    # 小内存机（7.5GB）：openbb 默认 4 worker × ~330MB 太吃内存，降 1 worker
-    command: ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "1"]
-    mem_limit: 1g
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ── 数据管道（写者：定时拉取数据源写库 + 内部运维 API）──
-  # 【过渡/待退役】tradb 独立部署（VirtualFormat/tradb）后，本服务由 tradb-collector 接管，
-  # web/quant 经 TRADB_API_URL/TRADB_COLLECTOR_URL 指向宿主机回环。切换确认后停用本服务，
-  # 见 plans/TASKS-TRADB-DEPLOY.md。不对外映射端口，仅内网可达。
-  collector:
-    profiles: ["legacy"]
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-collector:latest
-    container_name: tradeck-collector
-    # 全量导入（170MB Parquet 解析 + 近千万行）峰值较高，给足但防雪崩
-    mem_limit: 2g
-    environment:
-      DATA_MODE: ${DATA_MODE:-live}
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-      OPENBB_API_URL: http://openbb:6900
-      # 温层 ClickHouse（分钟K 在线窗口；collector 双写）
-      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
-      # 海外节点（韩国瘦 OpenBB）：为空则海外源回落国内 openbb
-      OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
-      OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
-      # 数据中心手动同步令牌；留空时后端禁用手动触发
-      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-}
-      # TickFlow 日K 源：为空则用免费档 TickFlow.free()
-      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
-      # findb 主数据源密钥（A股全市场 + 复权 + 分钟K；一人一设备一把，勿共享）
-      FINDB_KEY: ${FINDB_KEY:-}
-      # 银河星耀数智 AmazingData（真实值只放同目录 .env）。wheel 需在
-      # collector 镜像构建期注入；未安装时 provider 自动禁用并降级。
-      AMAZINGDATA_ENABLED: ${AMAZINGDATA_ENABLED:-0}
-      AD_USERNAME: ${AD_USERNAME:-}
-      AD_PASSWORD: ${AD_PASSWORD:-}
-      AD_HOST: ${AD_HOST:-}
-      AD_PORT: ${AD_PORT:-}
-      # 同花顺金融数据服务（A 股官方源；留空则该源不可用，优雅降级）
-      HITHINK_FINANCE_API_KEY: ${HITHINK_FINANCE_API_KEY:-}
-      # findb COS full 分发包（仅手动任务使用）。prod 通过 CVM 角色临时凭证。
-      FINDB_ARCHIVE_BUCKET: ${FINDB_ARCHIVE_BUCKET:-thudata-1472715722}
-      FINDB_ARCHIVE_REGION: ${FINDB_ARCHIVE_REGION:-ap-shanghai}
-      FINDB_ARCHIVE_PREFIX: ${FINDB_ARCHIVE_PREFIX:-dist/full}
-      DATA_POOL_ROOT: /data/market-pool
-      FINDB_COS_ROLE: ${FINDB_COS_ROLE:-tradeck-app}
-      # 分钟K与其他冷层统一写入自有 data pool，不落容器临时文件系统。
-      COLD_STORAGE_BACKEND: local
-      COLD_STORAGE_LOCAL_ROOT: /data/market-pool
-    volumes:
-      - ./data-pool:/data/market-pool
-    depends_on:
-      postgres:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      openbb:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ── 读 API 服务（从 DB 读，<50ms；_ensure 按需回源经 openbb）──
-  # 【过渡/待退役】tradb 独立部署后由 tradb-data-api 接管（见 plans/TASKS-TRADB-DEPLOY.md）。
-  data-api:
-    profiles: ["legacy"]
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-data-api:latest
-    container_name: tradeck-data-api
-    mem_limit: 512m
-    environment:
-      DATA_MODE: ${DATA_MODE:-live}
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-      OPENBB_API_URL: http://openbb:6900
-      # 温层 ClickHouse（分钟K 在线窗口；data-api 读）
-      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
-      # 数据中心手动同步令牌；留空时后端禁用手动触发
-      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-}
-      # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
-      # 配置后量化批量接口（/api/bars）强制有效 X-Service-Token。
-      SERVICE_TOKENS: ${SERVICE_TOKENS:-}
-      DATA_POOL_ROOT: /data/market-pool
-    volumes:
-      - ./data-pool:/data/market-pool:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      openbb:
-        condition: service_healthy
-      collector:
-        condition: service_started
-    ports:
-      # 仅回环：对外提供经宿主机 nginx 反代 + SERVICE_TOKENS 鉴权，不全接口暴露。
-      # （tradeck 内嵌形态下 web 经容器网络服务名访问，回环仅供本机调试。）
-      - "127.0.0.1:8080:8080"
-    restart: unless-stopped
-
   # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
   # 默认随全栈启动（HTTP 服务，web 经 Next 代理消费 8083）。
   quant:
@@ -213,9 +39,7 @@ services:
     networks:
       - default
       - tradb_net
-    # quant 无 depends_on：不依赖内嵌 data-api（经 tradb_net 访问 tradb，拉起内嵌
-    # data-api 会连带拉起已退役的内嵌 postgres/clickhouse），也不依赖 openbb
-    # （openbb 已退役归属 tradb 数据源层，quant 不直连）。
+    # quant 无 depends_on：经 tradb_net 访问 tradb data-api，不依赖本仓库任何数据层服务。
     restart: unless-stopped
 
   # ── 前端 ──────────────────────────────────────────
@@ -237,8 +61,6 @@ services:
       # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
       - TRADB_SERVICE_TOKEN=${TRADB_SERVICE_TOKEN:-}
       - TRADB_SERVICE_NAME=web-bff
-      # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
-      - OPENBB_API_URL=http://openbb:6900
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
       - QUANT_API_URL=http://quant:8083
       - NODE_ENV=production
@@ -247,17 +69,10 @@ services:
       - default
       - tradb_net
     depends_on:
-      # 不再 depends_on 内嵌 data-api：tradb 独立部署后 web 经 tradb_net 访问 tradb，
-      # 拉起内嵌 data-api 会连带拉起已退役的内嵌 postgres/clickhouse。
-      # 不再 depends_on openbb：openbb 已退役（归属 tradb 数据源层），web 经
-      # backendFetch 读 tradb data-api，不直连 openbb。
+      # web 经 tradb_net 访问 tradb，不依赖任何本仓库数据层服务。
       quant:
         condition: service_started
     restart: unless-stopped
-
-volumes:
-  # ClickHouse 温层数据（/var/lib/clickhouse）
-  clickhouse-data:
 
 networks:
   # tradb 独立 compose（/data/apps/tradb）创建的默认网络，tradeck web/quant 接入后

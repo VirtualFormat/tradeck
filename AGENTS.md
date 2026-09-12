@@ -59,7 +59,7 @@ tradeck/
 ├── docker/openbb/               ← OpenBB Platform Dockerfile + verify.sh + .env.example
 ├── docs/                        ← 长期设计文档（PIPELINE/DATA-LAYER/DATA-SERVICE/QUANT-BACKTEST 等，索引见 docs/README.md）
 ├── plans/                       ← 过程性施工文件（任务拆解与验收记录，不入 docs）
-├── docker-compose.yml           ← prod 用 compose（仅 prod 部署 + 部署前本地验证）
+├── docker-compose.yml           ← prod 用 compose（web + quant；数据层已迁 tradb，仅 prod 部署 + 部署前本地验证）
 └── CODEBUDDY.md                 ← 开发规范（devcontainer 强制等）
 ```
 
@@ -275,7 +275,8 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 - 项目根 `docker-compose.yml` **只用于 prod 部署和部署前本地验证**，开发不要用根 compose。
 - VPS 部署：`docker compose -f docker-compose.yml up -d --build`。
-- prod compose 服务依赖链：postgres/openbb 健康检查通过 → backend 启动 → web 启动。
+- prod compose 只剩消费方 `web` + `quant`（数据层 postgres/clickhouse/openbb/collector/data-api
+  已迁 tradb 独立 compose，web/quant 经 `tradb_default` 外部网络访问；部署手册见 `docs/TRADB-DEPLOY.md`）。
 
 ## 安全注意事项
 

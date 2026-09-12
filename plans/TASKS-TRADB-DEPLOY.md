@@ -33,6 +33,10 @@
 
 ## 回滚方案（贯穿 9-11）
 
+> **已失效（2026-09-12）**：tradeck 根 compose 已删除全部内嵌数据服务，
+> 以下「改回默认值即回滚」的路径不再存在。回滚需先恢复旧 compose
+> （`git show eb5e188:docker-compose.yml`），详见 `docs/TRADB-DEPLOY.md` 回滚一节。
+
 - tradb 与 tradeck 内嵌数据服务**并行存在期**：tradeck `.env` 的 `TRADB_API_URL` 默认值回退
   到同 compose 的 `data-api` 服务名，改回默认值 + 重启即回滚到内嵌模式。
 - 步骤 11（停内嵌服务）前必须确认步骤 10 web 全链路正常；步骤 11 可逆（重新 up 即可）。
@@ -82,3 +86,8 @@
 
 **待办/后续**：任务 12（tradeck 仓库退役内嵌 apps/backend、apps/data-collector 代码 + CI 调整，
 待 tradb 稳定运行一段时间后）；分钟K 温层首启用需手动触发 `minute_warm_backfill` 回填（CH 在线窗口）。
+
+**2026-09-12 补充**：tradeck 根 `docker-compose.yml` 内嵌数据服务（postgres/clickhouse/
+openbb/collector/data-api，此前挂 legacy profile）已整体删除，prod 仅剩 web + quant；
+同步清理 `clickhouse-data` 卷、web 无引用的 `OPENBB_API_URL` 与过时注释。
+`docs/TRADB-DEPLOY.md` 已标注切换完成状态与新回滚前提。

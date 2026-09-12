@@ -4,6 +4,12 @@
 > 任务清单与验收见 `plans/TASKS-TRADB-DEPLOY.md`；架构见 `docs/DATA-SERVICE.md`。
 > 本文是 VPS 上的分步操作手册，含回滚与排障。命令假设两个仓库都已 clone 到 VPS。
 
+> **状态（2026-09-12）：切换已完成。** tradeck 根 `docker-compose.yml` 已删除全部
+> 内嵌数据服务（postgres/clickhouse/openbb/collector/data-api），只剩 `web` + `quant`，
+> 经 `tradb_default` 外部网络访问 tradb。下文「步骤 4/5」「回滚」为切换期的历史记录，
+> 保留作操作参考——**回滚需先从 git 历史恢复旧 compose**（见「回滚」一节），
+> 新部署/日常维护只需看「拓扑」「步骤 1-3」「排障」。
+
 ## 拓扑
 
 ```
@@ -89,6 +95,11 @@ docker compose stop collector data-api postgres clickhouse
 
 ## 回滚
 
+> ⚠️ tradeck 根 compose 已于 2026-09-12 删除内嵌服务，以下两条回滚路径的前提
+> （内嵌服务仍在 compose 中）已不成立。如需回滚，先恢复旧 compose：
+> `git show eb5e188:docker-compose.yml > docker-compose.yml`（`eb5e188` 为最后一个
+> 仍含内嵌服务的提交），再按下述操作。
+
 - **步骤 4 出问题**：把 tradeck `.env` 的 `TRADB_API_URL`/`TRADB_COLLECTOR_URL` 删去（回退默认
   值 `http://data-api:8080` 同 compose 服务名），重启 web/quant 即回到内嵌模式。内嵌服务在
   步骤 5 前一直保持运行，回滚零数据风险。
@@ -108,6 +119,9 @@ docker compose stop collector data-api postgres clickhouse
 ## 切换后
 
 - tradeck 仓库内嵌 `apps/backend` / `apps/data-collector` 代码退役删除（另一迭代，见任务 12）。
+- 2026-09-12：tradeck 根 `docker-compose.yml` 已删除全部内嵌数据服务
+  （postgres/clickhouse/openbb/collector/data-api）及失效的 `clickhouse-data` 卷、
+  web 侧已无引用的 `OPENBB_API_URL`；prod 仅剩 `web` + `quant` 两个消费方服务。
 - 分钟K 冷层暂留本地 `tradb/data-pool`，数据量上来后迁 COS（4.2b，见 `docs/DATA-STORAGE-TIERED.md`）。
 
 ## 数据隔离铁律（2026-09-08 生产教训，强制）

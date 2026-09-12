@@ -65,7 +65,7 @@ tradeck/
 ├── apps/web/                ← Next.js 前端
 ├── apps/backend/            ← FastAPI 后端（数据管道 + API；app/datasource 数据层门面）
 ├── docker/openbb/           ← OpenBB Platform Dockerfile（dev + prod 共用）
-├── docker-compose.yml        ← prod 用 compose（postgres + openbb + backend + web）
+├── docker-compose.yml        ← prod 用 compose（web + quant；数据层由 tradb 独立 compose 接管）
 ├── docs/                    ← 技术文档
 └── .env                     ← API key 配置
 ```
