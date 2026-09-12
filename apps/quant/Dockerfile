@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# 与 data-collector 一致用 glibc（Debian slim）：TickFlow SDK 及其传递依赖
+# 与 data-collector 一致用 glibc（Debian slim）：Polars/pyarrow 的预编译 wheel
 # 在 musl 上有二进制兼容风险，slim 下开箱可用。curl 供健康检查/调试用。
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
