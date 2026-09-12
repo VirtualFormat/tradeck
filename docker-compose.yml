@@ -56,6 +56,9 @@ services:
       # 经 tradb 容器别名访问（tradb data-api 仅绑 127.0.0.1 回环，同网络容器直连容器端口，
       # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
       - BACKEND_API_URL=${TRADB_API_URL:-http://tradb-data-api:8080}
+      # standalone server.js 默认绑 $HOSTNAME，多网络容器下容器 ID 可能解析到
+      # 非默认网络的 IP，导致宿主机 docker-proxy 端口映射 reset（2026-09-12 实测）。
+      - HOSTNAME=0.0.0.0
       # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
       - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
       # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
