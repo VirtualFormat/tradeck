@@ -22,6 +22,7 @@ from app.engine import forward_adjust
 from app.matrix import build, enrich
 from app.runner import _default_strategy_dirs
 from app.strategy import StrategyRegistry
+from app.universe import resolve_universe
 
 logger = logging.getLogger(__name__)
 
@@ -88,17 +89,27 @@ def _apply_basic_filter(
 
 def screen(
     strategy_id: str,
-    symbols: list[str],
+    symbols: list[str] | None = None,
     end_date: date | None = None,
     params: dict | None = None,
     registry: StrategyRegistry | None = None,
 ) -> ScreenResult:
     """在给定标的池上执行策略选股，返回最新交易日截面结果。
 
+    symbols 为空时按默认 universe 档位（tracked）展开 —— 本函数不感知具体档位，
+    由调用方（API 层）解析好经 resolve_universe 传入或直接传 symbols。
+
     与 runner.run_backtest 共用同一条数据管线，保证选股/回测信号口径一致。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     strat = reg.get(strategy_id)  # 先取定义，策略不存在时尽早报错（不白跑矩阵）
+
+    symbols = resolve_universe(symbols, None)
+    if not symbols:
+        logger.warning("universe 展开为空，返回空结果")
+        return ScreenResult(
+            strategy_id=strategy_id, as_of=end_date or date.today(), rows=[], total=0
+        )
 
     end = end_date or date.today()
     start = end - timedelta(days=_SCREEN_WINDOW_DAYS)

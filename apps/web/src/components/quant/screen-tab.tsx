@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Tab 2「选股扫描」：策略 + 参数 + 标的池 → 截面扫描结果表
+ * Tab 2「选股扫描」：策略 + 参数 + 标的池（自定义或 universe）→ 截面扫描结果表
  */
 import { useState } from "react";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react";
@@ -18,6 +18,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -27,6 +34,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
 import {
@@ -35,6 +47,16 @@ import {
   type ParamValues,
   type StrategyDef,
 } from "./types";
+
+/** 标的池 universe 选项（标的输入为空时生效，自定义标的时置灰） */
+const UNIVERSE_OPTIONS = [
+  { value: "tracked", label: "tracked 100 只（默认）" },
+  { value: "cn", label: "A 股" },
+  { value: "us", label: "美股" },
+  { value: "hk", label: "港股" },
+  { value: "all", label: "全部" },
+] as const;
+type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 
 interface ScreenRow {
   symbol: string;
@@ -77,15 +99,17 @@ export function ScreenTab({
   onParamValuesChange,
 }: ScreenTabProps) {
   const [symbolsInput, setSymbolsInput] = useState("");
+  const [universe, setUniverse] = useState<UniverseValue>("tracked");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScreenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const strategy = strategies.find((s) => s.id === strategyId) ?? null;
+  const symbols = parseSymbols(symbolsInput);
+  const hasCustomSymbols = symbols.length > 0;
 
   async function runScreen() {
-    const symbols = parseSymbols(symbolsInput);
-    if (!strategyId || symbols.length === 0 || loading) return;
+    if (!strategyId || loading) return;
     setLoading(true);
     setError(null);
     try {
@@ -94,7 +118,9 @@ export function ScreenTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           strategy_id: strategyId,
-          symbols,
+          // 留空 = 按 universe 选股池扫描；自定义标的时 universe 不生效
+          symbols: hasCustomSymbols ? symbols : null,
+          universe: hasCustomSymbols ? undefined : universe,
           params: buildParamsPayload(strategy, paramValues),
         }),
       });
@@ -133,21 +159,69 @@ export function ScreenTab({
             disabled={loading}
           />
           <div className="space-y-1.5">
-            <Label htmlFor="quant-sc-symbols">标的池（逗号分隔）</Label>
+            <Label htmlFor="quant-sc-symbols">
+              标的（逗号分隔，可选）
+            </Label>
             <Input
               id="quant-sc-symbols"
-              placeholder="600519.SH,000001.SZ,AAPL"
+              placeholder="留空 = tracked 100 只（可逗号分隔自定义）"
               value={symbolsInput}
               onValueChange={(v) => setSymbolsInput(v)}
               disabled={loading}
             />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="quant-sc-universe">选股池</Label>
+            {hasCustomSymbols ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={<span className="block cursor-not-allowed" />}
+                >
+                  <Select value={universe} disabled>
+                    <SelectTrigger
+                      id="quant-sc-universe"
+                      className="w-full pointer-events-none"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {UNIVERSE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </TooltipTrigger>
+                <TooltipContent>
+                  自定义标的时 universe 不生效
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Select
+                value={universe}
+                onValueChange={(v: string | null) =>
+                  setUniverse((v as UniverseValue) ?? "tracked")
+                }
+                disabled={loading}
+              >
+                <SelectTrigger id="quant-sc-universe" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {UNIVERSE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
           <Button
             className="w-full"
             onClick={runScreen}
-            disabled={
-              loading || !strategyId || parseSymbols(symbolsInput).length === 0
-            }
+            disabled={loading || !strategyId}
           >
             <MagnifyingGlassIcon />
             {loading ? "扫描中…" : "扫描"}

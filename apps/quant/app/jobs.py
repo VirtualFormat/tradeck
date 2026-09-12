@@ -22,7 +22,9 @@ from app.strategy import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
-# 默认信号 universe：与 data-collector app/constants.py TRACKED_SYMBOLS 同源拷贝
+# 默认 universe：回测/选股 API 在 symbols 为空时的默认标的池（"tracked" 档位，
+# 见 app/universe.py），同时作为每日信号 job 的默认 universe。
+# 与 data-collector app/constants.py TRACKED_SYMBOLS 同源拷贝
 #（quant 是独立 app，跨 app import 违反边界；collector 侧若调整需同步这里）。
 DEFAULT_SIGNAL_UNIVERSE: list[str] = [
     # ── 美股科技（30）──
