@@ -256,6 +256,37 @@ Review 结论：1 P0 + 2 P1 + 5 P2，已全部处置。
 
 ## 中期可选（登记，不进当前排期）
 
+## 后续优化 backlog（2026-09-12 主 agent 汇总；做完一项删一行）
+
+**阶段 L 结果视图延续（优先级高，用户体验直接可见）**：
+
+- [ ] **matcher 执行层拦截计数器**：涨跌停拦截买/卖、超仓位上限跳过开仓目前无
+  计数，选择漏斗只有 signals_entry/exit + filled_trades 三项；SimResult 补计数
+  后 selection_stats 扩展（result_stats docstring 已留扩展位）。
+- [ ] **K 线回放 modal**：点交易/标的弹 K 线标注买卖点（参照 TradeKlineModal /
+  PicksSymbolKlineModal；tradeck 已有 lightweight-charts 基础设施）。
+- [ ] **因子归因视图**：胜单 vs 败单入场日因子均值对比（依赖策略信号日的因子
+  快照，需评估信号矩阵与 enriched 因子字段的接线成本）。
+- [ ] **分钟频回放结果展示区块**：H2 minute_replay 是独立响应结构（无
+  trades/stats），前端 BacktestResultView 已有 stats==null 守卫空态；如需展示
+  回放明细（hits.trigger_time 等）另起专属区块。
+
+**阶段 L review P2 工程优化（不紧急）**：
+
+- [ ] 进度回调节流：runner 透传 progress_every（按区间长度取 max(1, n//100)），
+  减少跨进程 Queue 消息。
+- [ ] 分钟K 预拉去重：任务化入口主进程预拉落缓存后子进程又逐 symbol concat，
+  可改帧透传（对齐 run_backtest_async）。
+- [ ] 直方图超界样本标注：±20% 外并入最外桶，range 文案/tooltip 标注「含超界」。
+- [ ] 蒙卡回撤文案：tooltip 强调「收益顺序重排」语义，防误读为置信区间。
+- [ ] selection_stats 展示侧注明信号计数为右移前口径（与撮合评估日差一天）。
+
+**历史遗留 P2（G–K review 挂账）**：
+
+- [ ] compile_formula_cached 丢 user_id 维度（当前无调用方，启用缓存前先修）。
+- [ ] 统计黄金向量数值测试随迁（参照 test_stats_v2.py → quant/tests）。
+- [ ] walk-forward 空折 consistency=0.0 口径（继承参照，影响评估）。
+
 ## prod 部署记录（2026-09-11，主 agent）
 
 阶段 G–K 全部代码部署到 prod（host-thu，腾讯云）。链路：推 develop → CI 构建
@@ -892,6 +923,3 @@ Review 处置（2 项）：
 | K web 集成收尾 + 运维加固（含 K5 测试目录 + K6 用户因子贯通扩展） | ✅ 验收通过 | 1 真实 bug（pending_exit） | 已处置 | **K1-K6 全绿 + 测试目录 83 用例** | 2026-09-10 |
 | K review 门禁 | ✅ 通过（修复后） | 2 P1 + 3 P2，无 P0 | 已处置 | **Anscombe 独立 review + 主 agent 修复验证全绿（84 用例）** | 2026-09-11 |
 | L 回测结果视图对齐参照 | ✅ 验收通过 | 1 P0 + 2 P1 | 已处置 | **Huygens 独立 review + 主 agent 修复验证全绿（154 用例 + eslint/tsc）** | 2026-09-12 |
-| I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
-| J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
-| K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |
