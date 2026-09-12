@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +20,9 @@ import polars as pl
 from app.data import client, factors, store
 from app.engine import (
     MatcherConfig, MinuteLoader, compute, forward_adjust, simulate,
+)
+from app.engine.result_stats import (
+    daily_trade_rows, per_symbol_stats, return_distribution, selection_stats,
 )
 from app.engine.minute_replay import (
     MINUTE_BARS_PARAM_KEY, MinuteReplayResult, replay_minute_strategy,
@@ -114,6 +119,52 @@ def run_backtest_offloaded(
     return asyncio.run(run_backtest_in_worker(
         symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
     ))
+
+
+def _merge_meta_risk(config: "MatcherConfig | None", sdef) -> "MatcherConfig":
+    """把策略 META 声明的风控并入 MatcherConfig（META 值作默认，显式 config 字段优先）。
+
+    修复 P0：内置策略 META 里声明的 stop_loss/max_hold_days 此前从未进入撮合——
+    api_backtest 构造 MatcherConfig 时只传了资金/佣金/分钟口径，runner 用
+    `config or MatcherConfig()` 直透，META 风控形同虚设。
+
+    并入规则：config 显式给了某风控字段（非 None）→ 用 config；否则用 META 声明值。
+    META 未声明的风控字段保持 None（关闭），不臆造默认值。
+    """
+    import dataclasses
+
+    from app.engine import MatcherConfig as _MC
+
+    cfg = config or _MC()
+    # dataclasses.replace 保持不可变语义；仅当 cfg 字段为 None 时回填 META 值。
+    overrides: dict = {}
+    if cfg.stop_loss_pct is None and sdef.stop_loss is not None:
+        overrides["stop_loss_pct"] = sdef.stop_loss
+    if cfg.max_hold_days is None and sdef.max_hold_days is not None:
+        overrides["max_hold_days"] = sdef.max_hold_days
+    # take_profit / trailing_* META 暂未声明 loader 属性，直接读 META 字典键
+    #（与 MatcherConfig 字段同名），策略可声明但 loader 不需要加属性。
+    for field_name in (
+        "take_profit_pct",
+        "trailing_stop_pct",
+        "trailing_take_profit_activate_pct",
+        "trailing_take_profit_drawdown_pct",
+    ):
+        if getattr(cfg, field_name) is None:
+            meta_val = sdef.meta.get(field_name)
+            if meta_val is not None:
+                # P2-6 修复：防御性转换——META 写非数值（如 "abc"）时记 warning
+                # 并跳过该字段（不在回测中途抛 ValueError 进 worker 结构化错误）。
+                try:
+                    overrides[field_name] = float(meta_val)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "策略 %s META 的 %s=%r 非数值，已忽略",
+                        sdef.strategy_id, field_name, meta_val,
+                    )
+    if not overrides:
+        return cfg
+    return dataclasses.replace(cfg, **overrides)
 
 
 async def _fetch_benchmark(
@@ -316,6 +367,8 @@ def run_backtest(
     benchmark: dict | None = None,
     names: dict[str, str] | None = None,
     minute_bars: dict[str, "pl.DataFrame"] | None = None,
+    progress_cb=None,
+    cancel_event=None,
 ) -> dict:
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
 
@@ -329,7 +382,19 @@ def run_backtest(
     分钟频策略（META timeframes 含 "1m"）不走本函数（矩阵回测），
     由 run_backtest_async 分流到 _run_minute_replay（阶段 H2 回放路径）。
     若误以分钟策略调本同步入口，按「分钟数据不可用」优雅降级为分钟回放空结果。
+
+    分钟触发卖出接线（H1 收口）：exit_fill="signal_next_minute" 且策略未产出
+    exit_ref（如 MA 死叉这类「均线交叉」信号没有直接价格参考线）时，按
+    build_minute_exit_reference 从 MA 字段反推防未来函数触发线（全部昨日已知量），
+    使盘中触发不再整体降级 VWAP/日K 口径；策略已产出 exit_ref 的（BOLL/趋势类）
+    以策略产出为准，不覆盖。
+
+    progress_cb：可选逐日进度回调（{"day","total","date"}），透传给 matcher.simulate
+    （热循环零开销：None 时不做任何事；worker 子进程任务化回测经它上报进度）。
+    cancel_event：分钟频策略路径（_run_minute_replay）的协作式取消标记；
+    日K 矩阵回测路径不消费（该路径跨进程取消由 worker 父进程 terminate 实现）。
     """
+    t0 = time.perf_counter()
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     sdef = reg.get(strategy_id)
     if sdef.is_minute_strategy:
@@ -342,9 +407,14 @@ def run_backtest(
     matrix = build(symbols, start, end)
     if not matrix.dates:
         logger.warning("区间 %s ~ %s 无缓存数据，返回空结果", start, end)
-        return {"stats": compute_empty(), "strategy": strategy_id, "symbols": symbols,
-                "range": [start.isoformat(), end.isoformat()], "unadjusted": symbols,
-                "equity_curve": [], "trades": [], "benchmark": None}
+        if progress_cb is not None:
+            # 空数据路径也回调一次（任务化前端进度条能立即见到 100%）
+            progress_cb({"day": 1, "total": 1, "date": end.isoformat()})
+        empty = {"stats": compute_empty(), "strategy": strategy_id, "symbols": symbols,
+                 "range": [start.isoformat(), end.isoformat()], "unadjusted": symbols,
+                 "equity_curve": [], "trades": [], "benchmark": None}
+        empty.update(_result_ext_empty(t0))
+        return empty
 
     # 复权：读缓存因子，缺失标的降级无复权并在结果标注
     fac = {s: factors.load(s) for s in symbols}
@@ -352,10 +422,38 @@ def run_backtest(
     enriched = enrich(adjusted_matrix)
 
     signals = reg.run(strategy_id, enriched, params)
-    cfg = config or MatcherConfig()
+    # P0 修复：META 风控并入（META 值作默认，显式 config 优先）。
+    cfg = _merge_meta_risk(config, sdef)
     # 分钟精确成交/盘中触发（阶段 H1）：把预拉的分钟K 帧装配成 matcher 的
     # minute_loader（symbol, date → float64 2D 数组），matcher 保持纯计算不做 IO。
     minute_loader = _build_minute_loader(cfg, minute_bars)
+    # 盘中触发卖出参考线兜底（H1 接线）：策略未产出 exit_ref 时，MA 死叉这类
+    # 「均线交叉」信号没有直接价格参考线，按 build_minute_exit_reference 从 MA 字段
+    # 反推防未来函数触发线（该函数此前无调用方，此处为唯一接线点）；策略已产出
+    # exit_ref 的（BOLL/趋势类价格穿越信号）以策略产出为准，不覆盖。
+    exit_refs = signals.exit_ref
+    if (
+        cfg.exit_fill == "signal_next_minute"
+        and exit_refs is None
+        and strategy_id == "ma_golden_cross"
+    ):
+        import numpy as np
+
+        from app.engine.minute_trigger import build_minute_exit_reference
+
+        # 信号编码：ma_golden_cross 的卖出即 MA5/MA20 死叉（白名单内信号），
+        # 非信号日 -1 不参与反推（保持 NaN 降级）。
+        exit_code = np.where(signals.exit, 0, -1)
+        exit_refs = build_minute_exit_reference(
+            adjusted_matrix.close,
+            {
+                "ma5": enriched["ma5"],
+                "ma10": enriched["ma10"],
+                "ma20": enriched["ma20"],
+            },
+            exit_code,
+            ("signal_ma_dead_5_20",),
+        )
     result = simulate(
         adjusted_matrix,
         {s: signals.entry[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
@@ -368,10 +466,11 @@ def run_backtest(
             if signals.entry_ref is not None else None
         ),
         exit_refs=(
-            {s: signals.exit_ref[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
-            if signals.exit_ref is not None else None
+            {s: exit_refs[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
+            if exit_refs is not None else None
         ),
         minute_loader=minute_loader,
+        progress_cb=progress_cb,
     )
     stats = compute(result)
     # 净值曲线（逐日，叠加基准归一化到同一起点便于对比）
@@ -415,7 +514,15 @@ def run_backtest(
             "total_return": bm["total_return"],
             "excess_return": stats["total_return"] - bm["total_return"],
         }
+    # 结果扩展字段（2026-09-12 新增，向后兼容只加不改）：
+    # run_id / elapsed_ms / 分标的聚合 / 收益分布 / 按日交易明细 / 选择漏斗。
+    # 信号计数：strategy 产出的 entry/exit 信号矩阵 True 日总数（信号右移前口径）。
+    import numpy as np  # 局部导入：runner 主路径本不依赖 numpy，仅此处计信号数
+    n_entry_sig = int(np.count_nonzero(signals.entry))
+    n_exit_sig = int(np.count_nonzero(signals.exit))
     return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
         "stats": stats,
         "strategy": strategy_id,
         "symbols": symbols,
@@ -427,6 +534,12 @@ def run_backtest(
         # 分钟成交覆盖统计（阶段 H1）：used=走分钟口径笔数，fallback=降级日K 笔数
         "minute_fill_used": result.minute_fill_used,
         "minute_fill_fallback": result.minute_fill_fallback,
+        "per_symbol_stats": per_symbol_stats(result.trades, names=names),
+        "return_distribution": return_distribution(result.trades),
+        "daily_trade_rows": daily_trade_rows(
+            result.trades, result.equity_dates, result.equity,
+        ),
+        "selection_stats": selection_stats(n_entry_sig, n_exit_sig, len(result.trades)),
     }
 
 
@@ -476,7 +589,20 @@ def compute_empty() -> dict:
         "annual_volatility": 0.0, "sharpe": 0.0, "calmar": 0.0,
         "trades": 0, "win_rate": 0.0, "profit_loss_ratio": 0.0,
         "turnover": 0.0, "days": 0, "final_value": 0.0, "unadjusted": [],
+        "mc_maxdd_p50": None, "mc_maxdd_p95": None,
         "risk_free_rate": 0.0,
+    }
+
+
+def _result_ext_empty(t0: float) -> dict:
+    """空结果路径（无数据）的扩展字段骨架（与主返回同构，向后兼容只加不改）。"""
+    return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "per_symbol_stats": [],
+        "return_distribution": [],
+        "daily_trade_rows": [],
+        "selection_stats": selection_stats(0, 0, 0),
     }
 
 

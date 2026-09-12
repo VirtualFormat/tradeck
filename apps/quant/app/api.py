@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -30,7 +31,13 @@ from app.runner import (
 )
 from app.screener import screen
 from app.strategy import StrategyRegistry
-from app.worker import BacktestWorkerError, run_backtest_in_worker
+from app.tasks import UnknownTaskError, get_registry as get_task_registry
+from app.worker import (
+    BacktestCancelledError,
+    BacktestWorkerError,
+    CancelToken,
+    run_backtest_in_worker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +97,10 @@ def list_strategies(user_id: str = Depends(current_user_id)) -> list[dict]:
 
 
 class _SymbolRequest(BaseModel):
-    symbols: list[str] = Field(min_length=1, max_length=500)
+    symbols: list[str] | None = Field(default=None, max_length=500)
+    # symbols 为空（None）时按 universe 档位展开（默认 tracked 100 只）；
+    # symbols 非空时 universe 忽略（互斥，显式优先）。
+    universe: str | None = Field(default=None, pattern="^(tracked|cn|us|hk|all)$")
     start: date | None = None
     end: date | None = None
     params: dict[str, Any] = Field(default_factory=dict)
@@ -104,9 +114,14 @@ class ScreenRequest(_SymbolRequest):
 @app.post("/api/screen")
 def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)) -> dict:
     """选股：返回最新交易日截面入选标的（score 降序）。"""
+    from app.universe import resolve_universe
     reg = _registry(user_id)
     try:
-        res = screen(req.strategy_id, req.symbols, end_date=req.end,
+        symbols = resolve_universe(req.symbols, req.universe)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    try:
+        res = screen(req.strategy_id, symbols, end_date=req.end,
                      params=req.params or None, registry=reg)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -125,6 +140,8 @@ class BacktestRequest(_SymbolRequest):
     initial_capital: float = Field(default=1_000_000.0, gt=0)
     max_positions: int = Field(default=10, ge=1, le=100)
     commission_pct: float | None = Field(default=None, ge=0, le=0.01)  # 佣金率覆盖（小数）
+    stamp_tax_pct: float | None = Field(default=None, ge=0, le=0.01)  # 印花税率覆盖（小数）
+    slippage_bps: float | None = Field(default=None, ge=0, le=500)   # 滑点覆盖（bps）
     # 分钟口径（阶段 H1，透传 MatcherConfig）：minute_fill=信号成交日分钟K 优化成交价；
     # exit_fill 卖出成交价口径 open_t+1（默认）/ close_t / signal_next_minute（盘中触发）
     minute_fill: bool = False
@@ -135,22 +152,29 @@ class BacktestRequest(_SymbolRequest):
 async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user_id)) -> dict:
     """回测：数据→矩阵→复权→策略→撮合→统计（G4 起走 spawn 子进程池，主进程不崩）。"""
     from app.engine import MatcherConfig
+    from app.universe import resolve_universe
     reg = _registry(user_id)
     if req.strategy_id not in {s.strategy_id for s in reg.all()}:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
+    try:
+        symbols = resolve_universe(req.symbols, req.universe)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     cfg = MatcherConfig(
         initial_capital=req.initial_capital,
         max_positions=req.max_positions,
         commission_pct=req.commission_pct,
+        stamp_tax_pct=req.stamp_tax_pct,
+        slippage_bps=req.slippage_bps,
         minute_fill=req.minute_fill,
         exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
-    benchmark = await _fetch_benchmark(req.symbols, req.start, end)
-    names = await _fetch_names(req.symbols)
+    benchmark = await _fetch_benchmark(symbols, req.start, end)
+    names = await _fetch_names(symbols)
     try:
         return await run_backtest_in_worker(
-            req.symbols, req.strategy_id, req.start, end,
+            symbols, req.strategy_id, req.start, end,
             params=req.params or None, config=cfg, user_id=user_id, benchmark=benchmark,
             names=names,
         )
@@ -158,6 +182,129 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
         # 子进程失败 → 结构化错误（不 500；与全局优雅降级口径一致）
         logger.warning("回测 worker 失败：%s", e)
         return {"error": str(e), "stats": None, "trades": [], "equity_curve": []}
+
+
+# ---------------------------------------------------------------------------
+# 任务化回测 API（进度 / 停止 / 断线重连）
+#
+# 与 POST /api/backtest 的差异：同步版一次性等结果（连接挂住整个回测时长，
+# 断线即丢失）；任务版登记后立即返回 task_id，客户端轮询
+# GET /api/backtest/task/{id} 拿逐日进度与终态结果——任务存在进程内注册表
+# （app.tasks），脱离连接独立存活，掉线后重连轮询即可恢复（断线重连语义）；
+# 取消走 POST .../cancel（幂等，父进程 terminate 子进程，语义见 app.worker）。
+# ---------------------------------------------------------------------------
+
+
+async def _run_backtest_task(
+    task_id: str,
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None,
+    cfg,
+    user_id: str,
+    benchmark: dict | None,
+    names: dict[str, str] | None,
+) -> None:
+    """后台执行协程：跑 worker 池回测并把进度/终态写回任务注册表。"""
+    registry = get_task_registry()
+    token = CancelToken()
+    registry.attach_cancel_token(task_id, token)
+    registry.mark_running(task_id)
+    try:
+        result = await run_backtest_in_worker(
+            symbols, strategy_id, start, end,
+            params=params, config=cfg, user_id=user_id, benchmark=benchmark,
+            names=names,
+            progress_cb=lambda p: registry.set_progress(task_id, p),
+            cancel_token=token,
+        )
+    except BacktestCancelledError:
+        # cancel() 已把状态置为 cancelled（终态不可逆）；此分支是兜底
+        registry.mark_cancelled(task_id)
+    except BacktestWorkerError as e:
+        logger.warning("任务化回测 worker 失败（task=%s）：%s", task_id, e)
+        registry.mark_failed(task_id, str(e))
+    except Exception as e:  # 预拉等主进程侧异常同样结构化入终态，绝不泄漏到事件循环
+        logger.exception("任务化回测主流程异常（task=%s）", task_id)
+        registry.mark_failed(task_id, f"回测主流程异常：{e}")
+    else:
+        registry.mark_done(task_id, result)
+
+
+@app.post("/api/backtest/run", status_code=202)
+async def api_backtest_run(req: BacktestRequest,
+                           user_id: str = Depends(current_user_id)) -> dict:
+    """任务化回测：登记任务 + 后台跑 worker 池，立即返回 {"task_id"}。
+
+    预拉（benchmark/names/分钟K）在登记前完成（与同步版同口径：失败即 4xx/降级，
+    不留半成品任务）；真正的重计算在后台协程，客户端经 task 接口轮询。
+    """
+    from app.engine import MatcherConfig
+    from app.universe import resolve_universe
+    reg = _registry(user_id)
+    if req.strategy_id not in {s.strategy_id for s in reg.all()}:
+        raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
+    try:
+        symbols = resolve_universe(req.symbols, req.universe)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    cfg = MatcherConfig(
+        initial_capital=req.initial_capital,
+        max_positions=req.max_positions,
+        commission_pct=req.commission_pct,
+        stamp_tax_pct=req.stamp_tax_pct,
+        slippage_bps=req.slippage_bps,
+        minute_fill=req.minute_fill,
+        exit_fill=req.exit_fill,
+    )
+    end = req.end or date.today()
+    benchmark = await _fetch_benchmark(symbols, req.start, end)
+    names = await _fetch_names(symbols)
+    # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
+    # 与 run_backtest_async 同口径：分钟通路故障降级日K，不阻塞任务登记。
+    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+        from app.data.client_minute import get_minute_bars
+        try:
+            await get_minute_bars(symbols, req.start, end, use_cache=True)
+        except Exception as e:
+            logger.warning("任务化回测分钟K 预拉失败，分钟口径降级日K：%s", e)
+
+    registry = get_task_registry()
+    task = registry.create()
+    asyncio.create_task(
+        _run_backtest_task(
+            task.task_id, symbols, req.strategy_id, req.start, end,
+            req.params or None, cfg, user_id, benchmark, names,
+        )
+    )
+    return {"task_id": task.task_id}
+
+
+@app.get("/api/backtest/task/{task_id}")
+def api_backtest_task_poll(task_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    """轮询任务：{status, progress, result?, error?}（断线重连接口）。
+
+    pending/running 带最新逐日进度；done 带完整结果（与 POST /api/backtest
+    响应同结构）；failed 带结构化错误；任务不存在/TTL 过期 → 404。
+    """
+    try:
+        return get_task_registry().poll(task_id)
+    except UnknownTaskError:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在：{task_id!r}")
+
+
+@app.post("/api/backtest/task/{task_id}/cancel")
+def api_backtest_task_cancel(
+    task_id: str, user_id: str = Depends(current_user_id)
+) -> dict:
+    """幂等取消：终态任务返回现状（200）；运行中任务置取消标记并转 cancelled。"""
+    try:
+        task = get_task_registry().cancel(task_id)
+    except UnknownTaskError:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在：{task_id!r}")
+    return get_task_registry().snapshot(task)
 
 
 class AIGenerateRequest(BaseModel):
@@ -208,9 +355,14 @@ def api_mining_run(req: MiningRequest, user_id: str = Depends(current_user_id)) 
     """跑因子挖掘：返回因子 IC + 候选（不入库，入库由前端确认后调 candidates/save）。"""
     from datetime import timedelta
     from app.matrix import build, enrich
+    from app.universe import resolve_universe
     end = req.end or date.today()
     start = req.start or (end - timedelta(days=250))
-    matrix = build(req.symbols, start, end)
+    try:
+        symbols = resolve_universe(req.symbols, req.universe)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    matrix = build(symbols, start, end)
     if not matrix.dates:
         return {"candidates": [], "factor_ics": {}, "kept_factors": [], "error": "无缓存数据"}
     result = run_mining(enrich(matrix), horizon=req.horizon,

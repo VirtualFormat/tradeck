@@ -51,25 +51,45 @@ COST_HK = CostModel(commission_pct=0.0003, min_commission=0.0, stamp_tax_pct=0.0
 
 
 def _cost_of(symbol: str, commission_pct: float | None = None) -> CostModel:
-    """分市场成本模型；commission_pct 显式给出时覆盖默认佣金（其余成本项不变）。"""
+    """分市场成本模型；显式给出的成本项覆盖默认，未给出的沿用分市场默认。"""
     if symbol.endswith((".SH", ".SS", ".SZ", ".BJ")):
         base = COST_CN
     elif symbol.endswith(".HK"):
         base = COST_HK
     else:
         base = COST_US
-    if commission_pct is None:
+    return base
+
+
+def _cost_of_with_overrides(
+    symbol: str,
+    commission_pct: float | None = None,
+    stamp_tax_pct: float | None = None,
+    slippage_bps: float | None = None,
+) -> CostModel:
+    """分市场成本模型 + 可选覆盖（None 的项沿用分市场默认）。"""
+    base = _cost_of(symbol)
+    if commission_pct is None and stamp_tax_pct is None and slippage_bps is None:
         return base
     return CostModel(
-        commission_pct=commission_pct,
+        commission_pct=commission_pct if commission_pct is not None else base.commission_pct,
         min_commission=base.min_commission,
-        stamp_tax_pct=base.stamp_tax_pct,
-        slippage_bps=base.slippage_bps,
+        stamp_tax_pct=stamp_tax_pct if stamp_tax_pct is not None else base.stamp_tax_pct,
+        slippage_bps=slippage_bps if slippage_bps is not None else base.slippage_bps,
     )
 
 
 def _is_cn(symbol: str) -> bool:
     return symbol.endswith((".SH", ".SS", ".SZ", ".BJ"))
+
+
+# 风控类退出原因：触发后对该 symbol 置「冷却标记」，状态型 entry 信号须先出现
+# False（复位）再出现 True（沿）才允许重新开仓，防止止损/止盈平仓后次日被
+# 持续为 True 的状态型信号立即重新开仓（纯沿触发的 signal_fired 拦不住）。
+# signal/max_hold/end 退出不冷却：signal 退出后信号通常已复位，max_hold 是策略主动离场。
+_RISK_EXIT_REASONS = frozenset(
+    {"stop_loss", "trailing_stop", "trailing_take_profit", "take_profit"}
+)
 
 
 @dataclass
@@ -87,6 +107,8 @@ class MatcherConfig:
     initial_capital: float = 1_000_000.0
     max_positions: int = 10          # 最大同时持仓数
     commission_pct: float | None = None  # 佣金率覆盖（小数），None=用分市场默认
+    stamp_tax_pct: float | None = None   # 印花税率覆盖（小数），None=用分市场默认
+    slippage_bps: float | None = None    # 滑点覆盖（bps），None=用分市场默认
     t1: bool = True                  # CN T+1：当日买不可卖
     price_limit: bool = True         # CN 涨跌停不可成交
     lot_size: bool = True            # CN 整手 100 股
@@ -159,6 +181,8 @@ def simulate(
     entry_refs: dict[str, np.ndarray] | None = None,
     exit_refs: dict[str, np.ndarray] | None = None,
     minute_loader: MinuteLoader | None = None,
+    progress_cb=None,
+    progress_every: int = 1,
 ) -> SimResult:
     """组合撮合模拟：现金统一池，逐日先卖后买，等权分配。
 
@@ -171,6 +195,9 @@ def simulate(
     返回 None 自动降级日K 口径并计入 fallback 统计。
     names：symbol → 证券简称（键用 symbol 原样查找）。缺省 None 或缺失标的时
     按无名称降级——即一律按非 ST 分档（宁少拦 ST 不臆造），与历史行为兼容。
+    progress_cb：可选逐日进度回调，每 progress_every 天回调一次
+    {"day": i+1, "total": n, "date": "YYYY-MM-DD"}（末日必回调，口径与
+    minute_replay 的逐日回调一致）。None 时热循环零开销（不做任何事）。
     """
     names = names or {}
     entry_refs = entry_refs or {}
@@ -187,6 +214,9 @@ def simulate(
     cash = config.initial_capital
     positions: dict[str, dict] = {}
     trades: list[Trade] = []
+    # 状态型信号重触发防护：symbol → True 表示风控退出后处于冷却中，
+    # entry 信号须先复位（False）再触发（沿）才允许重新开仓。
+    cooldown: dict[str, bool] = {}
     equity_dates: list[date] = []
     equity: list[float] = []
     # entry/exit 分开计数（review P1 修复计数混淆）
@@ -270,6 +300,10 @@ def simulate(
         nonlocal minute_exit_used, minute_exit_fallback
         sig_i = i - 1 if config.exit_fill == "open_t+1" else i
         if minute_trigger_mode and reason == "signal":
+            if blocked_by_limit(i, j, "sell"):
+                # 当日跌停不可卖出：不成交，置 pending_exit 挂单次日重试
+                # （与「当日未盘中确认」同语义，由调用方统一置位）。
+                return daily_price, "daily", True
             marr = minute_arr_of(sym, i)
             if marr is None or len(marr) == 0:
                 minute_exit_fallback += 1
@@ -318,6 +352,15 @@ def simulate(
         return c >= hi - 1e-9 if side == "buy" else c <= lo + 1e-9
 
     for i in range(n):
+        # 冷却复位：entry 信号出现 False 视为信号复位（此后信号再转 True
+        # 即构成新的 False→True 沿，允许重新开仓）。取信号源当日值（右移口径
+        # 与 signal_fired 一致：open_t+1 成交日 i 生效的是 i-1 的信号）。
+        if cooldown:
+            sig_i = i - 1 if config.entry_fill == "open_t+1" else i
+            for sym in list(cooldown):
+                sig = entries.get(sym)
+                if sig is not None and sig_i >= 0 and not sig[sig_i]:
+                    del cooldown[sym]
         # 平仓（先卖后买，释放现金）
         for sym in list(positions):
             j = sym_idx[sym]
@@ -341,7 +384,7 @@ def simulate(
                 if np.isnan(px):
                     continue
                 value = pos["shares"] * px
-                cost = _cost_of(sym, config.commission_pct).sell_cost(value)
+                cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
                 cash += value - cost
                 pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
                 trades.append(Trade(
@@ -351,6 +394,8 @@ def simulate(
                     exit_reason=reason,
                 ))
                 del positions[sym]
+                if reason in _RISK_EXIT_REASONS:
+                    cooldown[sym] = True
                 continue
             ret_now = c / pos["entry_price"] - 1.0
             # 峰值跟踪：持仓期最高价（日K 口径用当日 high，缺失降级 close；
@@ -399,7 +444,10 @@ def simulate(
             # T+1：当日买入不可当日卖出（防御；open_t+1 口径下 entry_idx==i 不会出现）
             if config.t1 and _is_cn(sym) and pos["entry_idx"] == i:
                 continue
-            if blocked_by_limit(i, j, "sell"):
+            # 跌停拦截：minute_trigger 的 signal 卖出由 minute_exit_price 分支内部检查
+            # （跌停不成交 → 置 pending_exit 次日开盘强平）；其余退出路径维持原语义
+            # ——当日跳过、次日重新评估退出条件。
+            if not (minute_trigger_mode and reason == "signal") and blocked_by_limit(i, j, "sell"):
                 continue
             px, exit_mode, no_fill = minute_exit_price(i, j, sym, exit_price_of(i, j), reason)
             if no_fill:
@@ -411,7 +459,7 @@ def simulate(
             if np.isnan(px):
                 continue
             value = pos["shares"] * px
-            cost = _cost_of(sym, config.commission_pct).sell_cost(value)
+            cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
             cash += value - cost
             pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
             trades.append(Trade(
@@ -422,6 +470,8 @@ def simulate(
                 entry_fill_mode=pos["entry_fill_mode"], exit_fill_mode=exit_mode,
             ))
             del positions[sym]
+            if reason in _RISK_EXIT_REASONS:
+                cooldown[sym] = True
 
         # 开仓（等权：可用资金 / 剩余名额）
         slots = config.max_positions - len(positions)
@@ -430,6 +480,8 @@ def simulate(
             for j, sym in enumerate(symbols):
                 if sym in positions:
                     continue
+                if cooldown.get(sym):
+                    continue  # 风控退出冷却中：等信号复位后再沿触发
                 if not signal_fired(entries.get(sym), i, config.entry_fill):
                     continue
                 if np.isnan(entry_price_of(i, j)) or np.isnan(close[i, j]):
@@ -445,8 +497,11 @@ def simulate(
                 budget = cash / min(slots, len(candidates))
                 for j, px, entry_mode in candidates:
                     sym = symbols[j]
-                    # 预算含交易成本：按 (1 + 买入成本率) 预留 + 微小余量（防浮点边界满仓开不了仓）
-                    cost_rate = _cost_of(sym, config.commission_pct).buy_cost(1.0)
+                    # 预算含交易成本：按 (1 + 买入成本率) 预留 + 微小余量（防浮点边界满仓开不了仓）。
+                    # P1-3 修复：cost_rate 用 budget 量级估算而非 buy_cost(1.0)——
+                    # CN min_commission=5 元在 1 元名义值下 cost_rate=501%，
+                    # 小本金（initial_capital<1000）会被压到 alloc<=0 永远开不了仓。
+                    cost_rate = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).buy_cost(max(budget, 1.0)) / max(budget, 1.0)
                     alloc = min(budget, cash / (1.0 + cost_rate + 1e-9))
                     if alloc <= 0:
                         break
@@ -456,7 +511,7 @@ def simulate(
                         if shares <= 0:
                             continue
                     value = shares * px
-                    cost = _cost_of(sym, config.commission_pct).buy_cost(value)
+                    cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).buy_cost(value)
                     if value + cost > cash:
                         continue
                     cash -= value + cost
@@ -474,6 +529,9 @@ def simulate(
             pv += pos["shares"] * (c if not np.isnan(c) else pos["entry_price"])
         equity_dates.append(dates[i])
         equity.append(pv)
+        # 逐日进度回调（任务化回测 API 的进度条数据源；末日保证回调一次）
+        if progress_cb is not None and ((i + 1) % progress_every == 0 or i + 1 == n):
+            progress_cb({"day": i + 1, "total": n, "date": dates[i].isoformat()})
 
     # 期末强平（末日收盘价，计卖出成本；停牌到底按成本记，报告可见）
     last = n - 1
@@ -484,7 +542,7 @@ def simulate(
         if np.isnan(px):
             px = pos["entry_price"]
         value = pos["shares"] * px
-        cost = _cost_of(sym, config.commission_pct).sell_cost(value)
+        cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
         pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
         trades.append(Trade(
             symbol=sym, entry_date=pos["entry_date"], exit_date=dates[last],

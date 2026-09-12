@@ -8,8 +8,13 @@
   搬进本地缓冲）；拿到终态消息但子进程收尾慢则 terminate 后继续处理，不丢已送达结果。
 - 池大小 = QUANT_WORKER_POOL_SIZE（默认 1 = 串行）；asyncio.Semaphore 控制同时在跑的
   子进程数，回测同步计算用 asyncio.to_thread 推到线程，不阻塞事件循环。
-- 与参照的差异：不做 RSS 采样、不引 psutil；不实现主动取消（量化回测秒~分钟级，
-  结构化错误已保证主进程可感知）。
+- 主动取消（任务化回测 API）：任务化入口（api POST /api/backtest/run）传入
+  CancelToken；取消语义为父进程 terminate 子进程并抛 BacktestCancelledError
+  （spawn 子进程是独立解释器，进程内 cancel_event 协作式取消无法跨进程传递，
+  故不做「优雅中断保留部分结果」——与参照 tick-stock-panel 的 cancel_event 不同，
+  这里取消即整次回测作废）。子进程本身仍支持 cancel_event（走 run_backtest_async
+  → minute_replay 的逐日检查），但任务化路径未启用：跨进程传 Event 需 Manager/
+  共享对象，复杂度不抵收益（terminate 已满足停止语义）。
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import logging
 import multiprocessing as mp
 import os
 import queue
+import threading
 import traceback
 from contextlib import suppress
 from dataclasses import asdict
@@ -29,6 +35,26 @@ logger = logging.getLogger(__name__)
 
 class BacktestWorkerError(RuntimeError):
     """worker 子进程失败（异常/崩溃/超时未出结果）时抛出，调用方转成结构化错误响应。"""
+
+
+class BacktestCancelledError(RuntimeError):
+    """任务化回测被显式取消（父进程已 terminate 子进程）；区别于子进程自身失败。"""
+
+
+class CancelToken:
+    """跨线程取消令牌：任务注册表（事件循环线程）置位，worker 线程轮询消费。
+
+    threading.Event 语义的最小封装（set/is_set），名字对齐「取消」领域语义。
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
 
 
 # 子进程收尾超时：拿到终态消息后最多等 10s，否则 terminate（对齐参照口径）
@@ -99,13 +125,19 @@ def make_backtest_task(
 
 
 def _worker_entry(task: dict[str, Any], event_queue) -> None:
-    """子进程入口：跑回测，把 result/error 终态消息入队。"""
+    """子进程入口：跑回测，把 progress/result/error 消息入队。"""
     try:
         from app.runner import run_backtest, user_strategy_dirs
         from app.strategy import StrategyRegistry
 
         if task["kind"] != "backtest":
             raise ValueError(f"不支持的 worker 任务类型：{task['kind']}")
+        progress_enabled = bool(task.get("progress_enabled"))
+
+        def _forward_progress(payload: dict) -> None:
+            """子进程内逐日进度 → 跨进程 Queue（父进程桥接到任务注册表）。"""
+            event_queue.put({"type": "progress", "payload": payload})
+
         reg = StrategyRegistry(user_strategy_dirs(task.get("user_id")))
         config = _decode_config(task.get("config") or {})
         # 分钟口径（minute_fill / signal_next_minute）：子进程内从本地分钟缓存读
@@ -128,6 +160,7 @@ def _worker_entry(task: dict[str, Any], event_queue) -> None:
             benchmark=task.get("benchmark"),
             names=task.get("names"),
             minute_bars=minute_bars,
+            progress_cb=_forward_progress if progress_enabled else None,
         )
         result.setdefault("worker", {})["pid"] = os.getpid()
         event_queue.put({"type": "result", "payload": result})
@@ -173,20 +206,27 @@ class WorkerPool:
         self,
         task: dict[str, Any],
         progress_cb=None,
+        cancel_token: CancelToken | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """占用一个池位，在 spawn 子进程内跑任务并返回结果。
 
         子进程失败（异常/无结果退出）抛 BacktestWorkerError；timeout 触发时
-        terminate 子进程并抛 asyncio.TimeoutError。主进程绝不因子进程崩溃而崩。
+        terminate 子进程并抛 asyncio.TimeoutError。cancel_token 置位时 terminate
+        子进程并抛 BacktestCancelledError。主进程绝不因子进程崩溃而崩。
         """
         async with self._semaphore():
-            coro = asyncio.to_thread(self._run_sync, task, progress_cb)
+            coro = asyncio.to_thread(self._run_sync, task, progress_cb, cancel_token)
             if timeout is None:
                 return await coro
             return await asyncio.wait_for(coro, timeout)
 
-    def _run_sync(self, task: dict[str, Any], progress_cb) -> dict[str, Any]:
+    def _run_sync(
+        self,
+        task: dict[str, Any],
+        progress_cb,
+        cancel_token: CancelToken | None = None,
+    ) -> dict[str, Any]:
         """同步执行一个任务（在线程内调用；spawn + 队列收消息）。"""
         context = mp.get_context("spawn")
         events = context.Queue()
@@ -202,6 +242,12 @@ class WorkerPool:
         failure: dict[str, Any] | None = None
         try:
             while result is None and failure is None:
+                # 主动取消：terminate 子进程（跨进程无法传协作式 cancel_event，
+                # 取消即整次回测作废，语义见模块 docstring），干净清理后抛取消异常
+                if cancel_token is not None and cancel_token.is_set():
+                    process.terminate()
+                    process.join(timeout=5.0)
+                    raise BacktestCancelledError("回测任务已被取消")
                 try:
                     message = events.get(timeout=0.1)
                 except queue.Empty:
@@ -284,12 +330,22 @@ async def run_backtest_in_worker(
     user_id: str | None = None,
     benchmark: dict | None = None,
     names: dict[str, str] | None = None,
+    progress_cb=None,
+    cancel_token: CancelToken | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """在 worker 子进程内跑回测（含基准/名称透传，避免子进程再拉一次 data-api）。"""
+    """在 worker 子进程内跑回测（含基准/名称透传，避免子进程再拉一次 data-api）。
+
+    progress_cb：逐日进度回调（跨进程桥接：子进程逐日 progress 消息经 Queue
+    回父进程后调它）；为 None 时子进程不发 progress 消息（零开销，兼容旧调用）。
+    cancel_token：任务化取消（父进程 terminate 子进程语义，见模块 docstring）。
+    """
     task = make_backtest_task(
         symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
         names=names,
     )
     task["benchmark"] = benchmark
-    return await get_pool().run(task, timeout=timeout)
+    task["progress_enabled"] = progress_cb is not None
+    return await get_pool().run(
+        task, progress_cb=progress_cb, cancel_token=cancel_token, timeout=timeout,
+    )

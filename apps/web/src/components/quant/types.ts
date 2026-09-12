@@ -124,6 +124,9 @@ export interface BacktestStats {
   exit_stats?: Record<string, ExitStat> | null;
   unadjusted?: string[];
   risk_free_rate?: number | null;
+  /** 蒙特卡洛回撤分布（阶段 K4）：中位 / 95% 分位最大回撤，null 表示未模拟 */
+  mc_maxdd_p50?: number | null;
+  mc_maxdd_p95?: number | null;
 }
 
 export interface BacktestTrade {
@@ -163,6 +166,9 @@ export interface BacktestResult {
   strategy: string;
   symbols: string[];
   range: string[];
+  /** 任务化回测（阶段 K4）：任务 id 与耗时，旧响应缺省不展示 */
+  run_id?: string | null;
+  elapsed_ms?: number | null;
   unadjusted?: string[];
   trades?: BacktestTrade[];
   equity_curve?: EquityPoint[];
@@ -170,6 +176,95 @@ export interface BacktestResult {
   /** 分钟成交覆盖统计（阶段 H1）：走分钟口径笔数 / 分钟数据缺失降级日K 笔数 */
   minute_fill_used?: number | null;
   minute_fill_fallback?: number | null;
+  /** 按标的拆分的表现统计（选股分析 Tab） */
+  per_symbol_stats?: PerSymbolStat[];
+  /** 单笔收益分布直方图分桶（收益分布图） */
+  return_distribution?: ReturnDistBucket[];
+  /** 按日成交聚合（按日期 Tab） */
+  daily_trade_rows?: DailyTradeRow[];
+  /** 选股漏斗 / 成交约束统计，null 表示后端未提供 */
+  selection_stats?: SelectionStats | null;
+}
+
+/** 单标的表现统计（per_symbol_stats） */
+export interface PerSymbolStat {
+  symbol: string;
+  name?: string | null;
+  n_trades: number;
+  total_return: number | null;
+  win_rate: number | null;
+  /** 最佳 / 最差单笔收益率（小数） */
+  best: number | null;
+  worst: number | null;
+  total_pnl: number | null;
+}
+
+/** 收益分布直方图分桶（return_distribution，bucket 为小数区间） */
+export interface ReturnDistBucket {
+  bucket_start: number;
+  bucket_end: number;
+  /** 后端预格式化区间文案（如 "+2~+4%"） */
+  range?: string;
+  count: number;
+  /** 占比（0~1） */
+  ratio?: number;
+}
+
+/** 按日成交聚合行（daily_trade_rows） */
+export interface DailyTradeRow {
+  date: string;
+  buys: number;
+  sells: number;
+  realized_pnl: number | null;
+  cumulative_pnl: number | null; // 后端键名 cumulative_pnl（累计已实现盈亏）
+}
+
+/** 选股漏斗 / 成交约束统计（selection_stats，均为整数计数）。
+ * 后端当前只产出三个如实口径 key（执行层拦截待 matcher 计数器落地后扩展） */
+export interface SelectionStats {
+  signals_entry?: number | null;
+  signals_exit?: number | null;
+  filled_trades?: number | null;
+  [key: string]: number | null | undefined;
+}
+
+/** selection_stats 字段 → 中文文案（未知 key 原样展示） */
+export const SELECTION_STAT_LABELS: Record<string, string> = {
+  signals_entry: "买入信号",
+  signals_exit: "卖出信号",
+  filled_trades: "实际成交",
+};
+
+export function selectionStatLabel(key: string): string {
+  return SELECTION_STAT_LABELS[key] ?? key;
+}
+
+/* ---------- 任务化回测契约（阶段 K4） ---------- */
+
+/** POST /api/quant/backtest/run 响应 */
+export interface BacktestRunResponse {
+  task_id: string;
+}
+
+export type BacktestTaskStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface BacktestTaskProgress {
+  day: number;
+  total: number;
+  date?: string | null;
+}
+
+/** GET /api/quant/backtest/task/{id} 响应 */
+export interface BacktestTaskState {
+  status: BacktestTaskStatus;
+  progress?: BacktestTaskProgress | null;
+  result?: BacktestResult | null;
+  error?: string | null;
 }
 
 /** 卖出原因英文 key → 中文文案 */

@@ -220,6 +220,40 @@
 6. 用户因子四端贯通：编辑器创建的 DSL 因子能被挖掘目录发现（参与 IC/组合搜索）、
    被策略 scoring 引用（选股/回测可用）。
 
+## 阶段 L：回测结果视图对齐参照（2026-09-12，主 agent 总负责 + 3 子 agent 并行）
+
+目标：tradeck 回测结果视图向参照 tick-stock-panel 看齐（StrategyBacktest.tsx），
+本迭代范围：**进度条/停止/断线重连、收益分布图、按日期盈亏、选股分析、
+选择漏斗/成交约束、蒙卡回撤、耗时/run_id**。明确排除：K 线回放 modal、
+因子归因、全量模拟模式（后两者依赖参照独有的信号候选模型，另行评估）。
+
+| 任务 | 内容 | 写范围 | 执行 |
+|---|---|---|---|
+| L1 结果契约扩展 | per_symbol_stats / return_distribution / daily_trade_rows / selection_stats 聚合模块 + stats 蒙卡回撤（bootstrap 定 seed）+ runner 返回扩展（run_id/elapsed_ms） | `apps/quant/app/engine/result_stats.py`、`engine/stats.py`、`runner.py`、`tests/test_result_stats.py` | Locke |
+| L2 任务化回测 API | 任务注册表（pending→running→done/failed/cancelled + TTL）+ worker progress 协议接线 + matcher 逐日回调 + POST /api/backtest/run、GET task/{id}、POST task/{id}/cancel（原 POST /api/backtest 保留） | `apps/quant/app/tasks.py`、`worker.py`、`engine/matcher.py`、`api.py`、`tests/test_backtest_tasks.py` | Gauss |
+| L3 前端结果视图对齐 | types 契约补齐 + run/task 代理路由 + 结果视图重构（进度条/停止/重连、蒙卡卡、漏斗条、收益分布图 ui/chart、Tabs：交易明细/按日期/选股分析） | `apps/web/src/components/quant/**`、`apps/web/src/app/api/quant/backtest/**` | Galileo |
+
+验收门禁：独立 review agent 复核（对齐 K review 门禁模式），P0/P1 清零后合入。
+
+## 阶段 L review 明细（2026-09-12，Huygens 独立 review + 主 agent 修复）
+
+Review 结论：1 P0 + 2 P1 + 5 P2，已全部处置。
+
+- **[P0-1] 前后端契约字段名三处错位**（分布桶 bucket_start/end、cumulative_pnl、
+  selection_stats key、per_symbol name）——后端补数值区间字段+name 透出、
+  前端类型对齐真实三 key 并配中文映射；新增 test_result_wiring.py 10 用例
+  锁 schema（run_backtest 返回结构 + 端点行为），防再次静默漂移。
+- **[P1-2] 分钟频策略结果无 stats 致前端崩溃**——BacktestResultView 加
+  stats==null 守卫降级空态。
+- **[P1-3] 扩展字段无接线测试**——补 run_backtest schema 断言 5 条 +
+  任务端点行为断言 5 条（本仓库 starlette TestClient 对干净 app 挂起，
+  端点函数直调替代）。
+- **[P2-4~8]**：legacy 错误骨架识别（stats==null 不当成功渲染）、任务
+  poll/cancel 端点补 current_user_id 依赖；进度节流/分钟K 重复预拉/
+  直方图超界标注登记为后续优化（不阻塞）。
+
+验收：后端 154 用例全绿；前端 eslint 0 问题 + tsc 通过；UI 检查清单 grep 全绿。
+
 ## 中期可选（登记，不进当前排期）
 
 ## prod 部署记录（2026-09-11，主 agent）
@@ -857,6 +891,7 @@ Review 处置（2 项）：
 | J review 门禁 | ✅ 通过（修复后） | 3 P1 + 4 P2，无 P0 | 已处置 | **Epicurus 独立 review + 主 agent 修复验证全绿** | 2026-09-10 |
 | K web 集成收尾 + 运维加固（含 K5 测试目录 + K6 用户因子贯通扩展） | ✅ 验收通过 | 1 真实 bug（pending_exit） | 已处置 | **K1-K6 全绿 + 测试目录 83 用例** | 2026-09-10 |
 | K review 门禁 | ✅ 通过（修复后） | 2 P1 + 3 P2，无 P0 | 已处置 | **Anscombe 独立 review + 主 agent 修复验证全绿（84 用例）** | 2026-09-11 |
+| L 回测结果视图对齐参照 | ✅ 验收通过 | 1 P0 + 2 P1 | 已处置 | **Huygens 独立 review + 主 agent 修复验证全绿（154 用例 + eslint/tsc）** | 2026-09-12 |
 | I 研究严谨性（防泄漏+统计） | 未开始 | 无 | 无 | 无 | — |
 | J 因子编辑器 | 未开始 | 无 | 无 | 无 | — |
 | K web 集成收尾 + 运维加固 | 未开始 | 无 | 无 | 无 | — |

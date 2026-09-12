@@ -15,12 +15,55 @@
 - sortino：下行偏差取负收益样本的 ddof=0 标准差（相对自身均值的离散度），
   与「相对目标收益的下行偏差」口径不同，两种定义均常见，此处沿用前者。
 - 零波动保护：标准差为 0 时 sharpe/sortino 降级为 0.0（不输出 NaN/inf）。
+- 蒙特卡洛最大回撤（mc_maxdd_p50/p95，2026-09-12 新增，参照
+  tick-stock-panel engine.py _mc_drawdown_percentiles 口径）：
+  对日收益序列做 bootstrap 重排（有放回重抽样），每次重排算一条净值曲线的
+  最大回撤，取回撤分布的分位数——回答「仅因收益顺序运气，回撤能有多坏」。
+  p50 = 中位场景最大回撤；p95 = 95% 置信最坏场景（= 分布 5 分位，更负）。
+  固定种子保证可复现；日收益样本 <3 无统计意义，返回 None（对齐空口径）。
 """
 from __future__ import annotations
 
 import numpy as np
 
 from app.engine.matcher import SimResult
+
+
+# 蒙特卡洛回撤估计的模拟次数与种子（固定保证可复现/可测）
+_MC_N_SIMS = 1000
+_MC_SEED = 42
+
+
+def _mc_maxdd(rets: np.ndarray, n_sims: int = _MC_N_SIMS) -> tuple[float | None, float | None]:
+    """日收益序列的 bootstrap 最大回撤分位估计（p50 / p95 最坏场景）。
+
+    参照 tick-stock-panel _mc_drawdown_percentiles 口径（原实现对交易 pnl 重排，
+    本方差对日收益重排——口径差异在注释标注；语义同为「收益顺序运气对回撤的影响」）：
+    - 剔除 nan/inf；单日收益 clip 到 >= -99.99%（防御 cumprod 得非正净值）。
+    - 样本 <3 返回 (None, None)（无统计意义，与空骨架口径一致）。
+    - 内存护栏：samples/equity/peak/dd 各占 eff_sims*n*8B，控总单元 <= 2M。
+    - 固定种子（default_rng(_MC_SEED)）保证两次调用结果一致（可复现）。
+    """
+    rets = np.asarray(rets, dtype=float)
+    rets = rets[np.isfinite(rets)]  # 剔除 inf/nan，否则 cumprod 传播 nan
+    # 防御：单日收益 <= -100% 时 (1+r) <= 0 让 cumprod 符号翻转/得非正净值，回撤失真。
+    # 实际回测有止损不会发生；兜底 clip 到 -99.99% 保证 (1+r) 恒正。
+    rets = np.clip(rets, -0.9999, None)
+    n = len(rets)
+    if n < 3:
+        return None, None
+    # 内存护栏：samples/equity/peak/dd 各占 eff_sims*n*8B，控总单元 <= 2M（~64MB 峰值）
+    eff_sims = min(n_sims, max(200, 2_000_000 // n))
+    rng = np.random.default_rng(_MC_SEED)
+    samples = rng.choice(rets, size=(eff_sims, n), replace=True)
+    equity = np.cumprod(1.0 + samples, axis=1)
+    peak = np.maximum.accumulate(equity, axis=1)
+    dd = (equity - peak) / peak
+    maxdds = dd.min(axis=1)
+    return (
+        round(float(np.percentile(maxdds, 50)), 4),
+        round(float(np.percentile(maxdds, 5)), 4),
+    )
 
 
 def compute(result: SimResult) -> dict:
@@ -57,6 +100,8 @@ def compute(result: SimResult) -> dict:
     # 平均持仓天数（交易日）
     durations = [(t.exit_date - t.entry_date).days for t in result.trades]
     avg_hold_days = float(np.mean(durations)) if durations else 0.0
+    # 蒙特卡洛最大回撤（bootstrap 重排日收益，口径见模块 docstring）
+    mc_p50, mc_p95 = _mc_maxdd(rets)
     # 卖出归因：按 exit_reason 分组统计（胜率/平均盈亏/笔数/总盈亏）
     exit_breakdown: dict[str, dict] = {}
     for t in result.trades:
@@ -91,6 +136,8 @@ def compute(result: SimResult) -> dict:
         "turnover": float(turnover),
         "avg_hold_days": avg_hold_days,
         "exit_stats": exit_stats,
+        "mc_maxdd_p50": mc_p50,
+        "mc_maxdd_p95": mc_p95,
         "days": n_days,
         "final_value": float(equity[-1]),
         "unadjusted": result.unadjusted,
@@ -104,6 +151,7 @@ def _empty(result: SimResult) -> dict:
         "annual_volatility": 0.0, "sharpe": 0.0, "sortino": 0.0, "calmar": 0.0,
         "trades": len(result.trades), "win_rate": 0.0, "profit_loss_ratio": 0.0,
         "turnover": 0.0, "avg_hold_days": 0.0, "exit_stats": {},
+        "mc_maxdd_p50": None, "mc_maxdd_p95": None,
         "days": len(result.equity), "final_value": result.final_value,
         "unadjusted": result.unadjusted, "risk_free_rate": 0.0,
     }
