@@ -262,13 +262,16 @@ web → quant（QUANT_API_URL）正常。全部服务健康（tradb-openbb 已�
       处置：tradeck-openbb 停用（compose 加 legacy profile），tradb-openbb 启用（127.0.0.1:6900），
       端口冲突消除。tradeck 内嵌数据层（postgres/clickhouse/collector/data-api/openbb）整体
       加 legacy profile 退役，tradeck 默认启动集 = web + quant（commit 62cfd49）。
-- [ ] tradb 仓库补 instrument_names job 注册（registry.py + scheduler.py cron 07:00 UTC），
-      当前仅容器内手动跑了一次。
+- [x] ~~tradb 仓库补 instrument_names job 注册~~ → 2026-09-12 已完成（Herschel）：
+      job 文件纳入 git（与线上 md5 一致）、registry + scheduler 注册（cron 07:00 UTC）、
+      CI 构建 + VPS 部署，生产 `/api/system/data` 已含该 job（36 个 job 之一）。
+      commit 16b4214。
 - [x] ~~PG daily_prices 与冷层漂移~~ → 2026-09-12 复核：daily_kline job 正常双写 PG
       （prod daily_prices CN 1033 万行、max(date)=当日），部署时的空是一次性状态缺口
       （findb 冷层历史未回填 PG），非持续漂移。降级为「监控 daily_prices freshness」。
-- [ ] daily_prices freshness 监控：max(date) 落后于当日交易日即告警（防再次出现 PG 空了
-      没人发现）。
+- [x] ~~daily_prices freshness 监控~~ → 2026-09-12 复核：tradb `/api/system/data` 已有被动
+      freshness 监控（daily_prices 4 天阈值 + 前端轮询展示），够用不加重；顺带补了
+      instrument_master freshness 规则（此前 _TABLE_RULES 缺失）。commit 16b4214。
 
 ### 正式架构（2026-09-12 起生效）
 
