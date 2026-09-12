@@ -140,11 +140,24 @@ def deflated_sharpe_psr(
     skewness: float | None = None,
     kurtosis: float | None = None,
     expected_max_sharpe: float = 0.0,
+    n_trials: int | None = None,
+    variance_sharpes: float | None = None,
 ) -> float | None:
     """Deflated Sharpe（PSR 对 EM 校正）概率；参数不足或退化返回 None。
 
     PSR = Phi( (SR - SR*) * sqrt(n-1) / sqrt(1 - skew*SR + (kurt-1)/4 * SR^2) )
+
+    n_trials：多重试验次数 N（可选）。传入时按真实搜索空间估算
+    （折数 × beam_width × max_size，不去重——DSR 惩罚的是搜索强度）重算
+    expected_max_sharpe；须同时给 variance_sharpes（候选日化夏普的方差），
+    否则方差不足时按 0 处理（单次试验不校正）。未传 n_trials 时沿用传入的
+    expected_max_sharpe（向后兼容旧调用）。
     """
+    if n_trials is not None:
+        # 参数名遮蔽了模块级 expected_max_sharpe 函数，走 globals 显式引用
+        expected_max_sharpe = globals()["expected_max_sharpe"](
+            n_trials, variance_sharpes or 0.0
+        )
     if n_obs < 5 or not np.isfinite(sharpe):
         return None
     skewness = 0.0 if skewness is None else skewness

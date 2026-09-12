@@ -17,6 +17,7 @@ import unittest
 import numpy as np
 
 from app.mining.core import NestedValidationConfig, forward_returns, make_nested_folds
+from app.mining import runtime
 from app.mining.stats import (
     bh_fdr_qvalues,
     deflated_sharpe_psr,
@@ -196,6 +197,197 @@ class StatsGoldenTest(unittest.TestCase):
         # N 次试验 EM > 0 且随 N 增大
         self.assertGreater(expected_max_sharpe(10, 0.5), 0.0)
         self.assertGreater(expected_max_sharpe(100, 0.5), expected_max_sharpe(10, 0.5))
+
+
+class BacktestTopNOpenT1Test(unittest.TestCase):
+    """修复 1：挖掘轻量回测的 open_t+1 口径（与主引擎 entry/exit open_t+1 对齐）。
+
+    成交假设：T 日收盘后按因子分选股，T+1 开盘买入、T+2 开盘卖出（持有 1 个交易日），
+    日收益 = open[T+2]/open[T+1] - 1，与 close 序列无关；T+1/T+2 越界或开盘价缺失跳过。
+    """
+
+    def _prices(self) -> tuple[np.ndarray, np.ndarray]:
+        # 2 只标的 × 7 天；open 与 close 取完全不同的数值，若口径写错（用了 close）
+        # 断言值会立刻对不上
+        open_ = np.array(
+            [
+                [100.0, 200.0],
+                [101.0, 199.0],
+                [102.0, 198.0],
+                [103.0, 197.0],
+                [110.0, 180.0],  # t=4
+                [121.0, 162.0],  # t=5：信号 t=3 的卖出日（110→121 = +10%）
+                [133.1, 145.8],  # t=6
+            ]
+        )
+        close = open_ * 1.111  # close 与 open 无重叠取值
+        return open_, close
+
+    def test_returns_use_open_t1_to_open_t2(self) -> None:
+        open_, _ = self._prices()
+        # 因子分恒为 sym0 > sym1（top_n=1 只买 sym0）
+        score = np.tile(np.array([2.0, 1.0]), (7, 1))
+        sharpe, total, max_dd, trades, eq = runtime._backtest_top_n(score, open_, top_n=1)
+        # 有效信号日 t=0..4（t+2<=6），收益 = open[t+2,0]/open[t+1,0]-1
+        expected = np.array(
+            [open_[t + 2, 0] / open_[t + 1, 0] - 1.0 for t in range(5)]
+        )
+        self.assertEqual(len(eq), 5)
+        np.testing.assert_allclose(eq, expected, rtol=1e-12, atol=0)
+        # 若错用 close[t]→close[t+1] 口径，数值必然不同（close 为 open×1.111 的错位序列）
+        wrong_close = np.array(
+            [(open_[t + 1, 0] * 1.111) / (open_[t, 0] * 1.111) - 1.0 for t in range(5)]
+        )
+        self.assertFalse(np.allclose(eq, wrong_close, rtol=1e-9))
+
+    def test_boundary_skips_missing_t2(self) -> None:
+        open_, _ = self._prices()
+        # 只有末 3 天有信号 → t=4 成交（t+1=5, t+2=6），t=5/6 越界跳过
+        score = np.full((7, 2), np.nan)
+        score[4:] = np.array([[2.0, 1.0]])
+        _, _, _, _, eq = runtime._backtest_top_n(score, open_, top_n=1)
+        expected = open_[6, 0] / open_[5, 0] - 1.0
+        self.assertEqual(len(eq), 1)  # 仅 t=4 一个信号日可完成买卖
+        self.assertAlmostEqual(eq[0], expected, places=12)
+
+    def test_nan_open_day_skipped(self) -> None:
+        open_, _ = self._prices()
+        # t=1 信号日的买入开盘价（t+1=2）缺失 → 该信号日跳过
+        open_[2, 0] = np.nan
+        score = np.tile(np.array([2.0, 1.0]), (7, 1))
+        _, _, _, _, eq = runtime._backtest_top_n(score, open_, top_n=1)
+        # t=0 卖出日 open[2] NaN 也跳过；剩余 t=2,3,4 三个有效信号日
+        expected = np.array(
+            [open_[t + 2, 0] / open_[t + 1, 0] - 1.0 for t in (2, 3, 4)]
+        )
+        self.assertEqual(len(eq), 3)
+        np.testing.assert_allclose(eq, expected, rtol=1e-12, atol=0)
+
+
+class DsrNTrialsTest(unittest.TestCase):
+    """修复 2：DSR 的 N = 折数 × beam_width × max_size（真实搜索空间），
+    不再用外层去重候选数（系统性低估 N → DSR 偏高）。"""
+
+    def test_n_trials_counts_search_space(self) -> None:
+        beam_width, max_size = 16, 4
+        n_days, n_syms = 31, 6
+        dates = list(range(n_days))  # 仅占位，MiningRunResult 不校验日期
+        open_ = np.linspace(100.0, 130.0, n_days * n_syms).reshape(n_days, n_syms)
+        close = open_ * 1.01
+        volume = np.full((n_days, n_syms), 1e6)
+        from app.matrix.market import MarketMatrix
+        from app.mining.core import NestedFold, ValidationFold
+
+        matrix = MarketMatrix(
+            dates=dates, symbols=[f"S{i}" for i in range(n_syms)],
+            open=open_, high=open_, low=open_, close=close,
+            volume=volume, amount=volume,
+        )
+        enriched = runtime.EnrichedMatrix(base=matrix, indicators={})
+
+        # mock 折生成：自适应窗口的 purge 下限 30 在 30 天小数据上切不出真实折，
+        # 这里测的是 n_trials 口径而非折结构（结构由 NestedFoldsStructureTest 覆盖）
+        folds = [
+            NestedFold(
+                outer=ValidationFold(
+                    level="outer", outer_index=0, inner_index=None,
+                    train_start=0, train_end=12,
+                    test_start=14, test_end=24, embargo_end=25,
+                ),
+                inner=[],
+            ),
+            NestedFold(
+                outer=ValidationFold(
+                    level="outer", outer_index=1, inner_index=None,
+                    train_start=6, train_end=18,
+                    test_start=20, test_end=30, embargo_end=31,
+                ),
+                inner=[],
+            ),
+        ]
+        n_folds = len(folds)
+        self.assertGreaterEqual(n_folds, 1)
+
+        combo = ("f_a", "f_b")
+        dirs = {"f_a": 1, "f_b": -1}
+        rng = np.random.default_rng(1)
+        factors = {
+            "f_a": rng.normal(size=(n_days, n_syms)),
+            "f_b": rng.normal(size=(n_days, n_syms)),
+        }
+        fwd = forward_returns(close, 5)
+        expected_trials = n_folds * beam_width * max_size
+
+        captured: dict = {}
+        real_psr = runtime.stats.deflated_sharpe_psr
+
+        def spy(*args, **kwargs):
+            captured["n_trials"] = kwargs.get("n_trials")
+            return real_psr(*args, **kwargs)
+
+        def fake_select(nested, _factors, _fwd, _max_size, _beam_width):
+            self.assertEqual(_beam_width, beam_width)
+            self.assertEqual(_max_size, max_size)
+            return combo, dirs, list(combo), [], beam_width * max_size
+
+        def fake_combine(subset, _combo, _dirs):
+            # 截面有区分度的确定分数（保证 _backtest_top_n 能选出 top_n）
+            shape = next(iter(subset.values())).shape
+            base_score = np.arange(shape[1], dtype=float)
+            return np.tile(base_score, (shape[0], 1))
+
+        orig_select = runtime._select_combo_inner
+        orig_catalog = runtime.factor_catalog
+        orig_forward = runtime.core.forward_returns
+        orig_combine = runtime.core.combine_factors
+        orig_psr = runtime.stats.deflated_sharpe_psr
+        orig_cfg = runtime._auto_validation_config
+        orig_folds = runtime.core.make_nested_folds
+        try:
+            runtime._select_combo_inner = fake_select
+            runtime.factor_catalog = lambda enriched, user_id=None: factors
+            runtime.core.forward_returns = lambda close, horizon: fwd
+            runtime.core.combine_factors = fake_combine
+            runtime.stats.deflated_sharpe_psr = spy
+            runtime._auto_validation_config = lambda *a, **k: None
+            runtime.core.make_nested_folds = lambda n, cfg: folds
+            result = runtime.run_mining(
+                enriched, horizon=5, max_size=max_size,
+                beam_width=beam_width, n_outer=3, top_n=2,
+            )
+        finally:
+            runtime._select_combo_inner = orig_select
+            runtime.factor_catalog = orig_catalog
+            runtime.core.forward_returns = orig_forward
+            runtime.core.combine_factors = orig_combine
+            runtime.stats.deflated_sharpe_psr = orig_psr
+            runtime._auto_validation_config = orig_cfg
+            runtime.core.make_nested_folds = orig_folds
+
+        # 传入 deflated_sharpe_psr 的 n_trials = 折数 × beam_width × max_size
+        self.assertEqual(captured.get("n_trials"), expected_trials)
+        self.assertEqual(result.n_trials, expected_trials)
+        # 与旧口径（外层去重候选数）的数量级差异：候选只有 1 个去重组合
+        self.assertEqual(len(result.candidates), 1)
+        self.assertGreater(result.n_trials, 10 * len(result.candidates))
+        self.assertIn(str(expected_trials), result.dsr_note)
+
+    def test_deflated_sharpe_psr_n_trials_param(self) -> None:
+        # n_trials 显式传入时按真实搜索空间重算 EM：N 越大惩罚越重、DSR 越低
+        var = 0.01
+        dsr_small = deflated_sharpe_psr(
+            0.05, 100, n_trials=3, variance_sharpes=var
+        )
+        dsr_large = deflated_sharpe_psr(
+            0.05, 100, n_trials=192, variance_sharpes=var
+        )
+        self.assertIsNotNone(dsr_small)
+        self.assertIsNotNone(dsr_large)
+        self.assertLess(dsr_large, dsr_small)
+        # 与直接传 EM 的旧调用等价（向后兼容）
+        em = expected_max_sharpe(192, var)
+        dsr_legacy = deflated_sharpe_psr(0.05, 100, expected_max_sharpe=em)
+        self.assertAlmostEqual(dsr_large, dsr_legacy, places=12)
 
 
 if __name__ == "__main__":

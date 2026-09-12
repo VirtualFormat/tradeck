@@ -46,7 +46,8 @@ class MiningRunResult:
     # 统计检验（I2）：因子 IC 的 NW t / p 值与 BH-FDR q 值；各候选的 DSR 通缩夏普
     factor_ic_stats: dict[str, dict] | None = None
     candidate_dsr: dict[str, float | None] | None = None
-    n_trials: int = 0  # 外层评估的候选试验总数（DSR 的 N）
+    n_trials: int = 0  # DSR 的 N：内层候选评估总次数（有效折数 × beam_width × max_size，不去重）
+    dsr_note: str = ""  # DSR 的 N 口径说明（前端展示用）
 
 
 def _slice(arr: np.ndarray, start: int, end: int) -> np.ndarray:
@@ -54,39 +55,44 @@ def _slice(arr: np.ndarray, start: int, end: int) -> np.ndarray:
 
 
 def _backtest_top_n(
-    factor_score: np.ndarray, close: np.ndarray, top_n: int = 5
+    factor_score: np.ndarray, open_: np.ndarray, top_n: int = 5
 ) -> tuple[float, float, float, int, np.ndarray]:
-    """极简多头回测：每日持因子分最高的 top_n 只（等权），
-    返回 (夏普, 总收益, 最大回撤, 交易数, 日收益序列)。
+    """极简多头回测：每日按 T 日因子分选 top_n 只（等权），T+1 开盘买入、
+    T+2 开盘卖出（持有 1 个交易日），返回 (夏普, 总收益, 最大回撤, 交易数, 日收益序列)。
 
-    这是样本外评估的轻量口径（不跑完整撮合，用日收益近似），用于挖掘期快速比较。
+    成交口径与主回测引擎（engine/matcher.py 默认 entry_fill/exit_fill="open_t+1"）
+    对齐：信号在 T 日收盘后产生，次日开盘成交——挖掘晋级门槛
+    （GATE_MIN_OOS_SHARPE 直接用本函数输出）与发布策略的主回测不再系统性偏移。
+    保持轻量：不跑完整撮合，只改价格取值点；open 与 close 同口径（复权矩阵）。
+    边界：T+1/T+2 超出数据范围或开盘价缺失时跳过该信号日。
     交易数 = 调仓次数（每日换手持仓数变化）。日收益序列用于 DSR 的矩与观测数。
     """
     n_days, n_syms = factor_score.shape
-    ret = np.full(close.shape, np.nan)
-    ret[1:] = np.where(
-        np.isnan(close[1:]) | np.isnan(close[:-1]), np.nan, close[1:] / close[:-1] - 1.0
-    )
-    daily_port = []
+    daily_port: list[float] = []
     trades = 0
     prev_holdings: set[int] = set()
     for t in range(n_days):
+        if t + 2 >= n_days:  # T+1/T+2 无开盘数据 → 信号无法成交/了结，跳过
+            break
         row = factor_score[t]
         valid = ~np.isnan(row)
         if valid.sum() < top_n:
-            daily_port.append(np.nan)
             continue
         top_idx = np.argsort(np.where(valid, row, -np.inf))[-top_n:]
         holdings = set(int(i) for i in top_idx)
         trades += len(holdings.symmetric_difference(prev_holdings))
         prev_holdings = holdings
-        vals = ret[t, list(holdings)] if holdings else np.array([])
-        valid_vals = vals[~np.isnan(vals)]
-        day_ret = float(valid_vals.mean()) if valid_vals.size else np.nan
+        idx = list(holdings)
+        entry = open_[t + 1, idx]
+        exit_ = open_[t + 2, idx]
+        tradable = ~(np.isnan(entry) | np.isnan(exit_))
+        if not tradable.any():
+            continue
+        day_ret = float(np.mean(exit_[tradable] / entry[tradable] - 1.0))
         daily_port.append(day_ret)
-    eq = np.array([r for r in daily_port if not np.isnan(r)])
+    eq = np.array(daily_port)
     if len(eq) < 5:
-        return np.nan, 0.0, 0.0, 0, eq
+        return np.nan, 0.0, 0.0, trades, eq
     sharpe = float(eq.mean() / eq.std() * np.sqrt(252)) if eq.std() > 0 else 0.0
     total = float((1 + eq).prod() - 1)
     curve = np.cumprod(1 + eq)
@@ -115,12 +121,14 @@ def _select_combo_inner(
     fwd: np.ndarray,
     max_size: int,
     beam_width: int,
-) -> tuple[tuple[str, ...], dict[str, int], list[str], list[tuple[str, str]]] | None:
+) -> (
+    tuple[tuple[str, ...], dict[str, int], list[str], list[tuple[str, str]], int] | None
+):
     """内层调参：在外层折的各内层折（outer train 内滚动，purge/embargo 隔离）里
     去重 + beam 搜索，按内层测试段 |IC| 均值选定最优组合及其方向。
 
-    返回 (组合, 方向, 去重后保留因子, 去重剔除记录)；选不定（因子不足/无有效组合）
-    返回 None，调用方跳过该外层折。
+    返回 (组合, 方向, 去重后保留因子, 去重剔除记录, 本折搜索试验数)；
+    选不定（因子不足/无有效组合）返回 None，调用方跳过该外层折。
     """
     # 防御：单折调参无法形成有效的样本外比较（make_nested_folds 已按 <2 跳过，
     # 这里再兜一层，防止调用方绕过折生成直接构造 NestedFold）
@@ -156,6 +164,8 @@ def _select_combo_inner(
         return None
     # 内层评估预算：只在 top 候选上比内层测试段 IC（控成本）
     pool = combos[:8]
+    # DSR 试验计数：beam 搜索每层扩展 beam_width 条路径、共 max_size 层
+    n_evaluations = beam_width * max_size
     best_combo: tuple[str, ...] | None = None
     best_score = -np.inf
     for combo, _ in pool:
@@ -177,7 +187,7 @@ def _select_combo_inner(
                 best_combo = combo
     if best_combo is None:
         return None
-    return best_combo, {n: train_dirs[n] for n in best_combo}, kept, dropped
+    return best_combo, {n: train_dirs[n] for n in best_combo}, kept, dropped, n_evaluations
 
 
 def _auto_validation_config(
@@ -226,6 +236,7 @@ def run_mining(
     缺省 None 仅内置 14 因子。
     """
     close = enriched.base.close
+    open_ = enriched.base.open
     n_days = close.shape[0]
     factors = factor_catalog(enriched, user_id=user_id)
     fwd = core.forward_returns(close, horizon)
@@ -261,18 +272,21 @@ def run_mining(
         return MiningRunResult(
             0, [], [], full_ics, [], 0,
             factor_ic_stats=factor_ic_stats, candidate_dsr={}, n_trials=0,
+            dsr_note="",
         )
 
     # 3. 每个外层折：内层调参选定组合 → 外层测试段独立评估
     by_combo: dict[tuple[str, ...], core.CandidateResult] = {}
     kept_counts: dict[str, int] = {}
     dropped_counts: dict[tuple[str, str], int] = {}
+    n_trials = 0
     for k, nested in enumerate(folds):
         selected = _select_combo_inner(nested, factors, fwd, max_size, beam_width)
         if selected is None:
             logger.warning("外层折 %d 内层调参无有效组合，跳过", k)
             continue
-        combo, dirs, kept_k, dropped_k = selected
+        combo, dirs, kept_k, dropped_k, n_evals = selected
+        n_trials += n_evals
         for n in kept_k:
             kept_counts[n] = kept_counts.get(n, 0) + 1
         for pair in dropped_k:
@@ -282,9 +296,9 @@ def run_mining(
             {n: factors[n][outer.test_start:outer.test_end] for n in combo},
             combo, dirs,
         )
-        test_close = _slice(close, outer.test_start, outer.test_end)
+        test_open = _slice(open_, outer.test_start, outer.test_end)
         sharpe, total, max_dd, trades, daily = _backtest_top_n(
-            test_score, test_close, top_n
+            test_score, test_open, top_n
         )
         if np.isnan(sharpe):
             continue
@@ -307,18 +321,32 @@ def run_mining(
     dropped = sorted(dropped_counts, key=lambda p: (-dropped_counts[p], p))
 
     # 4. DSR 通缩夏普：候选样本外夏普对多重试验校正
-    # N 口径说明（review P1-4）：这里取窄口径——外层评估的去重候选数
-    # （各折内层独立选出的不同组合数）。真实搜索空间是各折内层 beam 池
-    # （每折约 beam_width 条路径 × max_size 层 × 折数），远大于此。
-    # 因此 N 被低估、DSR 偏乐观，仅为近似的多重检验通缩，不是严格的多重检验校正；
-    # 解读 DSR 结果时需知悉该口径偏差（低估 N → expected_max_sharpe 偏低 → DSR 偏高）。
-    n_trials = max(len(results), 1)
+    # N 口径：真实搜索空间——各折内层 beam 池的候选评估总次数
+    # （折数 × beam_width × max_size，不去重：DSR 惩罚的是搜索强度，
+    # 重复评估同一候选也算一次试验）。原口径 max(去重候选数, 1) 系统性低估 N，
+    # 导致 expected_max_sharpe 偏低、DSR 偏高，已修正。
+    n_trials = max(n_trials, 1)
+    dsr_note = (
+        f"DSR 的 N 为真实搜索空间估算：折数 × beam_width × max_size "
+        f"（本次 N={n_trials}，不去重——DSR 惩罚的是搜索强度）；"
+        f"样本外回测为 open_t+1 口径（T 日信号、T+1 开盘买入、T+2 开盘卖出），"
+        f"与主回测引擎一致。"
+    )
     sharpes = [
         c.oos_sharpe / np.sqrt(252)  # 日化夏普（DSR 矩口径与收益频率一致）
         for c in results if not np.isnan(c.oos_sharpe)
     ]
+    # P1-1 修复：var_sr 与 n_trials 口径对齐。n_trials 是不去重的搜索强度
+    #（折数 × beam × max_size），var_sr 若只取外层去重候选的方差，当全部折收敛到
+    # 同一组合时 len(sharpes)==1 → var_sr=0 → expected_max_sharpe=0，DSR 退化成
+    # 裸 PSR（多重试验校正完全失效）——恰是最该惩罚的场景。
+    # 修法：var_sr==0 且 n_trials>1 时用保守下界（单候选夏普绝对值的 1% 作为
+    # 最小方差，保证 expected_max_sharpe > 0，DSR 仍有惩罚力）。
     var_sr = float(np.var(sharpes, ddof=1)) if len(sharpes) >= 2 else 0.0
-    em = stats.expected_max_sharpe(n_trials, var_sr)
+    if var_sr == 0.0 and n_trials > 1 and sharpes:
+        # 保守下界：用单候选日化夏普绝对值的 1% 作为方差下界
+        # （夏普典型量级 0.01~0.1/日，1% 方差 ≈ std 为夏普值的 10%，是合理保守假设）
+        var_sr = max(abs(sharpes[0]) * 0.01, 1e-8)
     candidate_dsr: dict[str, float | None] = {}
     for c in results:
         if np.isnan(c.oos_sharpe) or not c.folds:
@@ -332,14 +360,14 @@ def run_mining(
             sr_daily, n_obs,
             skewness=float(np.mean(skew_vals)) if skew_vals else None,
             kurtosis=float(np.mean(kurt_vals)) if kurt_vals else None,
-            expected_max_sharpe=em,
+            n_trials=n_trials, variance_sharpes=var_sr,
         )
 
     return MiningRunResult(
         n_factors=len(factors), kept_factors=kept, dropped=dropped,
         factor_ics=full_ics, candidates=results, n_folds=len(folds),
         factor_ic_stats=factor_ic_stats, candidate_dsr=candidate_dsr,
-        n_trials=n_trials,
+        n_trials=n_trials, dsr_note=dsr_note,
     )
 
 
