@@ -23,6 +23,10 @@ export interface StrategyDef {
   params: StrategyParam[];
   stop_loss?: number | null;
   max_hold_days?: number | null;
+  /** META 只读定义（策略定义速览面板展示）：scoring 权重 / order_by / limit */
+  scoring?: Record<string, number> | null;
+  order_by?: string | null;
+  limit?: number | null;
 }
 
 /** 参数表单值统一用字符串承载（bool 用 "true"/"false"），提交前再转回原生类型 */
@@ -140,6 +144,9 @@ export interface BacktestTrade {
   ret: number | null;
   hold_days: number | null;
   exit_reason: string | null;
+  /** 标的名称与开仓仓位占比（阶段 M，可选，后端缺省不展示） */
+  name?: string | null;
+  position_pct?: number | null;
   /** 成交口径标注（阶段 H1 分钟口径）：daily / minute_ref / minute_vwap /
    *  minute_close / minute_trigger；旧响应缺省视为 daily */
   entry_fill_mode?: string | null;
@@ -184,6 +191,8 @@ export interface BacktestResult {
   daily_trade_rows?: DailyTradeRow[];
   /** 选股漏斗 / 成交约束统计，null 表示后端未提供 */
   selection_stats?: SelectionStats | null;
+  /** 执行层拦截 / 跳过计数（阶段 M，有值才渲染成交约束条） */
+  execution_stats?: ExecutionStats | null;
 }
 
 /** 单标的表现统计（per_symbol_stats） */
@@ -220,7 +229,7 @@ export interface DailyTradeRow {
 }
 
 /** 选股漏斗 / 成交约束统计（selection_stats，均为整数计数）。
- * 后端当前只产出三个如实口径 key（执行层拦截待 matcher 计数器落地后扩展） */
+ * 阶段 M：扩展执行层拦截计数（涨停拦截 / 满仓跳过 / 现金不足 / 冷却跳过等） */
 export interface SelectionStats {
   signals_entry?: number | null;
   signals_exit?: number | null;
@@ -233,11 +242,32 @@ export const SELECTION_STAT_LABELS: Record<string, string> = {
   signals_entry: "买入信号",
   signals_exit: "卖出信号",
   filled_trades: "实际成交",
+  blocked_buy_limit: "涨停拦截买入",
+  blocked_sell_limit: "跌停拦截卖出",
+  skipped_max_positions: "满仓跳过",
+  skipped_no_cash: "现金不足",
+  skipped_cooldown: "冷却跳过",
 };
 
 export function selectionStatLabel(key: string): string {
   return SELECTION_STAT_LABELS[key] ?? key;
 }
+
+/** 执行层拦截 / 跳过计数键（selection_stats 内独立分组渲染，文案同 SELECTION_STAT_LABELS） */
+export const EXECUTION_STAT_KEYS = [
+  "blocked_buy_limit",
+  "blocked_sell_limit",
+  "skipped_max_positions",
+  "skipped_no_cash",
+  "skipped_cooldown",
+] as const;
+
+export function isExecutionStatKey(key: string): boolean {
+  return (EXECUTION_STAT_KEYS as readonly string[]).includes(key);
+}
+
+/** 成交约束计数（result.execution_stats，Record<string, number> 扩展宽松键） */
+export type ExecutionStats = Record<string, number>;
 
 /* ---------- 任务化回测契约（阶段 K4） ---------- */
 
@@ -307,4 +337,97 @@ export function fillModeLabel(mode: string | null | undefined): string {
 /** 是否为分钟口径（非 daily 标注），用于 Badge 高亮区分 */
 export function isMinuteFillMode(mode: string | null | undefined): boolean {
   return !!mode && mode !== "daily";
+}
+
+/* ---------- 参数优化契约（POST /api/quant/optimize，阶段 M3） ---------- */
+
+/** 优化目标请求值（BacktestStats 同名键 → 后端直接取统计字段） */
+export const OBJECTIVE_OPTIONS: { value: string; label: string }[] = [
+  { value: "total_return", label: "总收益" },
+  { value: "annual_return", label: "年化" },
+  { value: "sharpe", label: "夏普" },
+  { value: "sortino", label: "索提诺" },
+  { value: "calmar", label: "卡玛" },
+  { value: "win_rate", label: "胜率" },
+  { value: "profit_loss_ratio", label: "盈亏比" },
+  { value: "max_drawdown", label: "最大回撤" },
+];
+
+export function objectiveLabel(objective: string): string {
+  return (
+    OBJECTIVE_OPTIONS.find((o) => o.value === objective)?.label ?? objective
+  );
+}
+
+/** 单个参数网格：min/max/step 区间，或显式值数组 */
+export type ParamGridRange = { min?: number; max?: number; step?: number };
+
+/** 优化结果行（results 数组，附带回测统计的宽松键） */
+export interface OptimizeResultRow {
+  params: Record<string, unknown>;
+  objective_raw: number | null;
+  rank: number;
+  total_return?: number | null;
+  sharpe?: number | null;
+  max_drawdown?: number | null;
+  trades?: number | null;
+  [key: string]: unknown;
+}
+
+export interface OptimizeResult {
+  best_params: Record<string, unknown> | null;
+  best_score: number | null;
+  n_combinations: number;
+  n_completed: number;
+  n_errors: number;
+  results: OptimizeResultRow[];
+  elapsed_ms: number | null;
+}
+
+/** 排名表最多展示行数 */
+export const OPTIMIZE_TABLE_MAX_ROWS = 50;
+
+/* ---------- 步进优化契约（POST /api/quant/walkforward，阶段 M3） ---------- */
+
+/** 每折明细（train/test 区间 + 该折最优参数 + 样本外指标，宽松键向后兼容） */
+export interface WalkforwardFold {
+  train_start?: string | null;
+  train_end?: string | null;
+  test_start?: string | null;
+  test_end?: string | null;
+  best_params?: Record<string, unknown> | null;
+  oos_total_return?: number | null;
+  oos_sharpe?: number | null;
+  /** 该折 OOS 是否较 IS 退化（true=过拟合信号） */
+  oos_degraded?: boolean | null;
+  [key: string]: unknown;
+}
+
+/** 折明细的样本外收益 / 夏普取值（后端扁平键 oos_total_return/oos_sharpe，
+ * 阶段 M review P0-2 收敛为单一形态，不做臆测回退） */
+export function foldOosReturn(fold: WalkforwardFold): number | null {
+  return fold.oos_total_return ?? null;
+}
+
+export function foldOosSharpe(fold: WalkforwardFold): number | null {
+  return fold.oos_sharpe ?? null;
+}
+
+export function foldParams(fold: WalkforwardFold): Record<string, unknown> {
+  return fold.best_params ?? {};
+}
+
+export interface WalkforwardResult {
+  compounded_oos_return: number | null;
+  n_folds: number;
+  n_planned_folds: number;
+  /** 折叠失败跳过的折（含原因） */
+  n_skipped?: number;
+  skipped?: { index?: number; reason?: string; [key: string]: unknown }[];
+  /** IS→OOS 退化（正值 = 样本外退化/过拟合信号） */
+  degradation?: number | null;
+  /** OOS 总收益 > 0 的折占比 */
+  consistency?: number | null;
+  folds: WalkforwardFold[];
+  elapsed_ms?: number | null;
 }

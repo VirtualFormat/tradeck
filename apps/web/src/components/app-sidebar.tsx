@@ -31,6 +31,8 @@ import {
   RobotIcon,
   MagnifyingGlassIcon,
   FunctionIcon,
+  SlidersHorizontal,
+  Path,
 } from "@phosphor-icons/react"
 
 const navMain: NavItem[] = [
@@ -51,6 +53,8 @@ const navMain: NavItem[] = [
     icon: <ChartLineUpIcon />,
     items: [
       { title: "策略回测", url: "/quant?tab=backtest", icon: <PlayIcon /> },
+      { title: "参数优化", url: "/quant?tab=optimize", icon: <SlidersHorizontal /> },
+      { title: "步进优化", url: "/quant?tab=walkforward", icon: <Path /> },
       { title: "选股扫描", url: "/quant?tab=screen", icon: <FunnelIcon /> },
       { title: "AI 策略生成", url: "/quant?tab=ai", icon: <RobotIcon /> },
       { title: "因子挖掘", url: "/quant?tab=mining", icon: <MagnifyingGlassIcon /> },

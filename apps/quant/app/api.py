@@ -626,3 +626,116 @@ def delete_factor(factor_id: str, user_id: str = Depends(current_user_id)) -> di
         raise
     except KeyError:
         raise HTTPException(status_code=404, detail=f"因子不存在 {factor_id!r}")
+
+
+# ---------------------------------------------------------------------------
+# 阶段 M1：参数优化 / 敏感性 / walk-forward API（runner 三入口的 HTTP 透出）
+#
+# 三个端点共享的纪律：
+# - universe 展开与 api_screen/api_backtest 同口径（resolve_universe，显式 symbols 优先）。
+# - objective 校验前置在路由层（VALID_OBJECTIVES 白名单，非法直接 422），
+#   其他参数错误由 optimizer/walkforward 抛 ValueError 统一转 422，detail 带原因。
+# - 未知策略等引擎侧 KeyError 转 404；其余异常结构化 500（不走全局兜底，
+#   与因子 API 的 except 分层一致）。
+# - run_optimize/run_sensitivity/run_walkforward 内部已自选 worker 池/进程内
+#   执行路径（按组合数），路由层直接 await，不重复造派发逻辑。
+# ---------------------------------------------------------------------------
+
+
+class _OptimizeBaseRequest(_SymbolRequest):
+    """优化系端点公共入参：复用 _SymbolRequest 的 symbols/universe/start/end 定义。"""
+
+    strategy_id: str
+    start: date  # 优化必填起点（覆盖 _SymbolRequest 的可选 start）
+    end: date  # 优化必填终点（不回退 today，网格扫描区间须显式）
+    param_grid: dict[str, Any]
+    objective: str = "sharpe"
+    direction: str | None = Field(default=None, pattern="^(min|max)$")
+    base_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class OptimizeRequest(_OptimizeBaseRequest):
+    pass
+
+
+class SensitivityRequest(_OptimizeBaseRequest):
+    param_id: str = Field(min_length=1, max_length=64)  # 被扰动的参数
+
+
+class WalkForwardRequest(_OptimizeBaseRequest):
+    train_days: int = Field(default=252, ge=1, le=3650)  # 日历天数（非交易日）
+    test_days: int = Field(default=63, ge=1, le=3650)
+    step_days: int = Field(default=63, ge=1, le=3650)
+
+
+def _validate_objective(objective: str) -> None:
+    """优化目标白名单前置校验：非法值 422（detail 列出合法集供排查）。"""
+    from app.engine.optimizer import VALID_OBJECTIVES
+    if objective not in VALID_OBJECTIVES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"不支持的优化目标 {objective!r}，可选：{sorted(VALID_OBJECTIVES)}",
+        )
+
+
+async def _run_optimize_route(
+    req: _OptimizeBaseRequest, user_id: str, runner_fn_name: str, **extra_kwargs
+) -> dict:
+    """优化系路由公共骨架：universe 展开 → 校验 → 调 runner → 错误分层转换。"""
+    from app import runner as quant_runner
+    from app.universe import resolve_universe
+
+    _validate_objective(req.objective)
+    try:
+        symbols = resolve_universe(req.symbols, req.universe)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    runner_fn = getattr(quant_runner, runner_fn_name)
+    try:
+        return await runner_fn(
+            symbols,
+            req.strategy_id,
+            req.start,
+            req.end,
+            req.param_grid,
+            objective=req.objective,
+            direction=req.direction,
+            base_params=req.base_params or None,
+            registry=_registry(user_id),
+            user_id=user_id,
+            **extra_kwargs,
+        )
+    except HTTPException:
+        raise
+    except KeyError as e:  # 未知策略等引擎侧查找失败 → 404
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:  # 参数错误（grid 非法/组合爆炸/param_id 缺失等）→ 422
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:  # 其余异常结构化 500，不走全局兜底
+        logger.exception("%s 执行异常", runner_fn_name)
+        raise HTTPException(status_code=500, detail=f"{runner_fn_name} 执行异常：{e}")
+
+
+@app.post("/api/optimize")
+async def api_optimize(req: OptimizeRequest,
+                       user_id: str = Depends(current_user_id)) -> dict:
+    """参数网格扫描：遍历组合各跑一次回测，按 objective 排名返回最优参数。"""
+    return await _run_optimize_route(req, user_id, "run_optimize")
+
+
+@app.post("/api/sensitivity")
+async def api_sensitivity(req: SensitivityRequest,
+                          user_id: str = Depends(current_user_id)) -> dict:
+    """敏感性分析：固定其他参数，对 param_id 单参数扰动扫目标指标曲线。"""
+    return await _run_optimize_route(req, user_id, "run_sensitivity",
+                                     param_id=req.param_id)
+
+
+@app.post("/api/walkforward")
+async def api_walkforward(req: WalkForwardRequest,
+                          user_id: str = Depends(current_user_id)) -> dict:
+    """Walk-forward：滚动训练/测试折，样本外拼接净值（train/test/step 为日历天数）。"""
+    return await _run_optimize_route(
+        req, user_id, "run_walkforward",
+        train_days=req.train_days, test_days=req.test_days, step_days=req.step_days,
+    )

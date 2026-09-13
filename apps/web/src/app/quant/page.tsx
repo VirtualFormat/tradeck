@@ -13,7 +13,9 @@ import { AIGenerateTab } from "@/components/quant/ai-generate-tab";
 import { BacktestTab } from "@/components/quant/backtest-tab";
 import { FactorEditorTab } from "@/components/quant/factor-editor-tab";
 import { MiningTab } from "@/components/quant/mining-tab";
+import { OptimizerTab } from "@/components/quant/optimizer-tab";
 import { ScreenTab } from "@/components/quant/screen-tab";
+import { WalkforwardTab } from "@/components/quant/walkforward-tab";
 import {
   defaultParamValues,
   type ParamValues,
@@ -22,7 +24,15 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 
 // 合法 Tab 值（URL 参数白名单，非法值回退 backtest）
-const TAB_VALUES = ["backtest", "screen", "ai", "mining", "factors"] as const;
+const TAB_VALUES = [
+  "backtest",
+  "optimize",
+  "walkforward",
+  "screen",
+  "ai",
+  "mining",
+  "factors",
+] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 function normalizeTab(raw: string | null): TabValue {
@@ -42,6 +52,8 @@ function QuantPageInner() {
   const [btParams, setBtParams] = useState<ParamValues>({});
   const [scStrategyId, setScStrategyId] = useState("");
   const [scParams, setScParams] = useState<ParamValues>({});
+  const [optStrategyId, setOptStrategyId] = useState("");
+  const [wfStrategyId, setWfStrategyId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +70,8 @@ function QuantPageInner() {
           setBtParams(defaultParamValues(list[0]));
           setScStrategyId(list[0].id);
           setScParams(defaultParamValues(list[0]));
+          setOptStrategyId(list[0].id);
+          setWfStrategyId(list[0].id);
         }
       } catch {
         if (!cancelled) setStrategies([]);
@@ -115,6 +129,26 @@ function QuantPageInner() {
             onStrategyChange={makeStrategyChange(setBtStrategyId, setBtParams)}
             paramValues={btParams}
             onParamValuesChange={setBtParams}
+          />
+        )}
+
+      {tab === "optimize" &&
+        strategyBody(
+          <OptimizerTab
+            strategies={strategies}
+            strategiesLoading={strategiesLoading}
+            strategyId={optStrategyId}
+            onStrategyChange={setOptStrategyId}
+          />
+        )}
+
+      {tab === "walkforward" &&
+        strategyBody(
+          <WalkforwardTab
+            strategies={strategies}
+            strategiesLoading={strategiesLoading}
+            strategyId={wfStrategyId}
+            onStrategyChange={setWfStrategyId}
           />
         )}
 

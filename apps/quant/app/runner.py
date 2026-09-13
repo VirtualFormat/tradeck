@@ -492,6 +492,7 @@ def run_backtest(
     trades = [
         {
             "symbol": t.symbol,
+            "name": (names or {}).get(t.symbol),  # 无名称标的缺省 None
             "entry_date": t.entry_date.isoformat(),
             "exit_date": t.exit_date.isoformat(),
             "entry_price": t.entry_price,
@@ -503,6 +504,9 @@ def run_backtest(
             "exit_reason": t.exit_reason,
             "entry_fill_mode": t.entry_fill_mode,
             "exit_fill_mode": t.exit_fill_mode,
+            # 开仓市值占当时组合净值的比例：Trade 只记成交后的静态字段，
+            # 撮合时刻的组合净值未随交易留存，推不出 → 恒 None（不臆造）。
+            "position_pct": None,
         }
         for t in result.trades
     ]
@@ -534,12 +538,16 @@ def run_backtest(
         # 分钟成交覆盖统计（阶段 H1）：used=走分钟口径笔数，fallback=降级日K 笔数
         "minute_fill_used": result.minute_fill_used,
         "minute_fill_fallback": result.minute_fill_fallback,
+        "execution_stats": result.execution_stats,
         "per_symbol_stats": per_symbol_stats(result.trades, names=names),
         "return_distribution": return_distribution(result.trades),
         "daily_trade_rows": daily_trade_rows(
             result.trades, result.equity_dates, result.equity,
         ),
-        "selection_stats": selection_stats(n_entry_sig, n_exit_sig, len(result.trades)),
+        "selection_stats": selection_stats(
+            n_entry_sig, n_exit_sig, len(result.trades),
+            execution_stats=result.execution_stats,
+        ),
     }
 
 
@@ -602,6 +610,7 @@ def _result_ext_empty(t0: float) -> dict:
         "per_symbol_stats": [],
         "return_distribution": [],
         "daily_trade_rows": [],
+        "execution_stats": {},
         "selection_stats": selection_stats(0, 0, 0),
     }
 

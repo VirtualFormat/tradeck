@@ -161,6 +161,20 @@ class SimResult:
     # 兼容字段（旧消费方）：entry+exit 合并口径
     minute_fill_used: int = 0
     minute_fill_fallback: int = 0
+    # 执行期约束计数器（M2）：解释「为什么这个信号没成交」。
+    # key 口径（同一信号日同分支最多 +1，跨日重试每次触发各 +1）：
+    # - blocked_buy_limit：买入信号成交日遇 CN 涨停（一字板判定）放弃开仓。
+    # - blocked_sell_limit：卖出被 CN 跌停拦截的总次数——合并两个分支：
+    #   ① 常规/风控/挂单 pending_exit 卖出当日跌停 continue（挂单保留次日重试，
+    #      每个跌停日 +1）；② signal_next_minute 的 signal 卖出在 minute_exit_price
+    #      内部被跌停拦截（当日不成交、置 pending_exit 挂单）。
+    # - skipped_max_positions：候选开仓标的超出剩余名额被放弃
+    #   （满仓含 slots<=0 整日跳过，按当日「已产生信号且未持仓、非冷却」标的数计）。
+    # - skipped_no_cash：现金不足 alloc<=0 放弃开仓；因开仓循环 alloc<=0 即 break，
+    #   后续候选同因现金不足，合并 +1 记一次（按「批」口径，非逐标的）。
+    # - skipped_cooldown：风控冷却标记拦下的「已产生买入信号」标的数
+    #   （无信号的冷却标的正常，不计）。
+    execution_stats: dict[str, int] = field(default_factory=dict)
 
 
 def _cn_limit_prices(
@@ -224,6 +238,12 @@ def simulate(
     minute_entry_fallback = 0
     minute_exit_used = 0
     minute_exit_fallback = 0
+    # 执行期约束计数器（key 口径见 SimResult.execution_stats 注释）
+    execution_stats: dict[str, int] = {}
+
+    def bump(key: str, by: int = 1) -> None:
+        execution_stats[key] = execution_stats.get(key, 0) + by
+
     # 分钟口径开关：signal_next_minute 依赖分钟数据确认触发，无 loader 时整体降级
     minute_trigger_mode = (
         config.exit_fill == "signal_next_minute" and minute_loader is not None
@@ -303,6 +323,7 @@ def simulate(
             if blocked_by_limit(i, j, "sell"):
                 # 当日跌停不可卖出：不成交，置 pending_exit 挂单次日重试
                 # （与「当日未盘中确认」同语义，由调用方统一置位）。
+                bump("blocked_sell_limit")
                 return daily_price, "daily", True
             marr = minute_arr_of(sym, i)
             if marr is None or len(marr) == 0:
@@ -377,6 +398,7 @@ def simulate(
                 if config.t1 and _is_cn(sym) and pos["entry_idx"] == i:
                     continue
                 if blocked_by_limit(i, j, "sell"):
+                    bump("blocked_sell_limit")
                     continue  # 跌停无法成交，挂单保留到明日
                 # 强平恒用当日开盘价（不看 exit_fill——signal_next_minute 口径下
                 # exit_price_of 会返回收盘价，与「次日开盘价强制退出」语义不符）。
@@ -448,6 +470,7 @@ def simulate(
             # （跌停不成交 → 置 pending_exit 次日开盘强平）；其余退出路径维持原语义
             # ——当日跳过、次日重新评估退出条件。
             if not (minute_trigger_mode and reason == "signal") and blocked_by_limit(i, j, "sell"):
+                bump("blocked_sell_limit")
                 continue
             px, exit_mode, no_fill = minute_exit_price(i, j, sym, exit_price_of(i, j), reason)
             if no_fill:
@@ -475,24 +498,48 @@ def simulate(
 
         # 开仓（等权：可用资金 / 剩余名额）
         slots = config.max_positions - len(positions)
+        # 满仓（含无剩余名额）整日跳过候选循环：补计「当日已产生买入信号、
+        # 未持仓、非冷却」的标的数（涨停/停牌不可成交等过滤进不了内层循环，
+        # 与 slots>0 口径下不可成交先于名额拦截的顺序一致，不重复计数）。
+        if slots <= 0 and entries:
+            sig_i = i - 1 if config.entry_fill == "open_t+1" else i
+            n_full_skip = sum(
+                1
+                for sym in symbols
+                if sym not in positions
+                and not cooldown.get(sym)
+                and (sig := entries.get(sym)) is not None
+                and sig_i >= 0
+                and sig[sig_i]
+            )
+            if n_full_skip:
+                bump("skipped_max_positions", n_full_skip)
         if slots > 0:
             candidates = []
             for j, sym in enumerate(symbols):
                 if sym in positions:
                     continue
                 if cooldown.get(sym):
+                    # 只计「已产生买入信号」的冷却标的（无信号的冷却属正常）
+                    if signal_fired(entries.get(sym), i, config.entry_fill):
+                        bump("skipped_cooldown")
                     continue  # 风控退出冷却中：等信号复位后再沿触发
                 if not signal_fired(entries.get(sym), i, config.entry_fill):
                     continue
                 if np.isnan(entry_price_of(i, j)) or np.isnan(close[i, j]):
                     continue
                 if blocked_by_limit(i, j, "buy"):
+                    bump("blocked_buy_limit")
                     continue
                 # 分钟精确成交价（minute_fill 开启时；缺失自动降级日K 口径）
                 px, entry_mode = minute_entry_price(i, j, sym, entry_price_of(i, j))
                 if np.isnan(px):
                     continue
                 candidates.append((j, px, entry_mode))
+            # 候选超出剩余名额：排序稳定（symbols 顺序），超出部分按满仓放弃计
+            if len(candidates) > slots:
+                bump("skipped_max_positions", len(candidates) - slots)
+                candidates = candidates[:slots]
             if candidates:
                 budget = cash / min(slots, len(candidates))
                 for j, px, entry_mode in candidates:
@@ -504,6 +551,9 @@ def simulate(
                     cost_rate = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).buy_cost(max(budget, 1.0)) / max(budget, 1.0)
                     alloc = min(budget, cash / (1.0 + cost_rate + 1e-9))
                     if alloc <= 0:
+                        # 现金耗尽：后续候选同因现金不足（budget 均摊），
+                        # 合并记一次（按「批」口径）后跳出开仓循环。
+                        bump("skipped_no_cash")
                         break
                     shares = alloc / px
                     if config.lot_size and _is_cn(sym):
@@ -558,6 +608,7 @@ def simulate(
         minute_exit_used=minute_exit_used, minute_exit_fallback=minute_exit_fallback,
         minute_fill_used=minute_entry_used + minute_exit_used,
         minute_fill_fallback=minute_entry_fallback + minute_exit_fallback,
+        execution_stats=execution_stats,
     )
     if adjusted_flags is not None:
         result.unadjusted = sorted(s for s, ok in adjusted_flags.items() if not ok)

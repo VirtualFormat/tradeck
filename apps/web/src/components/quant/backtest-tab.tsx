@@ -13,13 +13,24 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { CalendarIcon, PlayIcon, StopIcon } from "@phosphor-icons/react";
+import {
+  CalendarIcon,
+  CaretDownIcon,
+  DownloadIcon,
+  PlayIcon,
+  StopIcon,
+} from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Card,
   CardContent,
@@ -76,6 +87,7 @@ import {
   fmtMoney,
   fmtNum,
   fmtPct,
+  isExecutionStatKey,
   parseSymbols,
   pnlStyle,
   selectionStatLabel,
@@ -84,6 +96,7 @@ import {
   type BacktestTaskProgress,
   type BacktestTaskState,
   type DailyTradeRow,
+  type ExecutionStats,
   type ParamValues,
   type PerSymbolStat,
   type SelectionStats,
@@ -679,6 +692,9 @@ export function BacktestTab({
               </Select>
             </div>
           </div>
+          {/* 高级设置：策略定义速览（只读，阶段 M3 降级版——BacktestRequest
+              无风控/过滤覆盖字段，仅展示 META 定义，不做假覆盖控件） */}
+          <StrategyDefinitionPeek strategy={strategy} />
           <Button
             className="w-full"
             onClick={runBacktest}
@@ -772,6 +788,82 @@ export function BacktestTab({
   );
 }
 
+/** 高级设置：策略定义速览（只读）。
+ * 后端 BacktestRequest 暂无 stop_loss / max_hold_days / basic_filter 覆盖通道，
+ * 本面板只展示策略 META 定义（风控默认值 / scoring 权重 / 排序与上限），不做覆盖输入 */
+function StrategyDefinitionPeek({ strategy }: { strategy: StrategyDef | null }) {
+  const scoring = strategy?.scoring ?? null;
+  const scoringEntries = Object.entries(scoring ?? {});
+  return (
+    <Collapsible>
+      <div className="flex flex-wrap items-center gap-2">
+        <CollapsibleTrigger
+          render={
+            <Button
+              variant="outline"
+              className="min-w-0 flex-1 justify-between"
+              disabled={!strategy}
+            />
+          }
+        >
+          高级设置 · 策略定义速览
+          <CaretDownIcon className="size-3.5 text-fg-dim" />
+        </CollapsibleTrigger>
+        <Tooltip>
+          <TooltipTrigger
+            render={<span className="block cursor-not-allowed" />}
+          >
+            <Button variant="outline" disabled className="pointer-events-none">
+              风控覆盖
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>风控与过滤覆盖待后端支持</TooltipContent>
+        </Tooltip>
+      </div>
+      <CollapsibleContent className="space-y-2 pt-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">风控默认值</span>
+          <Badge variant="secondary" className="tabular-nums">
+            止损 {strategy?.stop_loss != null ? fmtPct(strategy.stop_loss) : "—"}
+          </Badge>
+          <Badge variant="secondary" className="tabular-nums">
+            最长持仓{" "}
+            {strategy?.max_hold_days != null
+              ? `${strategy.max_hold_days} 天`
+              : "—"}
+          </Badge>
+        </div>
+        {scoringEntries.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">评分权重</span>
+            {scoringEntries.map(([factor, weight]) => (
+              <Badge key={factor} variant="outline" className="tabular-nums">
+                {factor} {fmtNum(weight, 2)}
+              </Badge>
+            ))}
+          </div>
+        )}
+        {(strategy?.order_by || strategy?.limit != null) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">选股排序</span>
+            {strategy?.order_by && (
+              <Badge variant="outline">{strategy.order_by}</Badge>
+            )}
+            {strategy?.limit != null && (
+              <Badge variant="outline" className="tabular-nums">
+                上限 {strategy.limit} 只
+              </Badge>
+            )}
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          风控与过滤覆盖待后端支持，当前展示为策略 META 定义（只读）。
+        </p>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 /** 结果区骨架：概要条 + 指标卡网格 + 图表 + 表格占位 */
 function BacktestResultSkeleton() {
   return (
@@ -790,6 +882,99 @@ function BacktestResultSkeleton() {
 
 function BacktestResultView({ result }: { result: BacktestResult }) {
   const { stats } = result;
+  const [start, end] = result.range;
+
+  /** 导出 CSV：概要 + 净值曲线 + 交易明细 + 分标的统计四段（BOM 头，Excel 兼容） */
+  function exportResultCsv() {
+    if (stats == null) return;
+    const csvEsc = (v: string) =>
+      /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    const num = (v: number | null | undefined) => (v == null ? "" : String(v));
+    // P1-3：CSV 写原始小数（0.1234），Excel 里是数值列可排序/聚合；
+    // 展示格式（+12.34%）留在 UI 层，不进 CSV。表头比率列统一标（比率）
+    const pct = (v: number | null | undefined) =>
+      v == null ? "" : String(Math.round(v * 10000) / 10000);
+
+    const lines: string[] = [];
+    lines.push("# 概要", "指标,数值");
+    lines.push(`策略,${csvEsc(result.strategy)}`);
+    lines.push(`回测区间,${start ?? ""} ~ ${end ?? ""}`);
+    lines.push(`净值曲线天数,${result.equity_curve?.length ?? 0}`);
+    lines.push(`完成交易数,${result.trades?.length ?? 0}`);
+    for (const [label, value, isPct] of [
+      ["总收益（比率）", stats.total_return, true],
+      ["年化收益（比率）", stats.annual_return, true],
+      ["最大回撤（比率）", stats.max_drawdown, true],
+      ["胜率（比率）", stats.win_rate, true],
+      ["夏普比率", stats.sharpe, false],
+      ["索提诺", stats.sortino, false],
+      ["卡玛", stats.calmar, false],
+      ["盈亏比", stats.profit_loss_ratio, false],
+      ["平均持仓天数", stats.avg_hold_days, false],
+      ["最终净值", stats.final_value, false],
+    ] as const) {
+      if (value != null) lines.push(`${label},${isPct ? pct(value) : num(value)}`);
+    }
+
+    lines.push("", "# 净值曲线", "date,value,benchmark");
+    for (const p of result.equity_curve ?? []) {
+      lines.push([p.date, num(p.value), num(p.benchmark)].join(","));
+    }
+
+    lines.push(
+      "",
+      "# 交易明细",
+      "symbol,name,entry_date,entry_price,exit_date,exit_price,shares,pnl,ret（比率）,hold_days,exit_reason"
+    );
+    for (const t of result.trades ?? []) {
+      lines.push(
+        [
+          t.symbol,
+          csvEsc(t.name ?? ""),
+          t.entry_date ?? "",
+          num(t.entry_price),
+          t.exit_date ?? "",
+          num(t.exit_price),
+          num(t.shares),
+          num(t.pnl),
+          pct(t.ret),
+          num(t.hold_days),
+          exitReasonLabel(t.exit_reason),
+        ].join(",")
+      );
+    }
+
+    lines.push(
+      "",
+      "# 分标的统计",
+      "symbol,name,n_trades,total_return（比率）,win_rate（比率）,best（比率）,worst（比率）,total_pnl"
+    );
+    for (const p of result.per_symbol_stats ?? []) {
+      lines.push(
+        [
+          p.symbol,
+          csvEsc(p.name ?? ""),
+          num(p.n_trades),
+          pct(p.total_return),
+          pct(p.win_rate),
+          pct(p.best),
+          pct(p.worst),
+          num(p.total_pnl),
+        ].join(",")
+      );
+    }
+
+    const blob = new Blob(["﻿" + lines.join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest-${result.strategy}-${start ?? ""}~${end ?? ""}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // 分钟频策略/错误骨架等异常结果无 stats（P1-2）：守卫降级为空态而非崩溃
   if (stats == null) {
     return (
@@ -816,6 +1001,7 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
   const returnDist = result.return_distribution ?? [];
   const dailyRows = result.daily_trade_rows ?? [];
   const selectionStats = result.selection_stats ?? null;
+  const executionStats = result.execution_stats ?? null;
   const hasExcess = benchmark?.excess_return != null;
   // 分钟成交覆盖统计（阶段 K3）：仅开了分钟口径（used+fallback>0）时标注
   const minuteUsed = result.minute_fill_used ?? 0;
@@ -912,6 +1098,15 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
               {result.run_id && `run ${result.run_id}`}
             </span>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={exportResultCsv}
+          >
+            <DownloadIcon />
+            导出 CSV
+          </Button>
         </CardContent>
       </Card>
 
@@ -928,8 +1123,13 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
         ))}
       </div>
 
-      {/* 3. 选股漏斗 / 成交约束统计条 */}
-      {selectionStats && <SelectionStatsBar stats={selectionStats} />}
+      {/* 3. 选股漏斗 / 成交约束统计条（selection_stats 执行层键并入约束组） */}
+      {(selectionStats || executionStats) && (
+        <SelectionStatsBar
+          stats={selectionStats}
+          execution={executionStats}
+        />
+      )}
 
       {/* 4. 净值曲线 */}
       <Card>
@@ -1047,22 +1247,56 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
   );
 }
 
-/** 选股漏斗 / 成交约束统计条（selection_stats 一行 Badge 展示） */
-function SelectionStatsBar({ stats }: { stats: SelectionStats }) {
-  const entries = Object.entries(stats).filter(
+/** 选股漏斗 / 成交约束统计条（selection_stats 漏斗键 + execution_stats 拦截键分组展示） */
+function SelectionStatsBar({
+  stats,
+  execution,
+}: {
+  stats: SelectionStats | null;
+  execution: ExecutionStats | null;
+}) {
+  const all = Object.entries(stats ?? {}).filter(
     ([, v]) => typeof v === "number"
   ) as [string, number][];
-  if (entries.length === 0) return null;
+  // selection_stats 里的执行层键（拦截/跳过）归入约束组，不与漏斗混排
+  const funnel = all.filter(([k]) => !isExecutionStatKey(k));
+  const fromSelection = all.filter(([k]) => isExecutionStatKey(k));
+  const fromExecution = Object.entries(execution ?? {}).filter(
+    ([, v]) => typeof v === "number"
+  ) as [string, number][];
+  if (funnel.length === 0 && fromSelection.length === 0 && fromExecution.length === 0)
+    return null;
   return (
     <Card>
       <CardContent className="flex flex-wrap items-center gap-2 py-3">
-        <span className="text-xs text-muted-foreground">选股 / 成交约束</span>
-        {entries.map(([key, value]) => (
-          <Badge key={key} variant="outline">
-            {selectionStatLabel(key)}{" "}
-            <span className="tabular-nums">{value}</span>
-          </Badge>
-        ))}
+        {funnel.length > 0 && (
+          <>
+            <span className="text-xs text-muted-foreground">选股漏斗</span>
+            {funnel.map(([key, value]) => (
+              <Badge key={key} variant="outline">
+                {selectionStatLabel(key)}{" "}
+                <span className="tabular-nums">{value}</span>
+              </Badge>
+            ))}
+          </>
+        )}
+        {(fromSelection.length > 0 || fromExecution.length > 0) && (
+          <>
+            <span className="text-xs text-muted-foreground">成交约束</span>
+            {fromSelection.map(([key, value]) => (
+              <Badge key={key} variant="outline">
+                {selectionStatLabel(key)}{" "}
+                <span className="tabular-nums">{value}</span>
+              </Badge>
+            ))}
+            {fromExecution.map(([key, value]) => (
+              <Badge key={key} variant="outline">
+                {selectionStatLabel(key)}{" "}
+                <span className="tabular-nums">{value}</span>
+              </Badge>
+            ))}
+          </>
+        )}
       </CardContent>
     </Card>
   );

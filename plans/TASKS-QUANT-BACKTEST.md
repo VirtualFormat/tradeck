@@ -258,6 +258,44 @@ Review 结论：1 P0 + 2 P1 + 5 P2，已全部处置。
 
 ## 后续优化 backlog（2026-09-12 主 agent 汇总；做完一项删一行）
 
+## 阶段 M：侧边线程对比结论落地（2026-09-13，主 agent 总负责 + 3 子 agent 并行）
+
+来源：侧边线程「对比../tick-stock-panel」的页面级缺口结论。本阶段落地：
+
+| 任务 | 内容 | 执行 |
+|---|---|---|
+| M1 优化器 API 透出 | POST /api/optimize、/api/sensitivity、/api/walkforward（runner 死端接 HTTP） | Hume |
+| M2 执行层计数器 | matcher execution_stats（涨跌停拦截/满仓/冷却计数）+ selection_stats 漏斗扩展 + trades 补 name/position_pct | Boole |
+| M3 前端 | 参数优化 + 步进优化两个 Tab、导出 CSV、成交约束条、策略定义速览（只读：风控/评分/limit） | Socrates |
+
+明确排除（下一阶段）：全量模拟模式、因子归因、K 线回放 modal、regime 过滤、
+basic_filter/风控覆盖的后端通道（META 覆盖 API，需先设计策略覆写语义）。
+
+## 阶段 M review 明细（2026-09-13，Goodall 独立 review + 主 agent 修复）
+
+Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
+
+- **[P0-1/2] walkforward 契约漂移**：`compounded_oos_return` 在嵌套 summary、
+  折记录 oos 指标在嵌套 oos_stats，前端顶层直读恒「—」且回退键纯属臆测。
+  修复：后端顶层透出 compounded_oos_return/degradation/consistency + 折记录
+  扁平键 oos_total_return/oos_sharpe（向后兼容只加不改）；前端删除臆测回退链；
+  test_optimize_api.py 补 2 条 e2e 形状断言锁契约。
+- **[P0-3] 误报**：SelectionStatsBar 调用点实际存在（backtest-tab.tsx:1126），
+  评审 agent 的 rg 漏检。
+- **[P1-1] 代理错误分层**：optimize/walkforward 代理非 2xx 透传后端 detail
+  （结构化 500 不再被抹成笼统 502）；前端统一展示 detail。
+- **[P1-2] walkforward skipped 折可见**：概要条加 IS→OOS 退化 + 一致性 Badge，
+  skipped 折明细走 Collapsible 展开（base-ui 的 render= 模式，非 radix asChild）。
+- **[P1-3] CSV 数值列**：比率列写原始小数（表头标「（比率）」），Excel 可排序聚合；
+  顺带删掉恒 None 的 position_pct 列。
+- **[P2-2/3/4] 登记 backlog**：optimize 响应瘦身、满仓日涨停口径注释、
+  position_pct 后端补齐。
+- **潜在 P0 登记待验证**：`_make_run_fn_worker` 在已有 event loop 里调
+  `asyncio.run()` 会炸（HEAD 既有问题，超出本次 diff），worker 池大网格路径
+  无 e2e 覆盖。
+
+验收：后端 174 用例全绿；前端 eslint 0 问题 + tsc 通过。
+
 **阶段 L 结果视图延续（优先级高，用户体验直接可见）**：
 
 - [ ] **matcher 执行层拦截计数器**：涨跌停拦截买/卖、超仓位上限跳过开仓目前无

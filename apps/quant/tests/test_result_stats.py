@@ -141,6 +141,33 @@ class SelectionStatsTest(unittest.TestCase):
         self.assertEqual(s["signals_entry"], 0)
         self.assertEqual(s["filled_trades"], 0)
 
+    def test_execution_stats_funnel_keys(self) -> None:
+        # M2 漏斗扩展：execution_stats 有值的拦截键并入输出
+        s = selection_stats(12, 7, 3, execution_stats={
+            "blocked_buy_limit": 2,
+            "blocked_sell_limit": 1,
+            "skipped_max_positions": 4,
+            "skipped_cooldown": 3,
+        })
+        self.assertEqual(s["blocked_buy_limit"], 2)
+        self.assertEqual(s["blocked_sell_limit"], 1)
+        self.assertEqual(s["skipped_max_positions"], 4)
+        self.assertEqual(s["skipped_cooldown"], 3)
+
+    def test_execution_stats_zero_and_unknown_keys_omitted(self) -> None:
+        # 宁缺勿假：零值键不输出；未知键不透传（防口径漂移混入前端映射）
+        s = selection_stats(1, 1, 1, execution_stats={
+            "blocked_buy_limit": 0,
+            "skipped_no_cash": 0,
+            "some_future_key": 9,
+        })
+        self.assertEqual(set(s), {"signals_entry", "signals_exit", "filled_trades"})
+
+    def test_execution_stats_default_none(self) -> None:
+        # 不传 execution_stats 与旧行为一致（向后兼容）
+        s = selection_stats(5, 2, 1)
+        self.assertEqual(set(s), {"signals_entry", "signals_exit", "filled_trades"})
+
 
 class McMaxddTest(unittest.TestCase):
     """蒙特卡洛最大回撤：可复现性 / 样本不足降级 / 取值域。"""

@@ -252,6 +252,10 @@ def run_walk_forward(
             "oos_objective": oos_objective,
             "oos_degraded": oos_degraded,
             "oos_stats": oos_stats,
+            # 扁平透出（阶段 M review P0-2：前端契约消费的单一形态，
+            # 防嵌套 oos_stats 键名漂移）
+            "oos_total_return": oos_stats.get("total_return"),
+            "oos_sharpe": oos_stats.get("sharpe"),
         })
         if progress_cb is not None:
             progress_cb({"type": "walkforward_progress", "done": f.index + 1,
@@ -270,5 +274,9 @@ def run_walk_forward(
         "folds": valid_records,
         "skipped": skipped,
         "summary": summary,
+        # 顶层透出（阶段 M review P0-1：前端直接消费，与 summary 同源）
+        "compounded_oos_return": summary["compounded_oos_return"],
+        "degradation": summary.get("degradation"),
+        "consistency": summary.get("consistency"),
         "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
     }

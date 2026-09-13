@@ -465,6 +465,153 @@ class StatefulEntryCooldownTest(unittest.TestCase):
         self.assertEqual(t2.exit_reason, "end")
 
 
+class ExecutionStatsTest(unittest.TestCase):
+    """M2 执行期约束计数器：涨停未买 / 满仓放弃 / 冷却跳过（另验证跌停拦截）。"""
+
+    def test_blocked_buy_limit_on_limit_up_day(self) -> None:
+        # CN 主板（600001.SH，±10%）：i=0 收盘 10.0 产生买入信号，
+        # i=1 收盘 11.0 = 昨收 ×1.1 一字涨停 → 当日无法成交，blocked_buy_limit +1；
+        # i=2 收盘 10.5 回板内 → 信号（状态型仍 True）开盘 10.8 成交，期末 end 平仓。
+        n = 4
+        m = _matrix(
+            opens=[10.0, 10.5, 10.8, 10.8],
+            closes=[10.0, 11.0, 10.5, 10.6],
+            symbol="600001.SH",
+        )
+        r = simulate(
+            m,
+            entries={"600001.SH": _signals(n, [0, 1, 2])},
+            exits={"600001.SH": _signals(n, [])},
+            config=MatcherConfig(),
+        )
+        self.assertEqual(r.execution_stats.get("blocked_buy_limit"), 1)
+        self.assertEqual(len(r.trades), 1)
+        self.assertEqual(r.trades[0].entry_date, _dates(n)[2])  # 涨停次日才成交
+
+    def test_blocked_sell_limit_merges_pending_exit_retry(self) -> None:
+        # 跌停拦截合并口径：signal 在 i=2 收盘产生（open_t+1 口径 i=3 才判定卖出），
+        # i=3 一字跌停卖出被拦（常规分支 continue，blocked_sell_limit +1）；
+        # 日K 口径无 pending_exit 挂单——退出条件逐日重评估，i=4 信号已不成立，
+        # 持仓留到期末 end 强平（既有语义，本用例只锁定拦截计数）。
+        n = 6
+        m = _matrix(
+            opens=[10.0, 10.0, 9.5, 9.0, 8.6, 8.6],
+            closes=[10.0, 10.0, 10.0, 9.0, 8.5, 8.6],
+            symbol="600001.SH",
+        )
+        r = simulate(
+            m,
+            entries={"600001.SH": _signals(n, [0])},
+            exits={"600001.SH": _signals(n, [2])},  # i=2 收盘 signal → i=3 开盘卖
+            config=MatcherConfig(),
+        )
+        self.assertEqual(r.execution_stats.get("blocked_sell_limit"), 1)
+        self.assertEqual(len(r.trades), 1)
+        t = r.trades[0]
+        self.assertEqual(t.exit_reason, "end")  # 跌停日后信号不复成立，留到期末强平
+
+    def test_blocked_sell_limit_pending_exit_branch(self) -> None:
+        # pending_exit 挂单分支：signal_next_minute 的 signal 卖出在 i=3 盘中
+        # 已确认下穿触发线（分钟口径本应成交），但 i=3 一字跌停 →
+        # minute_exit_price 内部拦截 +1 并置 pending_exit；i=4 连续跌停，
+        # 挂单重试仍被拦 +1；i=5 回板内开盘价强平。两分支合并 → 计数 = 2。
+        n = 6
+        trigger_minute = np.array(
+            [
+                [9.5, 9.6, 9.4, 9.5, 100.0, 950.0],
+                [9.2, 9.3, 9.0, 9.1, 100.0, 910.0],  # 收盘 < 9.2 确认下穿
+                [8.5, 8.6, 8.4, 8.5, 100.0, 850.0],  # 下一分钟开盘 8.5
+                [8.6, 8.7, 8.5, 8.6, 100.0, 860.0],
+            ]
+        )
+        flat_minute = _flat_minutes(9.5)
+
+        def loader(sym: str, d: date) -> np.ndarray:
+            return trigger_minute if d == _dates(n)[3] else flat_minute
+
+        m = _matrix(
+            opens=[10.0, 10.0, 10.0, 9.4, 9.0, 8.6],
+            closes=[10.0, 10.0, 10.0, 9.0, 8.1, 8.5],
+            symbol="600001.SH",
+        )
+        r = simulate(
+            m,
+            entries={"600001.SH": _signals(n, [1])},
+            exits={"600001.SH": _signals(n, [3])},  # signal 于 i=3 当日盘中确认
+            config=MatcherConfig(exit_fill="signal_next_minute"),
+            exit_refs={"600001.SH": np.full(n, 9.2)},
+            minute_loader=loader,
+        )
+        self.assertEqual(r.execution_stats.get("blocked_sell_limit"), 2)
+        self.assertEqual(len(r.trades), 1)
+        t = r.trades[0]
+        self.assertEqual(t.exit_reason, "signal")
+        self.assertEqual(t.exit_date, _dates(n)[5])  # 两个跌停日未成交，第三日强平
+        self.assertAlmostEqual(t.exit_price, 8.6, places=12)
+
+    def test_skipped_max_positions_when_full(self) -> None:
+        # max_positions=1：i=1 开盘买入 A；i=2 收盘 B 产生信号时满仓
+        # （slots<=0 整日跳过分支）→ skipped_max_positions +1，B 始终未成交。
+        n = 4
+        close = np.array(
+            [[10.0, 20.0], [10.0, 20.0], [10.0, 20.0], [10.0, 20.0]],
+            dtype=np.float64,
+        )
+        m = MarketMatrix(
+            dates=_dates(n),
+            symbols=["AAA", "BBB"],
+            open=close.copy(),
+            high=close.copy(),
+            low=close.copy(),
+            close=close.copy(),
+            volume=np.full((n, 2), 1e6),
+            amount=close * 1e6,
+        )
+        r = simulate(
+            m,
+            entries={"AAA": _signals(n, [0]), "BBB": _signals(n, [2])},
+            exits={"AAA": _signals(n, []), "BBB": _signals(n, [])},
+            config=MatcherConfig(max_positions=1),
+        )
+        self.assertEqual(r.execution_stats.get("skipped_max_positions"), 1)
+        self.assertEqual(len(r.trades), 1)
+        self.assertEqual(r.trades[0].symbol, "AAA")  # BBB 满仓放弃，未开仓
+
+    def test_skipped_cooldown_counts_signaled_symbol_only(self) -> None:
+        # 复用既有冷却场景（stop_loss 退出后信号未复位）：
+        # i=2 止损平仓置冷却；i=3 与 i=4 信号（状态型）均仍 True，
+        # 两日各拦一次 → skipped_cooldown = 2；i=4 收盘信号 False →
+        # i=5 冷却复位，新沿重开仓（不受拦，不计）。
+        n = 6
+        m = _matrix(
+            opens=[10.0, 10.0, 9.2, 9.0, 9.4, 9.5],
+            closes=[10.0, 10.0, 9.0, 9.2, 9.4, 9.6],
+        )
+        r = simulate(
+            m,
+            entries={"AAPL": _signals(n, [0, 1, 2, 4])},
+            exits={"AAPL": _signals(n, [])},
+            config=MatcherConfig(stop_loss_pct=-0.08),
+        )
+        self.assertEqual(r.execution_stats.get("skipped_cooldown"), 2)
+        self.assertEqual(len(r.trades), 2)  # 行为不变：止损 + 复位后重开仓
+
+    def test_no_counters_when_unconstrained(self) -> None:
+        # 无约束场景（美股一笔正常买卖）：execution_stats 为空 dict（宁缺勿假）。
+        n = 4
+        m = _matrix(
+            opens=[10.0, 10.0, 10.5, 10.5],
+            closes=[10.0, 10.0, 10.5, 10.6],
+        )
+        r = simulate(
+            m,
+            entries={"AAPL": _signals(n, [0])},
+            exits={"AAPL": _signals(n, [2])},
+            config=MatcherConfig(),
+        )
+        self.assertEqual(r.execution_stats, {})
+
+
 if __name__ == "__main__":
     unittest.main()
 

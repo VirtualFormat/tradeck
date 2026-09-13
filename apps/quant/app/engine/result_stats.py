@@ -10,12 +10,14 @@
 - selection_stats：选择漏斗计数。口径说明（务必先看注释再消费）：
   tradeck 的过滤分两层——策略 basic_filter 发生在矩阵构建/信号产出层（被滤标的
   不产信号，无法在此统计），撮合执行约束层在 matcher 的 continue 路径上
-  （涨跌停不可成交/超仓位上限不开仓等，当前没有执行期计数器）。
+  （涨跌停不可成交/超仓位上限不开仓/冷却跳过等）。
   本函数只统计「能准确统计」的部分：
   - signals_entry / signals_exit：策略产出的买/卖信号日总数（信号右移前口径）。
   - filled_trades：实际成交笔数（闭环交易数）。
-  涨跌停阻止买/卖、超仓位上限放弃等执行期计数，须待 matcher 增加计数器后补充，
-  此处不硬凑（宁缺勿假）。
+  - 执行层拦截计数（M2 起）：matcher 的 execution_stats 传入时，把其中有值的
+    拦截键（blocked_buy_limit / blocked_sell_limit / skipped_max_positions /
+    skipped_no_cash / skipped_cooldown）并入漏斗；未传入或计数为 0 的键不输出
+    （宁缺勿假，键口径见 SimResult.execution_stats 注释）。
 """
 from __future__ import annotations
 
@@ -141,16 +143,28 @@ def selection_stats(
     signals_entry_count: int,
     signals_exit_count: int,
     filled_trades: int,
+    execution_stats: dict[str, int] | None = None,
 ) -> dict:
     """选择漏斗计数（口径见模块 docstring；只统计能准确统计的部分）。
 
     - signals_entry / signals_exit：策略产出的买/卖信号日总数。
     - filled_trades：实际成交的闭环交易笔数。
-    执行层拦截（涨跌停/超仓位上限）当前 matcher 无计数器，待补充后扩展，
-    此处明确不输出猜测值（宁缺勿假）。
+    - execution_stats（可选）：matcher 执行期约束计数器；仅把值 > 0 的拦截键
+      并入输出，缺省/零值不输出（宁缺勿假）。
     """
-    return {
+    out = {
         "signals_entry": int(signals_entry_count),
         "signals_exit": int(signals_exit_count),
         "filled_trades": int(filled_trades),
     }
+    for key in (
+        "blocked_buy_limit",
+        "blocked_sell_limit",
+        "skipped_max_positions",
+        "skipped_no_cash",
+        "skipped_cooldown",
+    ):
+        v = int((execution_stats or {}).get(key, 0))
+        if v > 0:
+            out[key] = v
+    return out
