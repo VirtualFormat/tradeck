@@ -321,9 +321,29 @@ Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
 
 **历史遗留 P2（G–K review 挂账）**：
 
-- [ ] compile_formula_cached 丢 user_id 维度（当前无调用方，启用缓存前先修）。
-- [ ] 统计黄金向量数值测试随迁（参照 test_stats_v2.py → quant/tests）。
 - [ ] walk-forward 空折 consistency=0.0 口径（继承参照，影响评估）。
+- [ ] compile_formula_cached 接线或删除（N 阶段已修 user_id 维度，但生产零调用方，
+  mining 走自己的 _COMPILE_CACHE；review P2-3 建议二选一防误用）。
+- [ ] OptimizeWorkerPathTest 在容器/CI 里必须实际跑一次（宿主机 asyncio 唤醒怪癖
+  会自动 skip，别让「跳过」静默变成「从未验证」）。
+
+## 阶段 N：backlog 落地（2026-09-13，主 agent 总负责 + 3 子 agent 并行 + Arendt review）
+
+| 任务 | 内容 | 执行 |
+|---|---|---|
+| N1 因子归因后端 | factor_attribution（胜/败单信号日因子均值，17 指标列，信号日=成交日前一交易日，close_t 口径取当天） | Avicenna |
+| N2 历史挂账 | compile_formula_cached user_id 维度 + 统计黄金向量随迁（NW/BH/DSR）+ optimize 响应瘦身（4 扁平键）+ 满仓口径注释 | Popper |
+| N3 前端 | K 线回放 modal（买卖点标注）+ 因子归因 Tab + 交易明细/选股分析行点击 | Herschel |
+| 主 agent | 进度节流（progress_every 按区间取档 ≤100 条 Queue 消息）+ review P2 清零 | — |
+
+**阶段 N 处置的真实 P0（HEAD 既有，review 残余风险兑现）**：
+`_make_run_fn_worker` 在 async 入口 running loop 里 `asyncio.run()` 必炸 →
+改独立线程 + ThreadPoolExecutor 隔离。顺带定位出宿主机环境级 asyncio 唤醒怪癖
+（call_soon_threadsafe 叫不醒裸 await 的 selector；容器内正常，prod 不受影响），
+WorkerPool.run 的 to_thread 改手动线程 + Future 桥接。
+
+验收：Arendt 独立 review 0 P0 / 0 P1 / 4 P2 全处置；后端 193 用例全绿
+（1 环境探测 skip）；前端 eslint 0 + tsc 通过。
 
 ## prod 部署记录（2026-09-11，主 agent）
 

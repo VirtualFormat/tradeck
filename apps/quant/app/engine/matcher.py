@@ -170,6 +170,9 @@ class SimResult:
     #      内部被跌停拦截（当日不成交、置 pending_exit 挂单）。
     # - skipped_max_positions：候选开仓标的超出剩余名额被放弃
     #   （满仓含 slots<=0 整日跳过，按当日「已产生信号且未持仓、非冷却」标的数计）。
+    #   满仓整日跳过分支的口径选择：只数有信号的标的——涨停/停牌等不可成交
+    #   标的不计 blocked_buy_limit 也不计 skipped_max_positions，与 slots>0
+    #   分支「不可成交拦截先于名额拦截」的顺序一致（两分支不重复计数）。
     # - skipped_no_cash：现金不足 alloc<=0 放弃开仓；因开仓循环 alloc<=0 即 break，
     #   后续候选同因现金不足，合并 +1 记一次（按「批」口径，非逐标的）。
     # - skipped_cooldown：风控冷却标记拦下的「已产生买入信号」标的数

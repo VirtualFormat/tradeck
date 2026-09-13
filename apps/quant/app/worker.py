@@ -124,6 +124,16 @@ def make_backtest_task(
     }
 
 
+def _progress_every_for_range(start: date, end: date) -> int:
+    """按区间长度取进度节流档位：目标 ≤100 条跨进程 Queue 消息。
+
+    以自然日估算（含周末，偏保守）；matcher 末日必回调，前端进度条
+    总能见到 100%。
+    """
+    days = max((end - start).days + 1, 1)
+    return max(1, days // 100)
+
+
 def _worker_entry(task: dict[str, Any], event_queue) -> None:
     """子进程入口：跑回测，把 progress/result/error 消息入队。"""
     try:
@@ -161,6 +171,11 @@ def _worker_entry(task: dict[str, Any], event_queue) -> None:
             names=task.get("names"),
             minute_bars=minute_bars,
             progress_cb=_forward_progress if progress_enabled else None,
+            # 进度节流（P2）：按区间交易日数取档（≤100 条 Queue 消息），
+            # 长区间不再逐日 put；末日消息由 matcher 保证必发
+            progress_every=_progress_every_for_range(
+                date.fromisoformat(task["start"]), date.fromisoformat(task["end"])
+            ),
         )
         result.setdefault("worker", {})["pid"] = os.getpid()
         event_queue.put({"type": "result", "payload": result})
@@ -214,12 +229,49 @@ class WorkerPool:
         子进程失败（异常/无结果退出）抛 BacktestWorkerError；timeout 触发时
         terminate 子进程并抛 asyncio.TimeoutError。cancel_token 置位时 terminate
         子进程并抛 BacktestCancelledError。主进程绝不因子进程崩溃而崩。
+
+        线程桥接纪律（2026-09-13 定位的真实死结）：不能用 asyncio.to_thread /
+        run_in_executor——spawn 子进程的 multiprocessing 与 asyncio executor 线程
+        组合会在 Python 3.11/3.12 复现挂死（Queue 终态消息永远收不到；最小复现
+        与对照实验见当次调试记录）。改手动 threading.Thread + loop.call_soon_
+        threadsafe 桥接 Future：同语义、已验证可用。
         """
         async with self._semaphore():
-            coro = asyncio.to_thread(self._run_sync, task, progress_cb, cancel_token)
+            coro = self._run_in_thread(task, progress_cb, cancel_token)
             if timeout is None:
                 return await coro
             return await asyncio.wait_for(coro, timeout)
+
+    def _run_in_thread(
+        self,
+        task: dict[str, Any],
+        progress_cb,
+        cancel_token: CancelToken | None,
+    ) -> "asyncio.Future":
+        """手动线程跑 _run_sync，结果经 call_soon_threadsafe 桥回当前 loop。
+
+        替代 asyncio.to_thread（见 run() docstring 的死结说明）。线程是隔离壳，
+        并发上限仍由 run() 里的 Semaphore 维持。
+        """
+        import threading
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def _target() -> None:
+            try:
+                result = self._run_sync(task, progress_cb, cancel_token)
+            except BaseException as e:  # noqa: BLE001 — 线程内异常桥回 loop
+                loop.call_soon_threadsafe(
+                    lambda: None if future.done() else future.set_exception(e)
+                )
+            else:
+                loop.call_soon_threadsafe(
+                    lambda: None if future.done() else future.set_result(result)
+                )
+
+        threading.Thread(target=_target, daemon=True).start()
+        return future
 
     def _run_sync(
         self,

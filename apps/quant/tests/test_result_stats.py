@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 
 from app.engine import stats
 from app.engine.matcher import SimResult, Trade
 from app.engine.result_stats import (
-    daily_trade_rows, per_symbol_stats, return_distribution, selection_stats,
+    daily_trade_rows, factor_attribution, per_symbol_stats,
+    return_distribution, selection_stats,
 )
 
 
@@ -211,6 +213,156 @@ class McMaxddTest(unittest.TestCase):
         out = compute_empty()
         self.assertIsNone(out["mc_maxdd_p50"])
         self.assertIsNone(out["mc_maxdd_p95"])
+
+
+class FactorAttributionTest(unittest.TestCase):
+    """因子归因（N1）：胜/败组入场信号日因子均值对比。
+
+    口径：matcher 默认 open_t+1 —— T 日收盘出信号、T+1 开盘成交，
+    信号日 = entry_date 的前一个矩阵交易日（索引 i-1，i=0 跳过计数）。
+    """
+
+    @staticmethod
+    def _enriched(indicators: dict[str, list[list[float]]]):
+        """合成最小 enriched 替身：只需 .indicators dict（行=交易日，列=标的）。"""
+        return SimpleNamespace(
+            indicators={k: np.array(v, dtype=float) for k, v in indicators.items()}
+        )
+
+    def test_empty_trades_skeleton(self) -> None:
+        out = factor_attribution(None, [], [], [])
+        self.assertEqual(
+            out,
+            {"factors": [], "n_win": 0, "n_lose": 0, "skipped_no_signal_day": 0,
+             "signal_day_assumption": "prev_day"},
+        )
+
+    def test_win_lose_means_hand_calc(self) -> None:
+        # 2 标的 × 10 个交易日；指标 rsi14 手工构造：
+        # 标的 A 信号日行 = [1.0, _, 5.0, ...]，标的 B 信号日行 = [3.0, ...]
+        # 胜单两笔（A@i=2 → 信号行1 = 2.0；A@i=4 → 信号行3 = 6.0），败单一笔
+        # （B@i=3 → 信号行2 = 4.0）→ win_mean = 4.0，lose_mean = 4.0，diff = 0
+        # 再让 A 第二笔信号日值变大验证正 diff 排序。
+        days = [date(2025, 1, 6) + timedelta(days=i) for i in range(10)]
+        rsi = np.array([
+            [np.nan, np.nan],   # i=0 预热
+            [2.0, 10.0],        # i=1
+            [9.9, 4.0],         # i=2
+            [8.0, 9.9],         # i=3
+            [9.9, 9.9],         # i=4
+            [1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0],
+        ])
+        mom = np.full((10, 2), np.nan)
+        mom[1, 0] = 0.1   # A 胜单信号日（i=2 交易 → 行1）
+        mom[3, 0] = 0.3   # A 第二笔胜单信号日（i=4 交易 → 行3）
+        mom[2, 1] = -0.2  # B 败单信号日（i=3 交易 → 行2）
+        enriched = self._enriched({"rsi14": rsi.tolist(), "momentum_5d": mom.tolist()})
+        symbols = ["A", "B"]
+        trades = [
+            _trade("A", days[2], days[5], 100.0, 0.10),    # 胜，信号行1：rsi=2.0, mom=0.1
+            _trade("A", days[4], days[6], 100.0, 0.05),    # 胜，信号行3：rsi=8.0, mom=0.3
+            _trade("B", days[3], days[6], -100.0, -0.05),  # 败，信号行2：rsi=4.0, mom=-0.2
+        ]
+        out = factor_attribution(enriched, trades, symbols, days)
+        self.assertEqual(out["n_win"], 2)
+        self.assertEqual(out["n_lose"], 1)
+        self.assertEqual(out["skipped_no_signal_day"], 0)
+        by_factor = {f["factor"]: f for f in out["factors"]}
+        # rsi14：win=(2.0+8.0)/2=5.0，lose=4.0，diff=1.0
+        self.assertAlmostEqual(by_factor["rsi14"]["win_mean"], 5.0)
+        self.assertAlmostEqual(by_factor["rsi14"]["lose_mean"], 4.0)
+        self.assertAlmostEqual(by_factor["rsi14"]["diff"], 1.0)
+        # momentum_5d：win=(0.1+0.3)/2=0.2，lose=-0.2，diff=0.4
+        self.assertAlmostEqual(by_factor["momentum_5d"]["win_mean"], 0.2)
+        self.assertAlmostEqual(by_factor["momentum_5d"]["lose_mean"], -0.2)
+        self.assertAlmostEqual(by_factor["momentum_5d"]["diff"], 0.4)
+        # 按 |diff| 降序：rsi14(1.0) 在 momentum_5d(0.4) 前
+        self.assertEqual(out["factors"][0]["factor"], "rsi14")
+        self.assertEqual(out["factors"][1]["factor"], "momentum_5d")
+
+    def test_first_day_trade_skipped(self) -> None:
+        # entry_date 为矩阵首个交易日（i=0，无信号日行）→ 跳过并计数；
+        # 全部交易被跳过时返回骨架 + 计数。
+        days = [date(2025, 1, 6) + timedelta(days=i) for i in range(10)]
+        rsi = np.full((10, 2), 1.0)
+        enriched = self._enriched({"rsi14": rsi.tolist()})
+        trades = [
+            _trade("A", days[0], days[3], 100.0, 0.10),   # i=0 → 跳过
+            _trade("X", days[2], days[3], 100.0, 0.10),   # 标的不在矩阵轴 → 跳过
+        ]
+        out = factor_attribution(enriched, trades, ["A", "B"], days)
+        self.assertEqual(out["skipped_no_signal_day"], 2)
+        self.assertEqual(out["n_win"], 0)
+        self.assertEqual(out["n_lose"], 0)
+        self.assertEqual(out["factors"], [])
+
+    def test_all_nan_group_mean_none(self) -> None:
+        # 败组在某因子上全 NaN → lose_mean / diff 为 None；None-diff 排最后。
+        days = [date(2025, 1, 6) + timedelta(days=i) for i in range(10)]
+        rsi = np.full((10, 2), np.nan)
+        rsi[1, 0] = 7.0   # 仅胜单信号日有值
+        mom = np.full((10, 2), np.nan)
+        mom[1, 0] = 0.5   # 胜
+        mom[2, 1] = -0.1  # 败
+        enriched = self._enriched({"rsi14": rsi.tolist(), "momentum_5d": mom.tolist()})
+        trades = [
+            _trade("A", days[2], days[4], 100.0, 0.10),    # 胜，信号行1
+            _trade("B", days[3], days[5], -100.0, -0.05),  # 败，信号行2
+        ]
+        out = factor_attribution(enriched, trades, ["A", "B"], days)
+        by_factor = {f["factor"]: f for f in out["factors"]}
+        r = by_factor["rsi14"]
+        self.assertAlmostEqual(r["win_mean"], 7.0)
+        self.assertIsNone(r["lose_mean"])
+        self.assertIsNone(r["diff"])
+        m = by_factor["momentum_5d"]
+        self.assertAlmostEqual(m["win_mean"], 0.5)
+        self.assertAlmostEqual(m["lose_mean"], -0.1)
+        self.assertAlmostEqual(m["diff"], 0.6)
+        # 有 diff 的 momentum_5d 在前，diff=None 的 rsi14 排最后
+        self.assertEqual(out["factors"][0]["factor"], "momentum_5d")
+        self.assertEqual(out["factors"][1]["factor"], "rsi14")
+
+    def test_entry_date_off_axis_falls_back(self) -> None:
+        # 防御口径：entry_date 不在矩阵交易日轴上（如落在周末）时向前找最近
+        # 交易日作成交行，信号日取其前一行。
+        days = [date(2025, 1, 6) + timedelta(days=i) for i in range(5)]  # 周一~周五
+        rsi = np.full((5, 1), np.nan)
+        rsi[2, 0] = 9.0   # 周三（i=2），若信号日取错会拿到这个值
+        # 成交日记成周六（2025-01-11，不在轴上）→ 成交行回退到周五 i=4，信号行 i=3
+        rsi[3, 0] = 6.0
+        # 注意：必须先写完所有值再构造 enriched——_enriched 经 .tolist() 拷贝
+        # 快照，enriched 之后再改 rsi 不会影响因子取值（初版顺序写反导致 NaN）
+        enriched = self._enriched({"rsi14": rsi.tolist()})
+        sat = date(2025, 1, 11)
+        trades = [_trade("A", sat, sat, 100.0, 0.10)]
+        out = factor_attribution(enriched, trades, ["A"], days)
+        self.assertEqual(out["n_win"], 1)
+        self.assertAlmostEqual(out["factors"][0]["win_mean"], 6.0)
+
+    def test_close_t_uses_same_day(self) -> None:
+        # close_t 研究口径：信号日 = 成交日当天（i 行），不是前一行
+        days = [date(2025, 1, 6) + timedelta(days=i) for i in range(5)]
+        rsi = np.full((5, 1), np.nan)
+        rsi[2, 0] = 9.0   # 周三（i=2）= 成交日 = close_t 信号日
+        rsi[1, 0] = 3.0   # 周二（i=1）= open_t+1 会取的行（应不命中）
+        enriched = self._enriched({"rsi14": rsi.tolist()})
+        trades = [_trade("A", days[2], days[4], 100.0, 0.10)]
+        out = factor_attribution(enriched, trades, ["A"], days, entry_fill="close_t")
+        self.assertEqual(out["signal_day_assumption"], "same_day")
+        self.assertAlmostEqual(out["factors"][0]["win_mean"], 9.0)
+        # close_t 下 i==0（成交日即首个交易日）不跳过
+        trades0 = [_trade("A", days[0], days[4], 100.0, 0.10)]
+        rsi[0, 0] = 5.0
+        enriched0 = self._enriched({"rsi14": rsi.tolist()})
+        out0 = factor_attribution(enriched0, trades0, ["A"], days, entry_fill="close_t")
+        self.assertEqual(out0["skipped_no_signal_day"], 0)
+        self.assertAlmostEqual(out0["factors"][0]["win_mean"], 5.0)
+
+    def test_default_assumption_is_prev_day(self) -> None:
+        # 缺省 entry_fill=open_t+1 口径标注
+        out = factor_attribution(None, [], [], [])
+        self.assertEqual(out["signal_day_assumption"], "prev_day")
 
 
 if __name__ == "__main__":

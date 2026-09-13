@@ -22,7 +22,8 @@ from app.engine import (
     MatcherConfig, MinuteLoader, compute, forward_adjust, simulate,
 )
 from app.engine.result_stats import (
-    daily_trade_rows, per_symbol_stats, return_distribution, selection_stats,
+    daily_trade_rows, factor_attribution, per_symbol_stats,
+    return_distribution, selection_stats,
 )
 from app.engine.minute_replay import (
     MINUTE_BARS_PARAM_KEY, MinuteReplayResult, replay_minute_strategy,
@@ -368,6 +369,7 @@ def run_backtest(
     names: dict[str, str] | None = None,
     minute_bars: dict[str, "pl.DataFrame"] | None = None,
     progress_cb=None,
+    progress_every: int = 1,
     cancel_event=None,
 ) -> dict:
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
@@ -382,6 +384,10 @@ def run_backtest(
     分钟频策略（META timeframes 含 "1m"）不走本函数（矩阵回测），
     由 run_backtest_async 分流到 _run_minute_replay（阶段 H2 回放路径）。
     若误以分钟策略调本同步入口，按「分钟数据不可用」优雅降级为分钟回放空结果。
+
+    progress_every：逐日进度回调的节流档位（每 N 天回调一次，末日必回调）。
+    默认 1（逐日）保持既有行为；任务化跨进程路径按区间长度取档减少
+    Queue 消息（调用方决定，本函数只透传给 matcher.simulate）。
 
     分钟触发卖出接线（H1 收口）：exit_fill="signal_next_minute" 且策略未产出
     exit_ref（如 MA 死叉这类「均线交叉」信号没有直接价格参考线）时，按
@@ -471,6 +477,7 @@ def run_backtest(
         ),
         minute_loader=minute_loader,
         progress_cb=progress_cb,
+        progress_every=progress_every,
     )
     stats = compute(result)
     # 净值曲线（逐日，叠加基准归一化到同一起点便于对比）
@@ -548,6 +555,13 @@ def run_backtest(
             n_entry_sig, n_exit_sig, len(result.trades),
             execution_stats=result.execution_stats,
         ),
+        # 因子归因（N1）：用复权矩阵的 enriched 指标层 + 成交记录，
+        # 信号日口径随 entry_fill（open_t+1 → 成交日前一行；close_t → 成交日当天，
+        # 详见 result_stats.factor_attribution）
+        "factor_attribution": factor_attribution(
+            enriched, result.trades, adjusted_matrix.symbols, adjusted_matrix.dates,
+            entry_fill=cfg.entry_fill,
+        ),
     }
 
 
@@ -612,6 +626,7 @@ def _result_ext_empty(t0: float) -> dict:
         "daily_trade_rows": [],
         "execution_stats": {},
         "selection_stats": selection_stats(0, 0, 0),
+        "factor_attribution": factor_attribution(None, [], [], []),
     }
 
 
@@ -664,14 +679,28 @@ def _make_run_fn_worker(
 
     子进程从本地分钟缓存读分钟K（worker 内建），不预拉网络数据；
     benchmark/names 由主进程预拉透传（worker 不再拉 data-api）。
+
+    事件循环纪律（review 潜在 P0 修复）：optimize()/walk-forward 是在 async 入口
+    的 running loop 里同步循环调 run_fn 的，run_fn 内直接 asyncio.run() 会抛
+    「cannot be called from a running event loop」。故把协程扔到独立线程跑
+    （线程内无 running loop，asyncio.run 自建新循环）；WorkerPool 的 Semaphore
+    绑的是该新 loop，同一 _run 调用内一致、跨调用经绑 loop 检测惰性重建，
+    并发上限由池 Semaphore 维持，线程只是隔离壳。
     """
     from app.worker import run_backtest_in_worker
 
     def _run(symbols, strategy_id, start, end, params=None, config=None):
-        return asyncio.run(run_backtest_in_worker(
-            symbols, strategy_id, start, end, params=params, config=config,
-            user_id=user_id, benchmark=benchmark, names=names, timeout=timeout,
-        ))
+        import concurrent.futures
+
+        async def _go() -> dict:
+            return await run_backtest_in_worker(
+                symbols, strategy_id, start, end, params=params, config=config,
+                user_id=user_id, benchmark=benchmark, names=names, timeout=timeout,
+            )
+
+        # 独立线程 + 自有 loop：running loop 上下文（HTTP API）下安全
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_go())).result()
     return _run
 
 

@@ -37,6 +37,17 @@ VALID_OBJECTIVES = {
 # 注意：max_drawdown 为负值，最大化其带符号值 = 回撤越小越好，故仍归为 max。
 _MINIMIZE_OBJECTIVES = {"turnover", "avg_hold_days"}
 
+# 响应瘦身（review P2-2）：results/points 行不整包透传 stats 嵌套字典
+# （2000 组合响应体过大），只收敛出 4 个扁平键，对齐前端排名表列
+# （types.ts OptimizeResultRow：total_return/sharpe/max_drawdown/trades）。
+# optimize/sensitivity API 是阶段 M 新加接口，前端只消费这四列，可直接收敛。
+_SUMMARY_STATS_KEYS = ("total_return", "sharpe", "max_drawdown", "trades")
+
+
+def _summary_stats(stats: dict) -> dict:
+    """从完整 stats 摘出排名表 4 列扁平键（缺失置 None）。"""
+    return {key: stats.get(key) for key in _SUMMARY_STATS_KEYS}
+
 
 def _candidates_for(param_id: str, spec, pmeta: dict) -> list:
     """从 grid spec 解析某参数的候选值列表并逐个校验。
@@ -244,7 +255,7 @@ def optimize(
                 "params": combo,
                 "objective_raw": stats.get(cfg.objective),
                 "_sort": objective_value(stats, cfg.objective, direction),
-                "stats": stats,
+                **_summary_stats(stats),
             }
         except Exception as e:  # 隔离单组失败，记录后继续
             logger.warning("参数组 %s 回测异常：%r", combo, e)
@@ -322,7 +333,7 @@ def sensitivity(
                 "value": val,
                 "objective_raw": stats.get(cfg.objective),
                 "_sort": objective_value(stats, cfg.objective, direction),
-                "stats": stats,
+                **_summary_stats(stats),
             }
         except Exception as e:  # 单点失败隔离，记 error
             logger.warning("敏感性参数组 %s=%s 回测异常：%r", param_id, val, e)

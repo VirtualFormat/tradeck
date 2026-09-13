@@ -195,7 +195,11 @@ class OptimizeApiEndToEndTest(unittest.TestCase):
             self.assertIn("params", row)
             self.assertIn("objective_raw", row)
             self.assertIn("rank", row)
-            self.assertIn("stats", row)
+            # 响应瘦身（review P2-2）：stats 嵌套字典收敛为 4 个扁平键，
+            # 对齐前端排名表列（types.ts OptimizeResultRow），原 stats 键删除
+            for key in ("total_return", "sharpe", "max_drawdown", "trades"):
+                self.assertIn(key, row)
+            self.assertNotIn("stats", row)
         # rank 连续 1..n；sharpe 默认 max 方向降序
         self.assertEqual([r["rank"] for r in rows], [1, 2])
         self.assertGreaterEqual(rows[0]["objective_raw"], rows[1]["objective_raw"])
@@ -268,6 +272,92 @@ class WalkforwardApiEndToEndTest(unittest.TestCase):
                 fold["oos_total_return"],
                 (fold["oos_stats"] or {}).get("total_return"),
             )
+
+
+class OptimizeWorkerPathTest(unittest.TestCase):
+    """worker 池派发路径 e2e（阶段 M review 残余风险 2 的处置）：
+    _make_run_fn_worker 在 async 入口的 running loop 里被同步循环调用，
+    修复前 asyncio.run() 必抛「cannot be called from a running event loop」。
+    阈值降到 1 强制走 worker 路径，真 spawn 子进程跑 2 组合。
+
+    环境前提：本用例要求宿主机/CI 的 asyncio selector 唤醒机制正常
+    （call_soon_threadsafe 能唤醒裸 await 的 loop）。2026-09-13 实测本仓库
+    dev 宿主机（uv python 3.12 / 系统 3.11，Linux 内核环境）存在
+    「loop 沉睡不被唤醒」的环境级怪癖（最小复现：手动线程
+    call_soon_threadsafe + 裸 await future 永不返回；docker 容器内正常）。
+    该环境下本用例自动 skip（worker 池在容器/prod 已端到端验证）。
+    """
+
+    def test_worker_path_under_running_loop(self) -> None:
+        if not _loop_wakeup_healthy():
+            self.skipTest("当前环境 asyncio 唤醒机制异常（已知宿主机怪癖），跳过")
+        import app.runner as runner_mod
+        from app.api import api_optimize
+
+        old_cache = settings.QUANT_CACHE_DIR
+        old_threshold = runner_mod._OPTIMIZE_OFFLOAD_THRESHOLD
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_cache(tmp)
+            runner_mod._OPTIMIZE_OFFLOAD_THRESHOLD = 1  # 2 组合 > 1 → worker 池
+            p1, _p2 = _no_network()
+            try:
+                # spawn 子进程是独立解释器，不继承父进程对 settings 属性的运行时
+                # 篡改——缓存目录必须经环境变量传递（config 从进程环境读，spawn
+                # 继承 os.environ）
+                with mock.patch.dict("os.environ", {"QUANT_CACHE_DIR": tmp}), \
+                     mock.patch.object(settings, "QUANT_CACHE_DIR", tmp), \
+                     p1, mock.patch(
+                    "app.runner._fetch_names", new=AsyncMock(return_value={})
+                ):
+                    result = asyncio.run(
+                        api_optimize(_optimize_request(), user_id=_UID)
+                    )
+            finally:
+                runner_mod._OPTIMIZE_OFFLOAD_THRESHOLD = old_threshold
+            settings.QUANT_CACHE_DIR = old_cache
+
+        self.assertEqual(result["execution"], "worker")
+        self.assertEqual(result["n_completed"], 2)
+        self.assertEqual(result["n_errors"], 0)
+        self.assertIsNotNone(result["best_params"])
+
+
+def _loop_wakeup_healthy() -> bool:
+    """探测当前环境 asyncio selector 是否会被 call_soon_threadsafe 正常唤醒。
+
+    注意探测本身不能用裸 await 轮询（坏环境里探测协程的 sleep 轮询虽能醒，
+    但 wait_for/shield 计时器走的是同一套 selector，同样叫不醒）——改为
+    独立线程跑一个隔离的 asyncio.run，其内只做一次裸 await future（坏环境
+    永不返回），主线程 join 超时兜底判负。
+    """
+    import threading
+    import time as _time
+
+    holder: dict[str, bool] = {}
+
+    def _probe() -> None:
+        async def _inner() -> bool:
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+
+            def _t() -> None:
+                _time.sleep(0.2)
+                loop.call_soon_threadsafe(future.set_result, True)
+
+            threading.Thread(target=_t, daemon=True).start()
+            # 裸 await：坏环境里这次 await 永不返回（selector 不唤醒）
+            await future
+            return True
+
+        try:
+            holder["ok"] = asyncio.run(asyncio.wait_for(_inner(), timeout=2.0))
+        except Exception:
+            holder["ok"] = False
+
+    th = threading.Thread(target=_probe, daemon=True)
+    th.start()
+    th.join(timeout=5.0)
+    return holder.get("ok", False)
 
 
 if __name__ == "__main__":

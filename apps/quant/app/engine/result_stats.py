@@ -17,11 +17,14 @@
   - 执行层拦截计数（M2 起）：matcher 的 execution_stats 传入时，把其中有值的
     拦截键（blocked_buy_limit / blocked_sell_limit / skipped_max_positions /
     skipped_no_cash / skipped_cooldown）并入漏斗；未传入或计数为 0 的键不输出
-    （宁缺勿假，键口径见 SimResult.execution_stats 注释）。
+   （宁缺勿假，键口径见 SimResult.execution_stats 注释）。
+- factor_attribution：因子归因（N1，参照 tick-stock-panel「因子归因」Tab）——
+  对比盈利单与亏损单入场信号日的因子取值，胜单均值明显高于败单说明该因子有
+  正筛选力。对每个指标列算胜/败两组均值 + diff，按 |diff| 降序。
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -168,3 +171,141 @@ def selection_stats(
         if v > 0:
             out[key] = v
     return out
+
+
+# ---------------------------------------------------------------------------
+# 因子归因（N1）
+# ---------------------------------------------------------------------------
+
+# 定位成交行的最大回溯步数（自然日）：分钟成交等口径下 entry_date 可能落在
+# 矩阵交易日轴之外（周末/节假日），向前找最近交易日时限步防无限回溯
+_SIGNAL_DAY_LOOKBACK_DAYS = 7
+
+# diff 的展示精度（因子原值不 round，原样输出）
+_DIFF_ROUND = 6
+
+
+def _factor_mean(values: list[float]) -> float | None:
+    """一组因子值的均值：剔除 NaN 后取均，全 NaN/空组返回 None（优雅降级）。"""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    if arr.size == 0:
+        return None
+    return float(arr.mean())
+
+
+def factor_attribution(
+    enriched,
+    trades: list[Trade],
+    matrix_symbols: list[str],
+    matrix_dates: list[date],
+    entry_fill: str = "open_t+1",
+) -> dict:
+    """因子归因：对比盈利单与亏损单入场信号日的因子取值。
+
+    参照 tick-stock-panel 的「因子归因」Tab：胜单因子均值明显高于败单，
+    说明该因子有正筛选力（diff > 0）。
+
+    信号日口径（随 entry_fill 变化，调用方从 MatcherConfig 透传）：
+      open_t+1（默认）—— T 日收盘出信号、T+1 开盘成交，
+      而 Trade.entry_date 记的是成交日。因此信号日 = 成交日的前一个矩阵交易日：
+      在 matrix_dates（矩阵交易日轴，含周末/节假日缺失，故不能用简单的
+      entry_date - 1 自然日）里找 entry_date 的索引 i，信号日行 = i - 1。
+      close_t（研究口径）—— 信号日即成交日本身（matcher sig_i = i），取行 i。
+      分钟口径（minute_* 入场）成交日不变，沿用 open_t+1 口径（i - 1）。
+      若 i == 0（成交日即矩阵首个交易日，无更早行），该笔跳过并计入
+      skipped_no_signal_day（close_t 口径 i==0 不跳过，信号日行 = 0）。
+      若 entry_date 不在矩阵轴上（分钟成交把成交日挪进矩阵区间外的日期），
+      向前找最近一个 ≤ entry_date 的矩阵交易日作成交行，再取其前一行作信号日
+      （防御口径；正常日K 回测不会走到）。
+
+    分组：ret > 0 为胜组，其余为败组（ret == 0 归败组）。
+    对每个指标列分别算两组均值：某组全 NaN 时该组均值为 None（优雅降级，
+    diff 也为 None）；diff = win_mean - lose_mean，按 |diff| 降序
+    （diff 为 None 的排最后，保持指标名稳定次序）。
+
+    空交易返回骨架 {"factors": [], "n_win": 0, "n_lose": 0,
+    "skipped_no_signal_day": 0}。
+    """
+    assumption = "same_day" if entry_fill == "close_t" else "prev_day"
+    empty = {
+        "factors": [], "n_win": 0, "n_lose": 0, "skipped_no_signal_day": 0,
+        "signal_day_assumption": assumption,
+    }
+    if not trades:
+        return empty
+
+    indicators: dict[str, np.ndarray] = getattr(enriched, "indicators", {}) or {}
+    if not indicators or not matrix_dates or not matrix_symbols:
+        return empty
+
+    sym_idx = {s: j for j, s in enumerate(matrix_symbols)}
+    date_idx = {d: i for i, d in enumerate(matrix_dates)}
+
+    win_vals: dict[str, list[float]] = {name: [] for name in indicators}
+    lose_vals: dict[str, list[float]] = {name: [] for name in indicators}
+    n_win = n_lose = skipped = 0
+
+    for t in trades:
+        j = sym_idx.get(t.symbol)
+        if j is None:
+            # 交易标的不在矩阵轴上（口径不一致），跳过并计信号日缺失
+            skipped += 1
+            continue
+        # 在矩阵交易日轴上定位成交行：优先精确命中；未命中则向前找最近一个
+        # ≤ entry_date 的交易日（限回溯 _SIGNAL_DAY_LOOKBACK_DAYS 步内）
+        i: int | None = None
+        for step in range(_SIGNAL_DAY_LOOKBACK_DAYS + 1):
+            k = date_idx.get(t.entry_date - timedelta(days=step))
+            if k is not None:
+                i = k
+                break
+        if i is None or (i == 0 and assumption == "prev_day"):
+            # 无信号日行（成交日为矩阵首个交易日，或轴上找不到成交行）
+            skipped += 1
+            continue
+        sig_row = i if assumption == "same_day" else i - 1
+        bucket = win_vals if t.ret > 0 else lose_vals
+        if t.ret > 0:
+            n_win += 1
+        else:
+            n_lose += 1
+        for name, arr in indicators.items():
+            bucket[name].append(float(arr[sig_row, j]))
+
+    if n_win == 0 and n_lose == 0:
+        # 全部交易都被跳过（无有效信号日），骨架 + 跳过计数
+        return {
+            "factors": [], "n_win": 0, "n_lose": 0,
+            "skipped_no_signal_day": skipped,
+            "signal_day_assumption": assumption,
+        }
+
+    factors: list[dict] = []
+    for name in indicators:
+        wm = _factor_mean(win_vals[name])
+        lm = _factor_mean(lose_vals[name])
+        diff = (
+            round(wm - lm, _DIFF_ROUND)
+            if wm is not None and lm is not None else None
+        )
+        factors.append({
+            "factor": name,
+            "win_mean": wm,
+            "lose_mean": lm,
+            "diff": diff,
+            "n_win": n_win,
+            "n_lose": n_lose,
+        })
+    # 按 |diff| 降序；diff 为 None 的（某组全 NaN）排最后，保持指标名稳定次序
+    factors.sort(
+        key=lambda f: abs(f["diff"]) if f["diff"] is not None else -1.0,
+        reverse=True,
+    )
+    return {
+        "factors": factors,
+        "n_win": n_win,
+        "n_lose": n_lose,
+        "skipped_no_signal_day": skipped,
+        "signal_day_assumption": assumption,
+    }

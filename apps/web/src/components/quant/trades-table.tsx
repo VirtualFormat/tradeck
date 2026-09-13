@@ -3,9 +3,10 @@
 /**
  * 回测交易明细表：代码 / 买卖日期价 / 股数 / 持仓天数 / 盈亏 / 收益率 / 卖出原因
  * 阶段 K3：加入场/出场成交口径列（日K / VWAP / 穿越价 / 盘中触发），分钟口径高亮
+ * 阶段 N3：传 onTradeClick 时行可点击（含键盘 Enter/Space）→ 打开 K 线回放弹窗
  * 超过 20 行简单分页（上一页 / 下一页）
  */
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { CaretLeftIcon, CaretRightIcon } from "@phosphor-icons/react";
 
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +33,18 @@ import {
 
 const PAGE_SIZE = 20;
 
+/** 行激活触发（点击或键盘 Enter/Space，键盘只在行自身聚焦时响应） */
+function rowKeyActivate(
+  e: KeyboardEvent<HTMLTableRowElement>,
+  onActivate: (() => void) | undefined
+) {
+  if (!onActivate || e.target !== e.currentTarget) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    onActivate();
+  }
+}
+
 /** 成交口径 Badge：分钟口径用默认实心 Badge 高亮，日K 用描边弱化 */
 function FillModeBadge({ mode }: { mode: string | null | undefined }) {
   const minute = isMinuteFillMode(mode);
@@ -40,7 +53,14 @@ function FillModeBadge({ mode }: { mode: string | null | undefined }) {
   );
 }
 
-export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
+export function TradesTable({
+  trades,
+  onTradeClick,
+}: {
+  trades: BacktestTrade[];
+  /** 行点击回调（阶段 N3 K 线回放）；不传则行不可点击 */
+  onTradeClick?: (trade: BacktestTrade) => void;
+}) {
   const [page, setPage] = useState(0);
   const pageCount = Math.ceil(trades.length / PAGE_SIZE);
   const safePage = Math.min(page, Math.max(pageCount - 1, 0));
@@ -73,6 +93,16 @@ export function TradesTable({ trades }: { trades: BacktestTrade[] }) {
           {rows.map((trade, i) => (
             <TableRow
               key={`${trade.symbol}-${trade.entry_date}-${trade.exit_date}-${i}`}
+              className={
+                onTradeClick ? "cursor-pointer hover:bg-muted/50" : undefined
+              }
+              tabIndex={onTradeClick ? 0 : undefined}
+              onClick={
+                onTradeClick ? () => onTradeClick(trade) : undefined
+              }
+              onKeyDown={(e) =>
+                rowKeyActivate(e, onTradeClick && (() => onTradeClick(trade)))
+              }
             >
               <TableCell className="font-mono text-xs">
                 {trade.symbol}

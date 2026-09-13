@@ -193,6 +193,54 @@ export interface BacktestResult {
   selection_stats?: SelectionStats | null;
   /** 执行层拦截 / 跳过计数（阶段 M，有值才渲染成交约束条） */
   execution_stats?: ExecutionStats | null;
+  /** 因子归因（阶段 N3）：对比盈利单与亏损单入场信号日的因子均值，
+   * null / undefined 表示后端未提供（旧响应缺省不展示「因子归因」Tab） */
+  factor_attribution?: FactorAttribution | null;
+}
+
+/** 因子归因契约（BacktestResult.factor_attribution，阶段 N3） */
+export interface FactorAttribution {
+  factors: FactorAttributionRow[];
+  n_win: number;
+  n_lose: number;
+  /** 入场信号日无有效因子数据而跳过的笔数（有值才提示） */
+  skipped_no_signal_day?: number;
+  /** 信号日定位口径：prev_day = 成交日前一交易日（open_t+1）；
+   *  same_day = 成交日当天（close_t 研究口径） */
+  signal_day_assumption?: "prev_day" | "same_day";
+}
+
+export interface FactorAttributionRow {
+  /** enriched 指标英文名（如 ma5 / rsi14） */
+  factor: string;
+  win_mean: number | null;
+  lose_mean: number | null;
+  diff: number | null;
+}
+
+/** enriched 指标英文名 → 中文标签（未知 key 原样展示，见 quant 端 matrix/enriched.py） */
+export const FACTOR_LABELS: Record<string, string> = {
+  ma5: "MA5",
+  ma10: "MA10",
+  ma20: "MA20",
+  ma60: "MA60",
+  ema12: "EMA12",
+  ema26: "EMA26",
+  macd_dif: "MACD DIF",
+  macd_dea: "MACD DEA",
+  macd_hist: "MACD HIST",
+  rsi14: "RSI14",
+  boll_upper: "BOLL 上轨",
+  boll_lower: "BOLL 下轨",
+  momentum_5d: "动量5日",
+  momentum_20d: "动量20日",
+  vol_ratio_5d: "量比",
+  high_20d: "20 日高点",
+  low_20d: "20 日低点",
+};
+
+export function factorLabel(factor: string): string {
+  return FACTOR_LABELS[factor] ?? factor;
 }
 
 /** 单标的表现统计（per_symbol_stats） */

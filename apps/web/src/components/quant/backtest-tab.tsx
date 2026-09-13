@@ -4,6 +4,8 @@
  * Tab 1「策略回测」：左侧策略/参数/标的池(universe)/区间/资金/成本表单，右侧结果区
  * 结果区结构：概要条 → 核心指标卡网格（tooltip 解释）→ 选股/成交约束条 →
  * 净值曲线 → 收益分布 → 卖出归因 → 结果明细 Tabs（交易明细/按日期/选股分析）
+ * 阶段 N3：交易明细 / 选股分析行点击打开 K 线回放弹窗（trade-kline-modal），
+ * factor_attribution 有值时结果 Tabs 追加「因子归因」
  * 运行走任务化 API（POST run → 轮询 task，可取消）；任务接口缺失时一次性回退旧同步接口
  */
 import {
@@ -11,6 +13,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type KeyboardEvent,
   type SetStateAction,
 } from "react";
 import {
@@ -79,11 +82,13 @@ import { EquityChart } from "./equity-chart";
 import { MetricCard } from "./metric-card";
 import { ReturnDistributionChart } from "./return-distribution-chart";
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
+import { TradeKlineModal } from "./trade-kline-modal";
 import { TradesTable } from "./trades-table";
 import {
   buildParamsPayload,
   EXIT_FILL_OPTIONS,
   exitReasonLabel,
+  factorLabel,
   fmtMoney,
   fmtNum,
   fmtPct,
@@ -95,8 +100,10 @@ import {
   type BacktestRunResponse,
   type BacktestTaskProgress,
   type BacktestTaskState,
+  type BacktestTrade,
   type DailyTradeRow,
   type ExecutionStats,
+  type FactorAttribution,
   type ParamValues,
   type PerSymbolStat,
   type SelectionStats,
@@ -107,6 +114,18 @@ import {
 const POLL_INTERVAL_MS = 2000;
 const POLL_RETRY_WARN = 3;
 const POLL_RETRY_GIVEUP = 90;
+
+/** 行激活触发（点击或键盘 Enter/Space，键盘只在行自身聚焦时响应） */
+function rowKeyActivate(
+  e: KeyboardEvent<HTMLTableRowElement>,
+  onActivate: (() => void) | undefined
+) {
+  if (!onActivate || e.target !== e.currentTarget) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    onActivate();
+  }
+}
 
 /** 标的池 universe 选项（标的输入为空时生效，自定义标的时置灰） */
 const UNIVERSE_OPTIONS = [
@@ -883,6 +902,9 @@ function BacktestResultSkeleton() {
 function BacktestResultView({ result }: { result: BacktestResult }) {
   const { stats } = result;
   const [start, end] = result.range;
+  // K 线回放弹窗（阶段 N3）：trade = 交易明细行单笔回放，pick = 选股分析行标的回放
+  const [tradeModal, setTradeModal] = useState<BacktestTrade | null>(null);
+  const [pickModal, setPickModal] = useState<PerSymbolStat | null>(null);
 
   /** 导出 CSV：概要 + 净值曲线 + 交易明细 + 分标的统计四段（BOM 头，Excel 兼容） */
   function exportResultCsv() {
@@ -1002,6 +1024,16 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
   const dailyRows = result.daily_trade_rows ?? [];
   const selectionStats = result.selection_stats ?? null;
   const executionStats = result.execution_stats ?? null;
+  const factorAttribution = result.factor_attribution ?? null;
+  const showFactorAttribution =
+    factorAttribution != null && factorAttribution.factors.length > 0;
+  // 标的回放用：symbol → 该标的全部 trades（预分桶避免每次点击全量过滤）
+  const tradesBySymbol = new Map<string, BacktestTrade[]>();
+  for (const t of trades) {
+    const bucket = tradesBySymbol.get(t.symbol);
+    if (bucket) bucket.push(t);
+    else tradesBySymbol.set(t.symbol, [t]);
+  }
   const hasExcess = benchmark?.excess_return != null;
   // 分钟成交覆盖统计（阶段 K3）：仅开了分钟口径（used+fallback>0）时标注
   const minuteUsed = result.minute_fill_used ?? 0;
@@ -1214,6 +1246,9 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
               <TabsTrigger value="trades">交易明细</TabsTrigger>
               <TabsTrigger value="daily">按日期</TabsTrigger>
               <TabsTrigger value="picks">选股分析</TabsTrigger>
+              {showFactorAttribution && (
+                <TabsTrigger value="factors">因子归因</TabsTrigger>
+              )}
             </TabsList>
             <TabsContent value="trades">
               {trades.length === 0 ? (
@@ -1223,7 +1258,7 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
                   compact
                 />
               ) : (
-                <TradesTable trades={trades} />
+                <TradesTable trades={trades} onTradeClick={setTradeModal} />
               )}
             </TabsContent>
             <TabsContent value="daily">
@@ -1237,12 +1272,45 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
               {perSymbolStats.length === 0 ? (
                 <EmptyState title="无选股分析数据" compact />
               ) : (
-                <PerSymbolStatsTable rows={perSymbolStats} />
+                <PerSymbolStatsTable
+                  rows={perSymbolStats}
+                  onRowClick={setPickModal}
+                />
               )}
             </TabsContent>
+            {showFactorAttribution && factorAttribution && (
+              <TabsContent value="factors">
+                <FactorAttributionTable attribution={factorAttribution} />
+              </TabsContent>
+            )}
           </Tabs>
         </CardContent>
       </Card>
+
+      {/* 8. K 线回放弹窗（交易明细行 / 选股分析行共用） */}
+      {tradeModal && (
+        <TradeKlineModal
+          open
+          onOpenChange={(o) => {
+            if (!o) setTradeModal(null);
+          }}
+          symbol={tradeModal.symbol}
+          name={tradeModal.name}
+          trades={[tradeModal]}
+        />
+      )}
+      {pickModal && (
+        <TradeKlineModal
+          open
+          onOpenChange={(o) => {
+            if (!o) setPickModal(null);
+          }}
+          symbol={pickModal.symbol}
+          name={pickModal.name}
+          trades={tradesBySymbol.get(pickModal.symbol) ?? []}
+          stat={pickModal}
+        />
+      )}
     </div>
   );
 }
@@ -1341,7 +1409,77 @@ function DailyTradeTable({ rows }: { rows: DailyTradeRow[] }) {
 }
 
 /** 按标的表现统计表（per_symbol_stats） */
-function PerSymbolStatsTable({ rows }: { rows: PerSymbolStat[] }) {
+/** 因子归因表（阶段 N3）：对比盈利单与亏损单入场信号日的因子均值 */
+function FactorAttributionTable({
+  attribution,
+}: {
+  attribution: FactorAttribution;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        对比盈利单与亏损单入场信号日的因子均值；胜单均值明显高 = 该因子有正向筛选力。
+        {attribution.signal_day_assumption === "same_day"
+          ? "信号日 = 成交日当天（close_t 口径）。"
+          : "信号日 = 成交日前一交易日（open_t+1 口径）。"}
+        <span className="ml-2 tabular-nums">
+          胜单 {attribution.n_win} 笔 · 败单 {attribution.n_lose} 笔
+        </span>
+        {attribution.skipped_no_signal_day ? (
+          <span className="ml-2 tabular-nums">
+            （{attribution.skipped_no_signal_day} 笔无入场日因子数据已跳过）
+          </span>
+        ) : null}
+      </p>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>因子</TableHead>
+            <TableHead className="text-right">胜单均值</TableHead>
+            <TableHead className="text-right">败单均值</TableHead>
+            <TableHead className="text-right">差值</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {attribution.factors.map((f) => (
+            <TableRow key={f.factor}>
+              <TableCell>
+                <span>{factorLabel(f.factor)}</span>
+                {factorLabel(f.factor) !== f.factor && (
+                  <span className="ml-1.5 font-mono text-xs text-muted-foreground">
+                    {f.factor}
+                  </span>
+                )}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {fmtNum(f.win_mean, 4)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {fmtNum(f.lose_mean, 4)}
+              </TableCell>
+              <TableCell
+                className="text-right tabular-nums"
+                style={pnlStyle(f.diff)}
+              >
+                {f.diff != null ? fmtNum(f.diff, 4) : "—"}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+/** 按标的表现统计表（per_symbol_stats） */
+function PerSymbolStatsTable({
+  rows,
+  onRowClick,
+}: {
+  rows: PerSymbolStat[];
+  /** 行点击回调（阶段 N3 标的 K 线回放）；不传则行不可点击 */
+  onRowClick?: (row: PerSymbolStat) => void;
+}) {
   return (
     <Table>
       <TableHeader>
@@ -1357,7 +1495,17 @@ function PerSymbolStatsTable({ rows }: { rows: PerSymbolStat[] }) {
       </TableHeader>
       <TableBody>
         {rows.map((r) => (
-          <TableRow key={r.symbol}>
+          <TableRow
+            key={r.symbol}
+            className={
+              onRowClick ? "cursor-pointer hover:bg-muted/50" : undefined
+            }
+            tabIndex={onRowClick ? 0 : undefined}
+            onClick={onRowClick ? () => onRowClick(r) : undefined}
+            onKeyDown={(e) =>
+              rowKeyActivate(e, onRowClick && (() => onRowClick(r)))
+            }
+          >
             <TableCell>
               <span className="tabular-nums">{r.symbol}</span>
               {r.name && (

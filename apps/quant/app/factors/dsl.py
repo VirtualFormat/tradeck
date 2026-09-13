@@ -869,6 +869,12 @@ def compile_formula(text: str, user_id: str | None = None) -> CompiledFormula:
 
 
 @lru_cache(maxsize=256)
-def compile_formula_cached(text: str) -> CompiledFormula:
-    """带 LRU 缓存的编译入口；CompiledFormula 为不可变值对象，缓存共享安全。"""
-    return compile_formula(text)
+def compile_formula_cached(text: str, user_id: str | None = None) -> CompiledFormula:
+    """带 LRU 缓存的编译入口；CompiledFormula 为不可变值对象，缓存共享安全。
+
+    缓存键必须含 user_id（历史挂账修复）：compile_formula 的解析依赖编译期
+    命名空间（builtin 全局 + 当前用户私有注册因子，见 get_user_factor），
+    同一公式文本在不同用户视图下产物不同（如引用 uf_* 私有因子），
+    只按文本缓存会跨用户串缓存。
+    """
+    return compile_formula(text, user_id=user_id)
