@@ -289,6 +289,24 @@ Review 结论：1 P0 + 2 P1 + 5 P2，已全部处置。
 
 ## prod 部署记录（2026-09-11，主 agent）
 
+## prod 部署记录（2026-09-13，Russell 部署 agent）
+
+阶段 L + 后续三个 commit（universe/挖掘口径/策略 ref）部署到 prod（host-thu）。
+链路：develop push（82b20c3）→ CI app-images run 34687553970（4 镜像 amd64+arm64
+build+merge 全绿，1m47s）→ VPS pull + force-recreate quant/web。
+
+**部署中处置的 prod 事故**：VPS iptables filter 表被外部清空（DOCKER/DOCKER-USER 链
+全丢，疑似云安全组件清表，与本次部署无关），quant 端口映射无法编程、容器
+Restarting(137) 死循环。经主 agent 报用户批准后 `systemctl restart docker`，
+daemon 重建规则，web/tradb 全链路自动恢复；随后 quant/web 重建成功。
+
+验证：`/health` ok；`GET /api/backtest/task/nonexistent` 返回业务 404 JSON
+（阶段 L 任务化端点已上线）。
+
+**运维登记**：若 VPS 再发容器端口映射失败/Restarting(137)，先查
+`iptables -L DOCKER -n` 是否被清表——重启 docker daemon 可恢复（restart=always
+容器会自动拉起）。
+
 阶段 G–K 全部代码部署到 prod（host-thu，腾讯云）。链路：推 develop → CI 构建
 tradeck-quant 多架构镜像 → VPS `docker compose pull && up -d --force-recreate quant`。
 
