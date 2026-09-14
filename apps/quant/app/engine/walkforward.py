@@ -91,7 +91,9 @@ def aggregate_oos(fold_records: list[dict], objective: str, direction: str = "ma
     if n == 0:
         return {
             "n_folds": 0,
-            "compounded_oos_return": 0.0,
+            # 「没有任何有效折」≠「收益 0%」——与 consistency/degradation 同口径
+            # 置 None（阶段 O review P2-2 统一），前端显示「—」而非误导性 +0.00%
+            "compounded_oos_return": None,
             "avg_is_objective": None,
             "avg_oos_objective": None,
             "degradation": None,

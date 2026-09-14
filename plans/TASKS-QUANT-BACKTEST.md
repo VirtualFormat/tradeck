@@ -328,6 +328,16 @@ Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
 | O4 分钟回放展示 | 前端 MinuteReplayView（hits/trigger_time/skipped 展示） | Arendt |
 | 主 agent | 文案三项（蒙卡 tooltip/直方图超界标注/漏斗口径注明）+ 鉴权沉淀提交 | — |
 
+验收：Confucius 独立 review 0 P0 / 0 P1 / 2 P2（空折复利收益统一 None 已修；
+undici override 告警归因复核登记 backlog——`shadcn>undici` scoped 选择器
+把 shadcn 自身拽到 8.x，若 Dependabot 告警源是 dotenvx 链路则未覆盖，待复核）。
+
+**部署登记（Linnaeus，2026-09-14）**：阶段 M/N/O 已部署 prod（CI run
+34804000750 全绿 → VPS pull + recreate quant/web）；`/api/optimize` prod 冒烟
+返回 best_params（M1 透出 + N worker 修复 prod 生效）；OptimizeWorkerPathTest
+在容器里**实际跑通**（test_worker_path_under_running_loop ok 非 skip，
+「防静默 skip」登记项销账）。
+
 | 任务 | 内容 | 执行 |
 |---|---|---|
 | N1 因子归因后端 | factor_attribution（胜/败单信号日因子均值，17 指标列，信号日=成交日前一交易日，close_t 口径取当天） | Avicenna |

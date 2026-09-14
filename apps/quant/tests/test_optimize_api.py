@@ -277,7 +277,7 @@ class WalkforwardApiEndToEndTest(unittest.TestCase):
 class AggregateOosEmptyFoldsTest(unittest.TestCase):
     """aggregate_oos 空折口径（Wave 2 挂账修复）：
     无有效折 ≠ 一致性 0%——consistency 必须 None（前端显示「—」），
-    其余标量口径不变（复利 0.0 / 各均值 None）。
+    复利收益同语义（None，阶段 O review P2-2 统一，防前端误显示 +0.00%）。
     """
 
     def test_empty_folds_consistency_is_none(self) -> None:
@@ -285,7 +285,7 @@ class AggregateOosEmptyFoldsTest(unittest.TestCase):
 
         agg = aggregate_oos([], objective="sortino")
         self.assertEqual(agg["n_folds"], 0)
-        self.assertEqual(agg["compounded_oos_return"], 0.0)
+        self.assertIsNone(agg["compounded_oos_return"])
         self.assertIsNone(agg["consistency"])
         self.assertIsNone(agg["degradation"])
         self.assertIsNone(agg["avg_is_objective"])
