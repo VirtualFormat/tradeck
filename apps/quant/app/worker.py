@@ -83,6 +83,18 @@ def _load_minute_cache(
     """子进程内读分钟K 本地缓存（纯文件读，不补拉网络）。
 
     返回 {symbol: DataFrame}；全空返回 None（matcher 降级日K 口径）。
+
+    设计取舍（Wave 2 review P2-8 收口）：主进程（api.py 预拉）已把分钟K 落盘，
+    这里再逐 symbol 读盘 concat 一遍——看似重复，实为刻意：
+    - spawn 子进程与主进程是独立解释器，内存不共享；分钟K 要进子进程只能
+      随 task dict pickle 过管道。分钟帧体量无界（分钟行数 ≈ 日K ×240，
+      universe=all 全市场预拉在主进程 async 组装时就会 OOM，根本轮不到
+      pickle），且多 worker 并发时同一份大数据要 pickle N 次。
+    - parquet 磁盘缓存即「跨进程序列化介质」：主进程预拉只补缺口（命中时
+      零网络），本函数是纯本地 parquet 读 + concat，既是快速路径也是唯一
+      可行的传输通道。同步版 run_backtest_async 的内存帧透传只在同进程
+      成立，跨进程不可照搬。
+    结论：保持「主进程预拉落缓存 + 子进程读缓存」，不向 task dict 塞分钟帧。
     """
     from app.data.client_minute import load_minute
 

@@ -30,8 +30,14 @@ export function ReturnDistributionChart({
   const chartData = data.map((b) => {
     const positive = b.bucket_start >= 0;
     const negative = b.bucket_end <= 0;
+    // 超界标注（P2）：±20% 之外的样本被后端 clip 并入最外桶，
+    // 区间文案加「+」明示该桶含超界交易（bucket 区间本身是 ±0.20 边界）
+    const isOverflow = b.bucket_start <= -0.2 || b.bucket_end >= 0.2;
+    const rangeLabel = isOverflow
+      ? `${fmtPct(b.bucket_start)} ~ ${fmtPct(b.bucket_end)}+`
+      : `${fmtPct(b.bucket_start)} ~ ${fmtPct(b.bucket_end)}`;
     return {
-      bucket: `${fmtPct(b.bucket_start)} ~ ${fmtPct(b.bucket_end)}`,
+      bucket: rangeLabel,
       count: b.count,
       fill:
         positive

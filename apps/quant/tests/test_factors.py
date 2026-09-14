@@ -21,7 +21,7 @@ from datetime import date, timedelta
 import numpy as np
 
 from app.factors import registry, store
-from app.factors.dsl import compile_formula, compile_formula_cached
+from app.factors.dsl import compile_formula
 from app.factors.registry import FactorSpec
 from app.matrix import MarketMatrix, enrich
 
@@ -192,47 +192,6 @@ class RegistryIsolationTest(unittest.TestCase):
     def test_builtin_unregister_rejected(self) -> None:
         with self.assertRaises(ValueError):
             registry.unregister_factor("close")
-
-
-class CompileFormulaCachedTest(unittest.TestCase):
-    """compile_formula_cached 缓存键含 user_id 维度（历史挂账修复）。
-
-    背景：compile_formula 的解析依赖编译期命名空间（用户私有注册因子），
-    同文本在不同用户视图下产物不同；缓存键只含文本会跨用户串缓存。
-    """
-
-    def setUp(self) -> None:
-        compile_formula_cached.cache_clear()
-        _clear_test_namespaces()
-
-    def tearDown(self) -> None:
-        compile_formula_cached.cache_clear()
-        _clear_test_namespaces()
-
-    def test_same_key_cache_hit(self) -> None:
-        # 同 (text, user_id) 命中缓存：返回同一不可变值对象
-        first = compile_formula_cached("ts_mean(close, 3)")
-        second = compile_formula_cached("ts_mean(close, 3)")
-        self.assertIs(first, second)
-        self.assertTrue(first.ok)
-
-    def test_user_isolation(self) -> None:
-        # 同文本不同用户产出隔离：alice 注册私有因子后本人编译通过，
-        # bob（未注册）编译失败，缓存不串
-        registry.register_factor(_custom_spec("uf_cache_iso"), "alice")
-        compiled_alice = compile_formula_cached("uf_cache_iso * 2", user_id="alice")
-        compiled_bob = compile_formula_cached("uf_cache_iso * 2", user_id="bob")
-        self.assertNotEqual(compiled_alice, compiled_bob)  # 不同缓存条目
-        self.assertTrue(compiled_alice.ok)
-        self.assertFalse(compiled_bob.ok)
-        self.assertIn("E001", {e.code for e in compiled_bob.errors})
-        # 匿名视图（user_id=None）与 bob 同样失败（私有因子不可见），
-        # 且与 alice 的缓存条目互不污染
-        compiled_anon = compile_formula_cached("uf_cache_iso * 2")
-        self.assertFalse(compiled_anon.ok)
-        self.assertNotEqual(compiled_alice, compiled_anon)
-        # alice 的缓存条目仍命中（未被其他键污染）
-        self.assertIs(compiled_alice, compile_formula_cached("uf_cache_iso * 2", user_id="alice"))
 
 
 class CompositeRingTest(unittest.TestCase):

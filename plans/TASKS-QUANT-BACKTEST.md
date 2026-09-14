@@ -315,10 +315,18 @@ Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
 - [ ] walk-forward 空折 consistency=0.0 口径（继承参照，影响评估）。
 - [ ] compile_formula_cached 接线或删除（N 阶段已修 user_id 维度，但生产零调用方，
   mining 走自己的 _COMPILE_CACHE；review P2-3 建议二选一防误用）。
-- [ ] OptimizeWorkerPathTest 在容器/CI 里必须实际跑一次（宿主机 asyncio 唤醒怪癖
-  会自动 skip，别让「跳过」静默变成「从未验证」）。
 
 ## 阶段 N：backlog 落地（2026-09-13，主 agent 总负责 + 3 子 agent 并行 + Arendt review）
+
+## 阶段 O：剩余项收尾（2026-09-14，主 agent 总负责 + 4 子 agent 并行）
+
+| 任务 | 内容 | 执行 |
+|---|---|---|
+| O1 部署 + 容器实跑 | 阶段 M/N 部署 prod；OptimizeWorkerPathTest 容器实跑闭环 | Linnaeus |
+| O2 Dependabot | 18 漏洞（6 high）排查修复 | Nietzsche |
+| O3 后端杂项 | 分钟K 预拉去重 / walk-forward 空折口径 / compile_formula_cached 删除 | Fermat |
+| O4 分钟回放展示 | 前端 MinuteReplayView（hits/trigger_time/skipped 展示） | Arendt |
+| 主 agent | 文案三项（蒙卡 tooltip/直方图超界标注/漏斗口径注明）+ 鉴权沉淀提交 | — |
 
 | 任务 | 内容 | 执行 |
 |---|---|---|

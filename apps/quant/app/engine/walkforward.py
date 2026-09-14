@@ -83,7 +83,8 @@ def aggregate_oos(fold_records: list[dict], objective: str, direction: str = "ma
     - compounded_oos_return: 各折 OOS 总收益复利
     - degradation: 归一空间下 IS 目标均值 - OOS 目标均值，正值 = 样本外退化（过拟合信号），
       对「越小越好」目标方向也正确
-    - consistency: OOS 总收益 > 0 的折占比（与目标方向无关，直观）
+    - consistency: OOS 总收益 > 0 的折占比（与目标方向无关，直观）；
+      无有效折（n==0）时为 None（「无数据」≠「一致性 0%」，前端显示「—」）
     - param_stability: 各折最优参数的取值集合（观测参数是否漂移；稳定 = 集合小/单值）
     """
     n = len(fold_records)
@@ -94,7 +95,7 @@ def aggregate_oos(fold_records: list[dict], objective: str, direction: str = "ma
             "avg_is_objective": None,
             "avg_oos_objective": None,
             "degradation": None,
-            "consistency": 0.0,
+            "consistency": None,
             "oos_equity_curve": [],
             "param_stability": {},
         }

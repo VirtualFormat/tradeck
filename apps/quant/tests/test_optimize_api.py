@@ -274,6 +274,39 @@ class WalkforwardApiEndToEndTest(unittest.TestCase):
             )
 
 
+class AggregateOosEmptyFoldsTest(unittest.TestCase):
+    """aggregate_oos 空折口径（Wave 2 挂账修复）：
+    无有效折 ≠ 一致性 0%——consistency 必须 None（前端显示「—」），
+    其余标量口径不变（复利 0.0 / 各均值 None）。
+    """
+
+    def test_empty_folds_consistency_is_none(self) -> None:
+        from app.engine.walkforward import aggregate_oos
+
+        agg = aggregate_oos([], objective="sortino")
+        self.assertEqual(agg["n_folds"], 0)
+        self.assertEqual(agg["compounded_oos_return"], 0.0)
+        self.assertIsNone(agg["consistency"])
+        self.assertIsNone(agg["degradation"])
+        self.assertIsNone(agg["avg_is_objective"])
+        self.assertIsNone(agg["avg_oos_objective"])
+        self.assertEqual(agg["oos_equity_curve"], [])
+        self.assertEqual(agg["param_stability"], {})
+
+    def test_nonempty_folds_consistency_ratio(self) -> None:
+        from app.engine.walkforward import aggregate_oos
+
+        recs = [
+            {"index": i, "test_end": date(2026, 2, 1), "is_score": 1.0,
+             "oos_objective": 1.0, "best_params": {},
+             "oos_stats": {"total_return": r}}
+            for i, r in enumerate((0.1, -0.05, 0.02))
+        ]
+        agg = aggregate_oos(recs, objective="sortino")
+        self.assertEqual(agg["n_folds"], 3)
+        self.assertEqual(agg["consistency"], round(2 / 3, 4))
+
+
 class OptimizeWorkerPathTest(unittest.TestCase):
     """worker 池派发路径 e2e（阶段 M review 残余风险 2 的处置）：
     _make_run_fn_worker 在 async 入口的 running loop 里被同步循环调用，

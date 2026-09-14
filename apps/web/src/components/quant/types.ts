@@ -198,6 +198,51 @@ export interface BacktestResult {
   factor_attribution?: FactorAttribution | null;
 }
 
+/* ---------- 分钟频策略回放结果（阶段 L） ---------- */
+
+/** 盘中触发命中（runner._minute_replay_result_dict hits 元素） */
+export interface MinuteReplayHit {
+  trade_date: string;
+  symbol: string;
+  entry_price: number | null;
+  /** 触发分钟K 时间戳 "HH:MM" */
+  trigger_time: string;
+  score: number | null;
+}
+
+/**
+ * 分钟频策略回放结果（mode = "minute_replay"）：
+ * 与日K 回测 BacktestResult 是两套独立结构（无 stats），经判别函数分流展示。
+ */
+export interface MinuteReplayResult {
+  mode: "minute_replay";
+  strategy: string;
+  symbols: string[];
+  range: string[];
+  replayed_days: number;
+  /** 无分钟分区 / 单日执行失败而被跳过的交易日 */
+  skipped_days: string[];
+  /** 触发分钟收盘已达涨停价而拒买的次数 */
+  buy_limit_up: number;
+  unadjusted: string[];
+  elapsed_ms: number | null;
+  hits: MinuteReplayHit[];
+}
+
+/** 判别分钟回放结果：mode 字段是两套结构的唯一区分点 */
+export function isMinuteReplayResult(
+  result: unknown
+): result is MinuteReplayResult {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { mode?: unknown }).mode === "minute_replay"
+  );
+}
+
+/** 回测结果联合类型：日K 回测 或 分钟频回放 */
+export type BacktestAnyResult = BacktestResult | MinuteReplayResult;
+
 /** 因子归因契约（BacktestResult.factor_attribution，阶段 N3） */
 export interface FactorAttribution {
   factors: FactorAttributionRow[];
@@ -341,7 +386,7 @@ export interface BacktestTaskProgress {
 export interface BacktestTaskState {
   status: BacktestTaskStatus;
   progress?: BacktestTaskProgress | null;
-  result?: BacktestResult | null;
+  result?: BacktestAnyResult | null;
   error?: string | null;
 }
 

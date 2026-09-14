@@ -80,6 +80,7 @@ import {
 
 import { EquityChart } from "./equity-chart";
 import { MetricCard } from "./metric-card";
+import { MinuteReplayView } from "./minute-replay-view";
 import { ReturnDistributionChart } from "./return-distribution-chart";
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
 import { TradeKlineModal } from "./trade-kline-modal";
@@ -92,10 +93,12 @@ import {
   fmtMoney,
   fmtNum,
   fmtPct,
+  isMinuteReplayResult,
   isExecutionStatKey,
   parseSymbols,
   pnlStyle,
   selectionStatLabel,
+  type BacktestAnyResult,
   type BacktestResult,
   type BacktestRunResponse,
   type BacktestTaskProgress,
@@ -195,8 +198,8 @@ const METRIC_HINTS: Record<string, string> = {
   胜率: "盈利交易占比，样本少时仅供参考。",
   盈亏比: "平均盈利÷平均亏损。",
   平均持仓: "已完成交易的平均持仓天数。",
-  "回撤中位（蒙卡）": "蒙特卡洛重抽样后的最大回撤中位数，典型回撤水平。",
-  "回撤 95%（蒙卡）": "蒙特卡洛重抽样后 95% 分位的最大回撤，极端回撤水平。",
+  "回撤中位（蒙卡）": "把日收益顺序随机重排 1000 次后的最大回撤中位数——衡量「收益顺序运气」对回撤的影响，典型回撤水平，非置信区间。",
+  "回撤 95%（蒙卡）": "日收益顺序随机重排 1000 次后 95% 分位的最大回撤——收益顺序不利时的极端回撤水平（顺序敏感性估计，非置信区间）。",
 };
 
 interface BacktestTabProps {
@@ -254,7 +257,7 @@ export function BacktestTab({
   const [startOpen, setStartOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<BacktestResult | null>(null);
+  const [result, setResult] = useState<BacktestAnyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 任务化回测（阶段 K4）：轮询进度 / 停止标记 / 轮询连续失败（连接中断）状态
   const [taskProgress, setTaskProgress] =
@@ -359,7 +362,7 @@ export function BacktestTab({
    */
   async function runBacktestViaTask(
     payload: Record<string, unknown>
-  ): Promise<BacktestResult | null> {
+  ): Promise<BacktestAnyResult | null> {
     const runRes = await fetch("/api/quant/backtest/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -426,7 +429,7 @@ export function BacktestTab({
   /** 旧同步接口一次性回退（任务 API 未部署时兜底），失败返回 null */
   async function runBacktestLegacy(
     payload: Record<string, unknown>
-  ): Promise<BacktestResult | null> {
+  ): Promise<BacktestAnyResult | null> {
     try {
       const res = await fetch("/api/quant/backtest", {
         method: "POST",
@@ -434,13 +437,15 @@ export function BacktestTab({
         body: JSON.stringify(payload),
       });
       if (!res.ok) return null;
-      const body = (await res.json()) as BacktestResult & {
+      const body = (await res.json()) as Partial<BacktestResult> & {
         error?: string;
       };
+      // 分钟频回放结果（mode = minute_replay）无 stats，是合法成功结果，直接放行
+      if (isMinuteReplayResult(body)) return body;
       // worker 失败时同步接口返回 200 + 错误骨架（{error, stats: null}），
       // 不能当成功结果渲染（P2-7）
       if (body.error || body.stats == null) return null;
-      return body;
+      return body as BacktestResult;
     } catch {
       return null;
     }
@@ -787,6 +792,8 @@ export function BacktestTab({
             <EmptyState title={error} compact />
           </CardContent>
         </Card>
+      ) : result && isMinuteReplayResult(result) ? (
+        <MinuteReplayView result={result} />
       ) : result ? (
         <BacktestResultView result={result} />
       ) : (
@@ -1339,7 +1346,9 @@ function SelectionStatsBar({
       <CardContent className="flex flex-wrap items-center gap-2 py-3">
         {funnel.length > 0 && (
           <>
-            <span className="text-xs text-muted-foreground">选股漏斗</span>
+            <span className="text-xs text-muted-foreground">
+              选股漏斗（信号计数为右移前口径，与撮合评估日差一天）
+            </span>
             {funnel.map(([key, value]) => (
               <Badge key={key} variant="outline">
                 {selectionStatLabel(key)}{" "}
