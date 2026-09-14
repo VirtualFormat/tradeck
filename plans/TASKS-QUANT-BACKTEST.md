@@ -335,6 +335,20 @@ undici override 告警归因复核登记 backlog——`shadcn>undici` scoped 选
 **部署登记（Linnaeus，2026-09-14）**：阶段 M/N/O 已部署 prod（CI run
 34804000750 全绿 → VPS pull + recreate quant/web）；`/api/optimize` prod 冒烟
 返回 best_params（M1 透出 + N worker 修复 prod 生效）；OptimizeWorkerPathTest
+在容器里实际跑通（ok 非 skip，「防静默 skip」登记项销账）。
+
+## 阶段 P：全量模拟模式（2026-09-14，Aquinas 开发 + Pauli review + 主 agent 收尾）
+
+参照 tick-stock-panel `simulate_independent_candidates` 移植：每个买入信号独立
+执行（固定 1 手、不受资金/持仓限制），评估策略选股质量。`sim_mode=full` 经
+BacktestRequest 透出（position 默认不变），stats 为样本口径（avg/median/胜率/
+盈亏比/样本收益曲线，非账户净值）。风控保留 tradeck 收盘触发口径；涨跌停对齐
+参照一字板判定；pending_exit 次日强平。
+
+验收：Pauli 独立 review 0 P0 / 0 P1 / 3 P2（冷却语义注释已补；close=0 防御缺口
+与 matcher 同水平登记；avg_daily_candidates 命名口径登记 backlog——值是
+n_trades/了结日数，叫「日均候选」误导，改字段名属 API 变更）；209 用例全绿；
+前端 eslint/tsc 通过。
 在容器里**实际跑通**（test_worker_path_under_running_loop ok 非 skip，
 「防静默 skip」登记项销账）。
 

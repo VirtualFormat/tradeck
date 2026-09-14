@@ -34,6 +34,7 @@ from app.strategy import StrategyRegistry
 __all__ = [
     "run_backtest", "run_backtest_async", "compute_empty",
     "user_strategy_dirs", "migrate_legacy_strategy_dirs", "run_backtest_offloaded",
+    "run_backtest_full",
     "run_optimize", "run_sensitivity", "run_walkforward",
 ]
 
@@ -561,6 +562,164 @@ def run_backtest(
         "factor_attribution": factor_attribution(
             enriched, result.trades, adjusted_matrix.symbols, adjusted_matrix.dates,
             entry_fill=cfg.entry_fill,
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 全量模拟（候选独立执行，评估选股质量；样本口径，非账户净值）
+# ---------------------------------------------------------------------------
+
+
+def _full_ext_empty() -> dict:
+    """全量模拟空结果路径的扩展字段骨架（与主返回同构，向后兼容只加不改）。"""
+    return {
+        "run_id": uuid.uuid4().hex,
+        "execution_stats": {},
+        "selection_stats": selection_stats(0, 0, 0),
+    }
+
+
+def run_backtest_full(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    benchmark: dict | None = None,
+    names: dict[str, str] | None = None,
+    progress_cb=None,
+    cancel_event=None,
+) -> dict:
+    """全量模拟回测：策略选出的全部买入信号当独立样本执行（每信号固定 100 股，
+    不受资金池/持仓数限制），用于评估策略本身的选股质量。
+
+    复用 run_backtest 的 build/enrich/forward_adjust/策略信号管线，撮合换成
+    engine.candidate_exec.simulate_independent；stats 用样本口径的
+    _candidate_stats（含 mode="full" / full_kind="candidate_execution" 判别键，
+    与 BacktestStats 是两套结构，前端按 mode 分流展示）。
+
+    分钟口径（minute_fill / signal_next_minute）不支持：候选执行按候选并行
+    遍历，逐样本加载分钟K 的代价与收益不成比例；config 里开了也在此路径
+    静默走日K 口径（前端切到全量模拟时应隐藏分钟设置）。
+    """
+    from app.engine.candidate_exec import _candidate_stats, simulate_independent
+
+    t0 = time.perf_counter()
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    sdef = reg.get(strategy_id)
+    if sdef.is_minute_strategy:
+        logger.warning(
+            "分钟频策略 %s 不支持全量模拟（走分钟回放路径），返回空结果", strategy_id,
+        )
+        empty = {
+            "stats": {"mode": "full", "full_kind": "candidate_execution",
+                      "n_candidates": 0, "n_trades": 0},
+            "strategy": strategy_id, "symbols": symbols,
+            "range": [start.isoformat(), end.isoformat()],
+            "unadjusted": symbols, "equity_curve": [], "trades": [],
+            "benchmark": None, "per_symbol_stats": [], "return_distribution": [],
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+        empty.update(_full_ext_empty())
+        return empty
+
+    matrix = build(symbols, start, end)
+    if not matrix.dates:
+        logger.warning("全量模拟 %s：区间 %s ~ %s 无缓存数据，返回空结果",
+                       strategy_id, start, end)
+        if progress_cb is not None:
+            progress_cb({"day": 1, "total": 1, "date": end.isoformat()})
+        empty = {
+            "stats": {"mode": "full", "full_kind": "candidate_execution",
+                      "n_candidates": 0, "n_trades": 0},
+            "strategy": strategy_id, "symbols": symbols,
+            "range": [start.isoformat(), end.isoformat()],
+            "unadjusted": symbols, "equity_curve": [], "trades": [],
+            "benchmark": None, "per_symbol_stats": [], "return_distribution": [],
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+        empty.update(_full_ext_empty())
+        return empty
+
+    fac = {s: factors.load(s) for s in symbols}
+    adjusted_matrix, adjusted_flags = forward_adjust(matrix, fac)
+    enriched = enrich(adjusted_matrix)
+
+    signals = reg.run(strategy_id, enriched, params)
+    cfg = _merge_meta_risk(config, sdef)
+    result = simulate_independent(
+        adjusted_matrix,
+        {s: signals.entry[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        {s: signals.exit[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        cfg,
+        names=names,
+        adjusted_flags=adjusted_flags,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+    stats = _candidate_stats(
+        result.trades, result.n_candidates, benchmark=benchmark, names=names,
+    )
+    # 样本收益曲线（按退出日聚合平均收益的日复利，非账户净值）；
+    # 基准归一化叠加口径与 run_backtest 一致（便于前端直接复用净值图组件）
+    bm_norm: dict[str, float] = {}
+    if benchmark and benchmark["closes"]:
+        base = benchmark["closes"][0]
+        bm_norm = {d: c / base for d, c in zip(benchmark["dates"], benchmark["closes"])}
+    equity_curve = [
+        {"date": d.isoformat(), "value": v, "benchmark": bm_norm.get(d.isoformat())}
+        for d, v in zip(result.sample_dates, result.sample_equity)
+    ]
+    trades = [
+        {
+            "symbol": t.symbol,
+            "name": (names or {}).get(t.symbol),
+            "entry_date": t.entry_date.isoformat(),
+            "exit_date": t.exit_date.isoformat(),
+            "entry_price": t.entry_price,
+            "exit_price": t.exit_price,
+            "shares": t.shares,
+            "pnl": t.pnl,
+            "ret": t.ret,
+            "hold_days": (t.exit_date - t.entry_date).days,
+            "exit_reason": t.exit_reason,
+            # 候选执行无分钟口径与仓位占比概念（恒 daily / None，不臆造）
+            "entry_fill_mode": t.entry_fill_mode,
+            "exit_fill_mode": t.exit_fill_mode,
+            "position_pct": None,
+        }
+        for t in result.trades
+    ]
+    benchmark_out = None
+    if benchmark:
+        benchmark_out = {
+            "symbol": benchmark["symbol"], "market": benchmark["market"],
+            "total_return": benchmark["total_return"],
+            "excess_return": stats.get("excess_return"),
+        }
+    import numpy as np  # 局部导入：仅此处计信号数（与 run_backtest 同款）
+    n_entry_sig = int(np.count_nonzero(signals.entry))
+    n_exit_sig = int(np.count_nonzero(signals.exit))
+    return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "stats": stats,
+        "strategy": strategy_id,
+        "symbols": symbols,
+        "range": [matrix.dates[0].isoformat(), matrix.dates[-1].isoformat()],
+        "unadjusted": result.unadjusted,
+        "trades": trades,
+        "equity_curve": equity_curve,
+        "benchmark": benchmark_out,
+        "execution_stats": result.execution_stats,
+        "per_symbol_stats": stats["per_symbol_stats"],
+        "return_distribution": stats["return_distribution"],
+        "selection_stats": selection_stats(
+            n_entry_sig, n_exit_sig, len(result.trades),
+            execution_stats=result.execution_stats,
         ),
     }
 

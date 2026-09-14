@@ -137,6 +137,9 @@ def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)) -> d
 class BacktestRequest(_SymbolRequest):
     strategy_id: str
     start: date  # 回测必填起点
+    # 回测模式：position（默认，组合模拟：现金统一池 + max_positions）/
+    # full（全量模拟：全部买入信号独立执行，评估选股质量，样本口径非账户净值）
+    sim_mode: str = Field(default="position", pattern="^(position|full)$")
     initial_capital: float = Field(default=1_000_000.0, gt=0)
     max_positions: int = Field(default=10, ge=1, le=100)
     commission_pct: float | None = Field(default=None, ge=0, le=0.01)  # 佣金率覆盖（小数）
@@ -176,7 +179,7 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
         return await run_backtest_in_worker(
             symbols, req.strategy_id, req.start, end,
             params=req.params or None, config=cfg, user_id=user_id, benchmark=benchmark,
-            names=names,
+            names=names, sim_mode=req.sim_mode,
         )
     except BacktestWorkerError as e:
         # 子进程失败 → 结构化错误（不 500；与全局优雅降级口径一致）
@@ -206,6 +209,7 @@ async def _run_backtest_task(
     user_id: str,
     benchmark: dict | None,
     names: dict[str, str] | None,
+    sim_mode: str = "position",
 ) -> None:
     """后台执行协程：跑 worker 池回测并把进度/终态写回任务注册表。"""
     registry = get_task_registry()
@@ -216,7 +220,7 @@ async def _run_backtest_task(
         result = await run_backtest_in_worker(
             symbols, strategy_id, start, end,
             params=params, config=cfg, user_id=user_id, benchmark=benchmark,
-            names=names,
+            names=names, sim_mode=sim_mode,
             progress_cb=lambda p: registry.set_progress(task_id, p),
             cancel_token=token,
         )
@@ -264,7 +268,10 @@ async def api_backtest_run(req: BacktestRequest,
     names = await _fetch_names(symbols)
     # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
     # 与 run_backtest_async 同口径：分钟通路故障降级日K，不阻塞任务登记。
-    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+    # 全量模拟（sim_mode=full）无分钟口径，跳过预拉。
+    if req.sim_mode != "full" and (
+        cfg.minute_fill or cfg.exit_fill == "signal_next_minute"
+    ):
         from app.data.client_minute import get_minute_bars
         try:
             await get_minute_bars(symbols, req.start, end, use_cache=True)
@@ -277,6 +284,7 @@ async def api_backtest_run(req: BacktestRequest,
         _run_backtest_task(
             task.task_id, symbols, req.strategy_id, req.start, end,
             req.params or None, cfg, user_id, benchmark, names,
+            sim_mode=req.sim_mode,
         )
     )
     return {"task_id": task.task_id}

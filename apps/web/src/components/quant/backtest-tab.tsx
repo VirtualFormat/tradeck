@@ -93,11 +93,13 @@ import {
   fmtMoney,
   fmtNum,
   fmtPct,
+  isFullModeResult,
   isMinuteReplayResult,
   isExecutionStatKey,
   parseSymbols,
   pnlStyle,
   selectionStatLabel,
+  SIM_MODE_OPTIONS,
   type BacktestAnyResult,
   type BacktestResult,
   type BacktestRunResponse,
@@ -107,6 +109,7 @@ import {
   type DailyTradeRow,
   type ExecutionStats,
   type FactorAttribution,
+  type FullModeStats,
   type ParamValues,
   type PerSymbolStat,
   type SelectionStats,
@@ -153,6 +156,7 @@ interface BacktestSavedConfig {
   commission?: string;
   stamp?: string;
   slippage?: string;
+  sim_mode?: string;
   minute_fill?: boolean;
   exit_fill?: string;
 }
@@ -254,6 +258,11 @@ export function BacktestTab({
     (s) => s?.exit_fill,
     "open_t+1"
   );
+  // 回测模式（sim_mode）：position 组合模拟（默认）/ full 全量模拟（选股质量）
+  const [simMode, setSimMode] = useSavedState(
+    (s) => (s?.sim_mode === "full" ? "full" : undefined),
+    "position"
+  );
   const [startOpen, setStartOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -316,6 +325,8 @@ export function BacktestTab({
       minute_fill: minuteFill,
       // 默认口径不传（与后端 MatcherConfig 缺省一致）
       exit_fill: exitFill === "open_t+1" ? undefined : exitFill,
+      // 默认模式不传（与后端 BacktestRequest 缺省一致）
+      sim_mode: simMode === "position" ? undefined : simMode,
     };
     try {
       const next = await runBacktestViaTask(payload);
@@ -335,6 +346,7 @@ export function BacktestTab({
             commission: commissionPct,
             stamp: stampTaxPct,
             slippage: slippageBps,
+            sim_mode: simMode,
             minute_fill: minuteFill,
             exit_fill: exitFill,
           } satisfies BacktestSavedConfig)
@@ -679,7 +691,32 @@ export function BacktestTab({
               />
             </div>
           </div>
+          {/* 回测模式（sim_mode）：全量模拟不支持分钟口径（候选独立执行） */}
+          <Separator />
+          <div className="space-y-1.5">
+            <Label htmlFor="quant-bt-sim-mode">回测模式</Label>
+            <Select
+              value={simMode}
+              onValueChange={(v: string | null) =>
+                setSimMode(v === "full" ? "full" : "position")
+              }
+              disabled={loading}
+            >
+              <SelectTrigger id="quant-bt-sim-mode" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SIM_MODE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {/* 分钟口径设置（阶段 K3，对应 MatcherConfig.minute_fill / exit_fill） */}
+          {simMode !== "full" && (
+            <>
           <Separator />
           <div className="space-y-2">
             <p className="text-xs font-medium text-fg-dim">成交口径（分钟）</p>
@@ -716,6 +753,8 @@ export function BacktestTab({
               </Select>
             </div>
           </div>
+            </>
+          )}
           {/* 高级设置：策略定义速览（只读，阶段 M3 降级版——BacktestRequest
               无风控/过滤覆盖字段，仅展示 META 定义，不做假覆盖控件） */}
           <StrategyDefinitionPeek strategy={strategy} />
@@ -794,6 +833,8 @@ export function BacktestTab({
         </Card>
       ) : result && isMinuteReplayResult(result) ? (
         <MinuteReplayView result={result} />
+      ) : result && isFullModeResult(result) ? (
+        <FullModeResultView result={result} />
       ) : result ? (
         <BacktestResultView result={result} />
       ) : (
@@ -902,6 +943,245 @@ function BacktestResultSkeleton() {
       </div>
       <Skeleton className="h-[320px] w-full" />
       <Skeleton className="h-40 w-full" />
+    </div>
+  );
+}
+
+/** 全量模拟指标卡 label → tooltip 解释文案（样本口径，非账户净值） */
+const FULL_METRIC_HINTS: Record<string, string> = {
+  平均收益: "全部样本交易的平均单笔净收益率（已扣成本）。",
+  中位数收益: "全部样本交易单笔净收益率的中位数。",
+  胜率: "盈利样本占比，样本少时仅供参考。",
+  盈亏比: "平均盈利 ÷ 平均亏损绝对值；无亏损样本时不展示。",
+  超额收益: "样本收益曲线累计收益减同期基准，正值跑赢基准。",
+  夏普: "按退出日聚合的日均样本收益 ÷ 日波动 × √252 年化。",
+  最大回撤: "样本收益曲线（非账户净值）从历史高点到随后最低点的最大跌幅。",
+  累计收益: "按退出日聚合当日全部样本平均收益的日复利累计——样本收益曲线，非账户净值。",
+  样本数: "实际成交的样本交易笔数（每个买入信号一个独立样本，固定 100 股）。",
+  信号数: "策略产出的买入信号日总数（信号右移前口径）。",
+  信号天数: "有样本了结的交易日数。",
+  日均候选: "平均每个了结日的样本数（样本数 ÷ 信号天数）。",
+  最佳样本: "单笔样本最高净收益率。",
+  最差样本: "单笔样本最低净收益率。",
+};
+
+/**
+ * 全量模拟结果视图（stats.mode = "full"）：样本口径专属区块。
+ * 结构：概要条（标注样本口径）→ 选股质量指标卡 → 选股/成交约束条 →
+ * 样本收益曲线（复用净值图组件，标注非账户净值）→ 收益分布 → 结果明细 Tabs
+ * （交易明细/选股分析；无按日期 Tab——候选执行无逐日账户口径成交聚合）。
+ */
+function FullModeResultView({
+  result,
+}: {
+  result: BacktestResult & { stats: FullModeStats };
+}) {
+  const { stats } = result;
+  const [start, end] = result.range;
+  // K 线回放弹窗：trade = 交易明细行单笔回放，pick = 选股分析行标的回放
+  const [tradeModal, setTradeModal] = useState<BacktestTrade | null>(null);
+  const [pickModal, setPickModal] = useState<PerSymbolStat | null>(null);
+
+  const benchmark = result.benchmark ?? null;
+  const unadjusted = result.unadjusted ?? [];
+  const trades = result.trades ?? [];
+  const equityCurve = result.equity_curve ?? [];
+  const perSymbolStats = result.per_symbol_stats ?? [];
+  const returnDist = result.return_distribution ?? [];
+  const selectionStats = result.selection_stats ?? null;
+  const executionStats = result.execution_stats ?? null;
+  // 标的回放用：symbol → 该标的全部 trades（预分桶避免每次点击全量过滤）
+  const tradesBySymbol = new Map<string, BacktestTrade[]>();
+  for (const t of trades) {
+    const bucket = tradesBySymbol.get(t.symbol);
+    if (bucket) bucket.push(t);
+    else tradesBySymbol.set(t.symbol, [t]);
+  }
+
+  const metrics: {
+    label: string;
+    value: string;
+    colored?: number | null;
+  }[] = [
+    { label: "平均收益", value: fmtPct(stats.avg_return), colored: stats.avg_return },
+    {
+      label: "中位数收益",
+      value: fmtPct(stats.median_return),
+      colored: stats.median_return,
+    },
+    { label: "胜率", value: fmtPct(stats.win_rate) },
+    { label: "盈亏比", value: fmtNum(stats.profit_factor) },
+    ...(stats.excess_return != null
+      ? [
+          {
+            label: "超额收益",
+            value: fmtPct(stats.excess_return),
+            colored: stats.excess_return,
+          },
+        ]
+      : []),
+    { label: "夏普", value: fmtNum(stats.sharpe) },
+    { label: "最大回撤", value: fmtPct(stats.max_drawdown) },
+    {
+      label: "累计收益",
+      value: fmtPct(stats.total_return),
+      colored: stats.total_return,
+    },
+    { label: "样本数", value: String(stats.n_trades) },
+    { label: "信号数", value: String(stats.n_candidates) },
+    { label: "信号天数", value: String(stats.n_days) },
+    { label: "日均候选", value: fmtNum(stats.avg_daily_candidates, 1) },
+    { label: "最佳样本", value: fmtPct(stats.best), colored: stats.best },
+    { label: "最差样本", value: fmtPct(stats.worst), colored: stats.worst },
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* 1. 概要条 */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-2 py-3">
+          <Badge>{result.strategy}</Badge>
+          <Badge variant="secondary">全量模拟 · 选股质量</Badge>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {start} ~ {end}
+          </span>
+          {benchmark && (
+            <Badge variant="outline">
+              基准 {benchmark.symbol} {fmtPct(benchmark.total_return)}
+            </Badge>
+          )}
+          {unadjusted.length > 0 && (
+            <Badge
+              variant="outline"
+              style={{
+                color: "var(--warn)",
+                borderColor:
+                  "color-mix(in oklch, var(--warn) 50%, transparent)",
+              }}
+            >
+              {unadjusted.length} 只未复权
+            </Badge>
+          )}
+          {(result.elapsed_ms != null || result.run_id) && (
+            <span className="text-[11px] text-muted-foreground/70 tabular-nums">
+              {result.elapsed_ms != null &&
+                `耗时 ${(result.elapsed_ms / 1000).toFixed(1)}s`}
+              {result.elapsed_ms != null && result.run_id && " · "}
+              {result.run_id && `run ${result.run_id}`}
+            </span>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 2. 选股质量指标卡网格 */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+        {metrics.map((m) => (
+          <MetricCard
+            key={m.label}
+            label={m.label}
+            hint={FULL_METRIC_HINTS[m.label]}
+            value={m.value}
+            colored={m.colored}
+          />
+        ))}
+      </div>
+
+      {/* 3. 选股漏斗 / 成交约束统计条 */}
+      {(selectionStats || executionStats) && (
+        <SelectionStatsBar stats={selectionStats} execution={executionStats} />
+      )}
+
+      {/* 4. 样本收益曲线（复用净值图组件；样本口径，非账户净值） */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">累计样本收益曲线</CardTitle>
+          <CardDescription>
+            按退出日聚合当日全部样本平均收益的日复利（样本收益曲线，非账户净值）
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {equityCurve.length > 0 ? (
+            <EquityChart data={equityCurve} />
+          ) : (
+            <EmptyState title="无样本收益数据" compact className="h-[280px]" />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 5. 收益分布 */}
+      {returnDist.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">收益分布</CardTitle>
+            <CardDescription>按单笔样本收益率区间分桶的成交笔数</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReturnDistributionChart data={returnDist} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 6. 结果明细 Tabs（交易明细/选股分析；无按日期 Tab——无逐日账户口径） */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">结果明细</CardTitle>
+          <CardDescription>共 {trades.length} 笔样本交易</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Tabs defaultValue="trades">
+            <TabsList>
+              <TabsTrigger value="trades">交易明细</TabsTrigger>
+              <TabsTrigger value="picks">选股分析</TabsTrigger>
+            </TabsList>
+            <TabsContent value="trades">
+              {trades.length === 0 ? (
+                <EmptyState
+                  title="区间内无成交"
+                  description="回测区间内策略未产生任何可执行的买入信号"
+                  compact
+                />
+              ) : (
+                <TradesTable trades={trades} onTradeClick={setTradeModal} />
+              )}
+            </TabsContent>
+            <TabsContent value="picks">
+              {perSymbolStats.length === 0 ? (
+                <EmptyState title="无选股分析数据" compact />
+              ) : (
+                <PerSymbolStatsTable
+                  rows={perSymbolStats}
+                  onRowClick={setPickModal}
+                />
+              )}
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* 7. K 线回放弹窗（交易明细行 / 选股分析行共用） */}
+      {tradeModal && (
+        <TradeKlineModal
+          open
+          onOpenChange={(o) => {
+            if (!o) setTradeModal(null);
+          }}
+          symbol={tradeModal.symbol}
+          name={tradeModal.name}
+          trades={[tradeModal]}
+        />
+      )}
+      {pickModal && (
+        <TradeKlineModal
+          open
+          onOpenChange={(o) => {
+            if (!o) setPickModal(null);
+          }}
+          symbol={pickModal.symbol}
+          name={pickModal.name}
+          trades={tradesBySymbol.get(pickModal.symbol) ?? []}
+          stat={pickModal}
+        />
+      )}
     </div>
   );
 }

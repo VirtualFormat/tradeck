@@ -121,8 +121,13 @@ def make_backtest_task(
     config=None,
     user_id: str | None = None,
     names: dict[str, str] | None = None,
+    sim_mode: str = "position",
 ) -> dict[str, Any]:
-    """打包一次回测任务（可经 Queue 传给 spawn 子进程）。"""
+    """打包一次回测任务（可经 Queue 传给 spawn 子进程）。
+
+    sim_mode："position"（默认，组合模拟）/ "full"（全量模拟，候选独立执行，
+    子进程内分流到 runner.run_backtest_full）。
+    """
     return {
         "kind": "backtest",
         "symbols": list(symbols),
@@ -133,6 +138,7 @@ def make_backtest_task(
         "config": _encode_config(config),
         "user_id": user_id,
         "names": names,
+        "sim_mode": sim_mode,
     }
 
 
@@ -149,12 +155,15 @@ def _progress_every_for_range(start: date, end: date) -> int:
 def _worker_entry(task: dict[str, Any], event_queue) -> None:
     """子进程入口：跑回测，把 progress/result/error 消息入队。"""
     try:
-        from app.runner import run_backtest, user_strategy_dirs
+        from app.runner import run_backtest, run_backtest_full, user_strategy_dirs
         from app.strategy import StrategyRegistry
 
         if task["kind"] != "backtest":
             raise ValueError(f"不支持的 worker 任务类型：{task['kind']}")
         progress_enabled = bool(task.get("progress_enabled"))
+        # 全量模拟（候选独立执行）：分流到 run_backtest_full（不走 matcher.simulate；
+        # 分钟K 预拉/装配对该模式无意义，跳过 minute 缓存读取）
+        full_mode = task.get("sim_mode") == "full"
 
         def _forward_progress(payload: dict) -> None:
             """子进程内逐日进度 → 跨进程 Queue（父进程桥接到任务注册表）。"""
@@ -167,28 +176,42 @@ def _worker_entry(task: dict[str, Any], event_queue) -> None:
         # 注意：子进程不补拉网络数据（避免子进程做 IO / 与主进程缓存写竞争），
         # 分钟K 需调用方预拉（HTTP API 入口）或读历史缓存。
         minute_bars = None
-        if config.minute_fill or config.exit_fill == "signal_next_minute":
+        if not full_mode and (
+            config.minute_fill or config.exit_fill == "signal_next_minute"
+        ):
             minute_bars = _load_minute_cache(
                 task["symbols"],
                 date.fromisoformat(task["start"]),
                 date.fromisoformat(task["end"]),
             )
-        result = run_backtest(
-            task["symbols"], task["strategy_id"],
-            date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
-            params=task.get("params"),
-            config=config,
-            registry=reg,
-            benchmark=task.get("benchmark"),
-            names=task.get("names"),
-            minute_bars=minute_bars,
-            progress_cb=_forward_progress if progress_enabled else None,
-            # 进度节流（P2）：按区间交易日数取档（≤100 条 Queue 消息），
-            # 长区间不再逐日 put；末日消息由 matcher 保证必发
-            progress_every=_progress_every_for_range(
-                date.fromisoformat(task["start"]), date.fromisoformat(task["end"])
-            ),
-        )
+        if full_mode:
+            result = run_backtest_full(
+                task["symbols"], task["strategy_id"],
+                date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
+                params=task.get("params"),
+                config=config,
+                registry=reg,
+                benchmark=task.get("benchmark"),
+                names=task.get("names"),
+                progress_cb=_forward_progress if progress_enabled else None,
+            )
+        else:
+            result = run_backtest(
+                task["symbols"], task["strategy_id"],
+                date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
+                params=task.get("params"),
+                config=config,
+                registry=reg,
+                benchmark=task.get("benchmark"),
+                names=task.get("names"),
+                minute_bars=minute_bars,
+                progress_cb=_forward_progress if progress_enabled else None,
+                # 进度节流（P2）：按区间交易日数取档（≤100 条 Queue 消息），
+                # 长区间不再逐日 put；末日消息由 matcher 保证必发
+                progress_every=_progress_every_for_range(
+                    date.fromisoformat(task["start"]), date.fromisoformat(task["end"])
+                ),
+            )
         result.setdefault("worker", {})["pid"] = os.getpid()
         event_queue.put({"type": "result", "payload": result})
     except BaseException as exc:  # noqa: BLE001 — 子进程内任何异常都要结构化回传
@@ -394,6 +417,7 @@ async def run_backtest_in_worker(
     user_id: str | None = None,
     benchmark: dict | None = None,
     names: dict[str, str] | None = None,
+    sim_mode: str = "position",
     progress_cb=None,
     cancel_token: CancelToken | None = None,
     timeout: float | None = None,
@@ -406,7 +430,7 @@ async def run_backtest_in_worker(
     """
     task = make_backtest_task(
         symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
-        names=names,
+        names=names, sim_mode=sim_mode,
     )
     task["benchmark"] = benchmark
     task["progress_enabled"] = progress_cb is not None

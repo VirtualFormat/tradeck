@@ -161,6 +161,57 @@ export interface EquityPoint {
   benchmark: number | null;
 }
 
+/* ---------- 全量模拟（候选独立执行，stats.mode = "full"） ---------- */
+
+/**
+ * 全量模拟统计（BacktestResult.stats 的判别联合成员）：每个买入信号一个
+ * 独立样本（固定 100 股，不受资金池/持仓数限制），评估策略本身的选股质量。
+ * total_return / max_drawdown / sharpe 基于「样本收益曲线」（按退出日聚合
+ * 平均收益的日复利），不是账户净值——展示侧必须标注口径。
+ */
+export interface FullModeStats {
+  mode: "full";
+  full_kind: "candidate_execution";
+  /** 原始买入信号日总数（信号右移前口径） */
+  n_candidates: number;
+  /** 实际成交的样本交易笔数 */
+  n_trades: number;
+  /** 有样本了结的交易日数 */
+  n_days: number;
+  /** 日均了结样本数（n_trades / n_days） */
+  avg_daily_candidates: number;
+  avg_return: number | null;
+  median_return: number | null;
+  win_rate: number | null;
+  /** 盈亏比 = 平均盈利 ÷ 平均亏损绝对值；无亏损样本为 null */
+  profit_factor: number | null;
+  best: number | null;
+  worst: number | null;
+  /** 样本收益曲线累计收益（日复利，非账户净值） */
+  total_return: number | null;
+  max_drawdown: number | null;
+  sharpe: number | null;
+  excess_return?: number | null;
+  benchmark_symbol?: string | null;
+  benchmark_return?: number | null;
+  /** 兼容键：旧消费方（结果守卫/导出）读这些字段时不致 undefined 崩溃，
+   * 全量模拟后端不产出（恒缺省，展示侧按 FullModeStats 键渲染） */
+  unadjusted?: string[];
+}
+
+/** 判别全量模拟结果：stats.mode 是两套统计结构的唯一区分点 */
+export function isFullModeResult(
+  result: BacktestResult | null | undefined
+): result is BacktestResult & { stats: FullModeStats } {
+  return (result?.stats as { mode?: unknown } | null | undefined)?.mode === "full";
+}
+
+/** 回测模式请求值（BacktestRequest.sim_mode） → 中文标签 */
+export const SIM_MODE_OPTIONS: { value: string; label: string }[] = [
+  { value: "position", label: "仓位模拟（默认）" },
+  { value: "full", label: "全量模拟（选股质量）" },
+];
+
 export interface BacktestBenchmark {
   symbol: string;
   market: string | null;
@@ -340,6 +391,15 @@ export const SELECTION_STAT_LABELS: Record<string, string> = {
   skipped_max_positions: "满仓跳过",
   skipped_no_cash: "现金不足",
   skipped_cooldown: "冷却跳过",
+  // 全量模拟（候选独立执行）执行计数键（execution_stats）
+  buy_limit_up: "一字涨停拒买",
+  buy_suspended: "停牌无法买入",
+  buy_invalid_price: "买入价无效",
+  buy_no_next_bar: "末日信号无成交日",
+  sell_limit_down: "一字跌停拦截",
+  sell_suspended: "停牌无法卖出",
+  sell_invalid_price: "卖出价无效",
+  pending_exit: "跌停挂单次日强平",
 };
 
 export function selectionStatLabel(key: string): string {
@@ -353,6 +413,15 @@ export const EXECUTION_STAT_KEYS = [
   "skipped_max_positions",
   "skipped_no_cash",
   "skipped_cooldown",
+  // 全量模拟执行计数键（与组合模拟共用成交约束组渲染）
+  "buy_limit_up",
+  "buy_suspended",
+  "buy_invalid_price",
+  "buy_no_next_bar",
+  "sell_limit_down",
+  "sell_suspended",
+  "sell_invalid_price",
+  "pending_exit",
 ] as const;
 
 export function isExecutionStatKey(key: string): boolean {
@@ -395,6 +464,8 @@ export const EXIT_REASON_LABELS: Record<string, string> = {
   signal: "信号卖出",
   stop_loss: "止损",
   take_profit: "止盈",
+  trailing_stop: "移动止损",
+  trailing_take_profit: "回撤止盈",
   max_hold: "到期",
   end: "期末强平",
 };
