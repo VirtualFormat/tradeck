@@ -2,7 +2,14 @@
 
 > 把数据服务从「tradeck 内嵌 collector/data-api」切换为「tradb 独立 compose 部署」。
 > 任务清单与验收见 `plans/TASKS-TRADB-DEPLOY.md`；架构见 `docs/DATA-SERVICE.md`。
-> 本文是 VPS 上的分步操作手册，含回滚与排障。命令假设两个仓库都已 clone 到 VPS。
+> 本文是 VPS 上的分步操作手册，含回滚与排障。
+
+> **部署形态（2026-09-14 修订）**：prod 上 `/data/apps/tradeck` 与 `/data/apps/tradb`
+> 均为**纯部署目录（无 git 克隆）**——镜像走 CI → GHCR → `docker compose pull`；
+> compose 与配置文件（init.sql、clickhouse config 等）的权威版本在 GitHub main
+> 分支，经 CI artifact 或 rsync 下发到 prod，**不要在 prod 上跑任何 git 命令**
+> （历史教训：prod 的 tradb 目录曾是 git 克隆，工作区脏改与仓库 main 漂移，
+> 已于 2026-09-14 删除 `.git` 残留；tradeck 目录本来就不是 git 仓库）。
 
 > **状态（2026-09-12）：切换已完成。** tradeck 根 `docker-compose.yml` 已删除全部
 > 内嵌数据服务（postgres/clickhouse/openbb/collector/data-api），只剩 `web` + `quant`，
@@ -26,7 +33,9 @@ tradeck (web/quant)                      tradb (独立 compose)
 
 ## 前置
 
-1. VPS 已 clone：`tradeck`（本仓库）与 `tradb`（`git clone https://github.com/VirtualFormat/tradb.git`）。
+1. VPS 上 `/data/apps/tradeck` 与 `/data/apps/tradb` 为纯部署目录（无 git 克隆，
+   见上文「部署形态」）；compose/配置文件若需更新，在本地仓库改 → 推 main →
+   CI/rsync 下发，**不在 prod 跑 git 命令**。
 2. tradb 镜像已构建发布（CI `app-images.yml`，GHCR `ghcr.nju.edu.cn/virtualformat/tradb-*`）。
 3. 准备 token：每个消费方一把 `openssl rand -hex 32`，web 与 quant 各一。
 
