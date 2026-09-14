@@ -298,23 +298,17 @@ Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
 
 **阶段 L 结果视图延续（优先级高，用户体验直接可见）**：
 
-- [ ] **分钟频回放结果展示区块**：H2 minute_replay 是独立响应结构（无
-  trades/stats），前端 BacktestResultView 已有 stats==null 守卫空态；如需展示
-  回放明细（hits.trigger_time 等）另起专属区块。
+（全部完成：分钟回放展示区块 O4 已落地——MinuteReplayView）
 
 **阶段 L review P2 工程优化（不紧急）**：
 
-- [ ] 分钟K 预拉去重：任务化入口主进程预拉落缓存后子进程又逐 symbol concat，
-  可改帧透传（对齐 run_backtest_async）。
-- [ ] 直方图超界样本标注：±20% 外并入最外桶，range 文案/tooltip 标注「含超界」。
-- [ ] 蒙卡回撤文案：tooltip 强调「收益顺序重排」语义，防误读为置信区间。
-- [ ] selection_stats 展示侧注明信号计数为右移前口径（与撮合评估日差一天）。
+（全部完成：分钟K 预拉设计注释收口 O3、直方图超界标注/蒙卡文案/漏斗口径
+注明均为主 agent 文案三项，阶段 O 已提交）
 
 **历史遗留 P2（G–K review 挂账）**：
 
-- [ ] walk-forward 空折 consistency=0.0 口径（继承参照，影响评估）。
-- [ ] compile_formula_cached 接线或删除（N 阶段已修 user_id 维度，但生产零调用方，
-  mining 走自己的 _COMPILE_CACHE；review P2-3 建议二选一防误用）。
+（全部完成：空折 consistency/compounded_oos_return 统一 None（O3 + O review 收尾）；
+compile_formula_cached 已删除（O3，决策：orphan 删除防误用））
 
 ## 阶段 N：backlog 落地（2026-09-13，主 agent 总负责 + 3 子 agent 并行 + Arendt review）
 
