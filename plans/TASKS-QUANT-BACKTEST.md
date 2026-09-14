@@ -298,21 +298,12 @@ Review 结论：3 P0（其中 1 个误报）+ 3 P1 + 4 P2，全部处置。
 
 **阶段 L 结果视图延续（优先级高，用户体验直接可见）**：
 
-- [ ] **matcher 执行层拦截计数器**：涨跌停拦截买/卖、超仓位上限跳过开仓目前无
-  计数，选择漏斗只有 signals_entry/exit + filled_trades 三项；SimResult 补计数
-  后 selection_stats 扩展（result_stats docstring 已留扩展位）。
-- [ ] **K 线回放 modal**：点交易/标的弹 K 线标注买卖点（参照 TradeKlineModal /
-  PicksSymbolKlineModal；tradeck 已有 lightweight-charts 基础设施）。
-- [ ] **因子归因视图**：胜单 vs 败单入场日因子均值对比（依赖策略信号日的因子
-  快照，需评估信号矩阵与 enriched 因子字段的接线成本）。
 - [ ] **分钟频回放结果展示区块**：H2 minute_replay 是独立响应结构（无
   trades/stats），前端 BacktestResultView 已有 stats==null 守卫空态；如需展示
   回放明细（hits.trigger_time 等）另起专属区块。
 
 **阶段 L review P2 工程优化（不紧急）**：
 
-- [ ] 进度回调节流：runner 透传 progress_every（按区间长度取 max(1, n//100)），
-  减少跨进程 Queue 消息。
 - [ ] 分钟K 预拉去重：任务化入口主进程预拉落缓存后子进程又逐 symbol concat，
   可改帧透传（对齐 run_backtest_async）。
 - [ ] 直方图超界样本标注：±20% 外并入最外桶，range 文案/tooltip 标注「含超界」。
