@@ -362,7 +362,8 @@ def _candidate_stats(
       无亏损样本时返回 None，对齐参照宁缺勿假）。
     - total_return / max_drawdown / sharpe：基于「样本收益曲线」（按退出日聚合
       平均收益的日复利），仅用于横向比较策略，不可当账户净值解读。
-    - n_days = 有样本了结的交易日数；avg_daily_candidates = 成交笔数 / n_days。
+    - n_closed_days = 有样本了结的交易日数；avg_daily_closed = 样本数 / n_closed_days
+      （每个了结日平均了结多少笔样本，不是「每日新候选数」）。
     - benchmark 提供时附 excess_return = total_return - 基准区间收益。
     """
     stats: dict = {
@@ -370,8 +371,8 @@ def _candidate_stats(
         "full_kind": "candidate_execution",
         "n_candidates": int(n_candidates),
         "n_trades": len(trades),
-        "n_days": 0,
-        "avg_daily_candidates": 0.0,
+        "n_closed_days": 0,
+        "avg_daily_closed": 0.0,
         "avg_return": 0.0,
         "median_return": 0.0,
         "win_rate": 0.0,
@@ -415,8 +416,8 @@ def _candidate_stats(
     )
 
     stats.update({
-        "n_days": len(daily),
-        "avg_daily_candidates": round(len(trades) / max(len(daily), 1), 1),
+        "n_closed_days": len(daily),
+        "avg_daily_closed": round(len(trades) / max(len(daily), 1), 1),
         "avg_return": round(float(np.mean(pnls)), 4),
         "median_return": round(float(np.median(pnls)), 4),
         "win_rate": round(float(len(wins) / len(pnls)), 4),

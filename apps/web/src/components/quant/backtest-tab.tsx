@@ -959,8 +959,8 @@ const FULL_METRIC_HINTS: Record<string, string> = {
   累计收益: "按退出日聚合当日全部样本平均收益的日复利累计——样本收益曲线，非账户净值。",
   样本数: "实际成交的样本交易笔数（每个买入信号一个独立样本，固定 100 股）。",
   信号数: "策略产出的买入信号日总数（信号右移前口径）。",
-  信号天数: "有样本了结的交易日数。",
-  日均候选: "平均每个了结日的样本数（样本数 ÷ 信号天数）。",
+  了结日数: "有样本了结的交易日数。",
+  日均了结样本: "平均每个了结日了结的样本数（样本数 ÷ 了结日数）。",
   最佳样本: "单笔样本最高净收益率。",
   最差样本: "单笔样本最低净收益率。",
 };
@@ -1029,8 +1029,8 @@ function FullModeResultView({
     },
     { label: "样本数", value: String(stats.n_trades) },
     { label: "信号数", value: String(stats.n_candidates) },
-    { label: "信号天数", value: String(stats.n_days) },
-    { label: "日均候选", value: fmtNum(stats.avg_daily_candidates, 1) },
+    { label: "了结日数", value: String(stats.n_closed_days) },
+    { label: "日均了结样本", value: fmtNum(stats.avg_daily_closed, 1) },
     { label: "最佳样本", value: fmtPct(stats.best), colored: stats.best },
     { label: "最差样本", value: fmtPct(stats.worst), colored: stats.worst },
   ];

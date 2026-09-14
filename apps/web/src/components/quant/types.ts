@@ -176,10 +176,10 @@ export interface FullModeStats {
   n_candidates: number;
   /** 实际成交的样本交易笔数 */
   n_trades: number;
-  /** 有样本了结的交易日数 */
-  n_days: number;
-  /** 日均了结样本数（n_trades / n_days） */
-  avg_daily_candidates: number;
+  /** 有样本了结的交易日数（了结日数） */
+  n_closed_days: number;
+  /** 每个了结日平均了结的样本数（n_trades / n_closed_days） */
+  avg_daily_closed: number;
   avg_return: number | null;
   median_return: number | null;
   win_rate: number | null;

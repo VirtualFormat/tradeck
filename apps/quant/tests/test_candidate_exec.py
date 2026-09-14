@@ -334,8 +334,8 @@ class CandidateStatsTest(unittest.TestCase):
         self.assertEqual(s["full_kind"], "candidate_execution")
         self.assertEqual(s["n_candidates"], 5)
         self.assertEqual(s["n_trades"], 3)
-        self.assertEqual(s["n_days"], 2)  # d2 / d4 两个了结日
-        self.assertAlmostEqual(s["avg_daily_candidates"], 1.5, places=6)
+        self.assertEqual(s["n_closed_days"], 2)  # d2 / d4 两个了结日
+        self.assertAlmostEqual(s["avg_daily_closed"], 1.5, places=6)
         self.assertAlmostEqual(s["avg_return"],
                                round((0.10 - 0.04 + 0.05) / 3, 4), places=6)
         self.assertAlmostEqual(s["median_return"], 0.05, places=6)
