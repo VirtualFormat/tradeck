@@ -175,6 +175,9 @@ def _worker_entry(task: dict[str, Any], event_queue) -> None:
         # （load_minute 纯文件读，spawn 安全）；缓存缺失则 matcher 无 loader 降级日K。
         # 注意：子进程不补拉网络数据（避免子进程做 IO / 与主进程缓存写竞争），
         # 分钟K 需调用方预拉（HTTP API 入口）或读历史缓存。
+        # 日K 同理（冷启动修复纪律）：子进程只调同步 run_backtest/run_backtest_full
+        # 读本地 Parquet 缓存，回源补拉只发生在主进程（api_backtest/api_backtest_run/
+        # run_optimize 等 async 入口经 matrix.build_async 暖缓存后派发本 worker）。
         minute_bars = None
         if not full_mode and (
             config.minute_fill or config.exit_fill == "signal_next_minute"

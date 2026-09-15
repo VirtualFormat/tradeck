@@ -120,9 +120,15 @@ class OptimizeApiErrorMappingTest(unittest.TestCase):
         from app.jobs import DEFAULT_SIGNAL_UNIVERSE
 
         req = _optimize_request(symbols=None)
-        with mock.patch.object(
-            quant_runner, "run_optimize", new=AsyncMock(return_value={"ok": True})
-        ) as mocked:
+        with (
+            mock.patch.object(
+                quant_runner, "run_optimize", new=AsyncMock(return_value={"ok": True})
+            ) as mocked,
+            # 暖缓存（冷启动修复）在 runner 之前：屏蔽网络，补拉返回空走降级
+            mock.patch(
+                "app.data.client.fetch_bars", new=AsyncMock(return_value=[])
+            ),
+        ):
             out = asyncio.run(api_optimize(req, user_id=_UID))
         self.assertEqual(out, {"ok": True})
         self.assertEqual(mocked.call_args.args[0], list(DEFAULT_SIGNAL_UNIVERSE))
@@ -133,9 +139,14 @@ class OptimizeApiErrorMappingTest(unittest.TestCase):
         from app.api import api_optimize
 
         req = _optimize_request(symbols=[SYM], universe="cn")
-        with mock.patch.object(
-            quant_runner, "run_optimize", new=AsyncMock(return_value={"ok": True})
-        ) as mocked:
+        with (
+            mock.patch.object(
+                quant_runner, "run_optimize", new=AsyncMock(return_value={"ok": True})
+            ) as mocked,
+            mock.patch(
+                "app.data.client.fetch_bars", new=AsyncMock(return_value=[])
+            ),
+        ):
             asyncio.run(api_optimize(req, user_id=_UID))
         self.assertEqual(mocked.call_args.args[0], [SYM])
 
@@ -149,7 +160,12 @@ class OptimizeApiErrorMappingTest(unittest.TestCase):
         async def _raise(*a, **k):
             raise KeyError("策略不存在 'nope'")
 
-        with mock.patch.object(quant_runner, "run_optimize", side_effect=_raise):
+        with (
+            mock.patch.object(quant_runner, "run_optimize", side_effect=_raise),
+            mock.patch(
+                "app.data.client.fetch_bars", new=AsyncMock(return_value=[])
+            ),
+        ):
             with self.assertRaises(HTTPException) as ctx:
                 asyncio.run(api_optimize(_optimize_request(), user_id=_UID))
         self.assertEqual(ctx.exception.status_code, 404)
@@ -340,6 +356,10 @@ class OptimizeWorkerPathTest(unittest.TestCase):
                 with mock.patch.dict("os.environ", {"QUANT_CACHE_DIR": tmp}), \
                      mock.patch.object(settings, "QUANT_CACHE_DIR", tmp), \
                      p1, mock.patch(
+                    # 冷启动修复后 _run_optimize_route 会经 build_async 暖缓存：
+                    # 合成数据全命中不发请求；mock 只是防边界漏网的第二道闸
+                    "app.data.client.fetch_bars", new=AsyncMock(return_value=[])
+                ), mock.patch(
                     "app.runner._fetch_names", new=AsyncMock(return_value={})
                 ):
                     result = asyncio.run(

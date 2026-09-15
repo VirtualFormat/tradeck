@@ -5,6 +5,9 @@
   绝不把下一行数据错位接上。
 - 价格口径为 daily_prices 原始价（adjust=none）；复权在 engine/adjust.py 做，这里不管。
 - 矩阵只在内存构建，不做落盘缓存、多线程、懒加载（保持简单）。
+- build_async（async 入口）：build 前先按需回源补拉缓存缺失标的
+  （prod 容器缓存目录易随重建清空，只读缓存会全员全 NaN → 回测 0 成交）；
+  build() 保持纯缓存读（cli / worker 子进程等同步调用方行为不变）。
 """
 from __future__ import annotations
 
@@ -107,3 +110,73 @@ def build(symbols: list[str], start: date, end: date) -> MarketMatrix:
             fields[f][rows, j] = df[f].cast(pl.Float64).to_numpy()
 
     return MarketMatrix(dates=dates, symbols=syms, **fields)
+
+
+async def build_async(
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> MarketMatrix:
+    """异步构建市场矩阵：缓存缺失标的先回源补拉落缓存，再按同步逻辑建矩阵。
+
+    覆盖判定：区间内行数为 0 = 全缺；有数据但首尾日期盖不住 [start, end] = 部分缺
+    （与 store.missing_ranges 同口径，区间内的停牌空洞不算缺）。
+    有缺失标的时，经 client.fetch_bars 一次性批量补拉
+    （自带分片分窗），逐标的 store.merge + store.save 落缓存，之后重新走 build()。
+    「跳过回源」的语义由同步 build() 承担（纯缓存读），本函数始终按需回源。
+
+    降级语义（与 build 一致，绝不抛错）：
+    - 补拉请求整体失败 / 单个标的没补到数据：该标的保留全 NaN 列；
+    - 只记日志，矩阵照常返回。
+
+    注意：补拉只发生在主进程（HTTP API / CLI 的 async 入口）；worker 子进程
+    只调同步 build() 读已暖好的缓存，不做网络 IO（与分钟K 预拉模式一致）。
+    """
+    from app.data import client
+
+    syms = sorted(symbols)
+    if not syms:
+        return build(symbols, start, end)
+
+    cached: dict[str, pl.DataFrame] = {}
+    missing: list[str] = []
+    for s in syms:
+        df = store.load(s)
+        if not df.is_empty():
+            df = df.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+        cached[s] = df
+        if (
+            df.is_empty()
+            or df["date"].min() > start
+            or df["date"].max() < end
+        ):
+            missing.append(s)
+
+    if not missing:
+        logger.info("build_async：%d 只命中缓存，0 只回源补拉", len(syms))
+        return build(symbols, start, end)
+
+    try:
+        bars = await client.fetch_bars(missing, start, end)
+    except Exception as e:  # 网络/上游故障不阻塞构建，缺失标的全 NaN 降级
+        logger.warning("build_async 补拉失败（%d 只标的按全 NaN 降级）：%s", len(missing), e)
+        return build(symbols, start, end)
+
+    # 按 symbol 分桶后逐标的 merge 落缓存（bars_to_frame 空列表返回空 schema 表）
+    by_symbol: dict[str, list[dict]] = {s: [] for s in missing}
+    for bar in bars:
+        if bar.get("symbol") in by_symbol:
+            by_symbol[bar["symbol"]].append(bar)
+    filled = 0
+    for s in missing:
+        if not by_symbol[s]:
+            continue  # 该标的区间内无数据（停牌/退市/上游缺数），保留全 NaN 列
+        store.save(s, store.merge(store.load(s), store.bars_to_frame(by_symbol[s])))
+        filled += 1
+
+    failed = len(missing) - filled
+    logger.info(
+        "build_async：%d 只命中缓存，%d 只回源补拉（%d 只补拉无数据/失败）",
+        len(syms) - len(missing), len(missing), failed,
+    )
+    return build(symbols, start, end)

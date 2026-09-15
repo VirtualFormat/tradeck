@@ -333,6 +333,30 @@ undici override 告警归因复核登记 backlog——`shadcn>undici` scoped 选
 
 ## 阶段 P：全量模拟模式（2026-09-14，Aquinas 开发 + Pauli review + 主 agent 收尾）
 
+## 阶段 Q：回测缓存冷启动彻底修复（2026-09-15，Rawls 开发 + Euler review + 主 agent 收尾）
+
+**背景（prod 实踩事故）**：quant 容器重建后 Parquet 缓存目录为空，
+`matrix.build()` 只读缓存 → universe=tracked 100 只 98% 全 NaN → 回测 0 笔
+成交（用户实测 trend_breakout 91 天 0 交易）。补数此前靠手动 `cli fetch`，
+是设计缺口。
+
+**修复**：`matrix.build_async` 按需回源——缓存缺失/区间覆盖不足时经
+`client.fetch_bars`（tradb /api/bars）批量补拉落缓存，再按同步逻辑建矩阵；
+回源只发生在主进程（worker 子进程只读已暖缓存，与分钟K 预拉模式一致）。
+接线：run_backtest_async（透传预建矩阵）/ api_backtest / api_backtest_run /
+api_screen / _run_optimize_route（先 validate 再暖缓存）。
+
+**review（Euler）P1 两处同类路径补修**：
+- daily_signals_job（每日信号 cron）：screen 走纯缓存，冷缓存下空信号表覆盖
+  latest.parquet 静默清零——job 内先 build_async 暖缓存
+- 分钟频回放：日线面板 store.load 直读缓存——分流前对 panel_start 窗口暖缓存
+
+P2 登记：store.save 非原子落盘的并发写交叉（tmp+rename 或 per-symbol lock）；
+api_backtest_run 的 202 被冷启动补拉拖慢（设计张力，注释已写明）；死参数
+prefetch 已删（P2-5 已修）。
+
+验收：217 用例全绿（1 环境 skip）；端到端验证空缓存 + mock 回源出信号成交。
+
 参照 tick-stock-panel `simulate_independent_candidates` 移植：每个买入信号独立
 执行（固定 1 手、不受资金/持仓限制），评估策略选股质量。`sim_mode=full` 经
 BacktestRequest 透出（position 默认不变），stats 为样本口径（avg/median/胜率/

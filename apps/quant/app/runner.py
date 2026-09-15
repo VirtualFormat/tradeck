@@ -372,10 +372,13 @@ def run_backtest(
     progress_cb=None,
     progress_every: int = 1,
     cancel_event=None,
+    matrix=None,
 ) -> dict:
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
 
-    数据来自本地 Parquet 缓存（调用方应先经 fetch 备数；缺数标的在矩阵层降级为全 NaN 列）。
+    数据来自本地 Parquet 缓存（缺数标的在矩阵层降级为全 NaN 列）；
+    matrix 参数可传入主进程经 matrix.build_async 预建的矩阵（含按需回源补拉），
+    传入后跳过内部 build 直读缓存——调用方不预建时本函数行为与旧版完全一致。
     benchmark / names 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
     names 缺省 None 时撮合按无名称（非 ST）分档，保持历史行为。
     minute_bars：{symbol: 分钟K DataFrame}（阶段 H1，由 run_backtest_async 预拉），
@@ -411,7 +414,8 @@ def run_backtest(
         )
         return _minute_replay_result_dict(strategy_id, symbols, start, end, MinuteReplayResult())
 
-    matrix = build(symbols, start, end)
+    if matrix is None:
+        matrix = build(symbols, start, end)
     if not matrix.dates:
         logger.warning("区间 %s ~ %s 无缓存数据，返回空结果", start, end)
         if progress_cb is not None:
@@ -423,7 +427,9 @@ def run_backtest(
         empty.update(_result_ext_empty(t0))
         return empty
 
-    # 复权：读缓存因子，缺失标的降级无复权并在结果标注
+    # 复权：读缓存因子，缺失标的降级无复权并在结果标注。
+    # 边界说明：因子不做按需回源（与日K 的 build_async 不同）——补因子走
+    # `cli fetch --with-factors` 或每日定时 job，缺因子标的按原始价口径跑并标注。
     fac = {s: factors.load(s) for s in symbols}
     adjusted_matrix, adjusted_flags = forward_adjust(matrix, fac)
     enriched = enrich(adjusted_matrix)
@@ -741,11 +747,26 @@ async def run_backtest_async(
 
     分钟频策略分流（阶段 H2）：META timeframes 含 "1m" 的策略改走
     _run_minute_replay（逐日回放日线窗口 + 当日分钟流），不进矩阵回测路径。
+
+    日K 按需回源（冷启动修复）：先经 matrix.build_async 预建矩阵——缓存缺失/
+    不足的标的经 data-api /api/bars 批量补拉落缓存，避免容器缓存目录为空时
+    回测全员全 NaN 零成交；补拉失败按既有语义降级（全 NaN 列，不抛错）。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     if reg.get(strategy_id).is_minute_strategy:
+        # 冷启动修复（review P1-2）：分钟回放的日线面板也是 store.load 直读
+        # 缓存，冷缓存下 daily 空 → 返回结构完整的空结果（与 prod 事故同源）。
+        # 分流前对日线面板窗口暖缓存（panel_start 由 _minute_panel_start 算）。
+        from app.matrix import build_async
+
+        sdef = reg.get(strategy_id)
+        await build_async(
+            symbols, _minute_panel_start(start, sdef.minute_daily_bars), end
+        )
         return await _run_minute_replay(symbols, strategy_id, start, end, params, reg)
 
+    from app.matrix import build_async
+    matrix = await build_async(symbols, start, end)
     benchmark = await _fetch_benchmark(symbols, start, end)
     names = await _fetch_names(symbols)
     minute_bars: dict | None = None
@@ -760,6 +781,7 @@ async def run_backtest_async(
     return run_backtest(
         symbols, strategy_id, start, end, params, config, reg, benchmark, names,
         minute_bars=minute_bars,
+        matrix=matrix,
     )
 
 
@@ -810,6 +832,28 @@ def _check_minute_strategy(registry: StrategyRegistry, strategy_id: str) -> None
             f"分钟频策略 {strategy_id} 不支持参数优化/walk-forward（走分钟回放路径，"
             "不进矩阵回测）"
         )
+
+
+def validate_optimize_request(
+    registry: StrategyRegistry,
+    strategy_id: str,
+    param_grid: dict,
+    param_id: str | None = None,
+) -> None:
+    """优化系请求的同步前置校验（无网络/计算），供 API 层在暖缓存前 fail fast。
+
+    与 run_optimize/run_sensitivity/run_walkforward 入口校验同源：
+    策略存在性/分钟频检查 → count_combinations（grid spec 全量校验 + 组合爆炸
+    预判，含未知参数/类型/范围）→ sensitivity 另要求 param_id 在 grid 中。
+    只做校验不返回内容；非法输入抛 KeyError（策略不存在）或 ValueError。
+    """
+    from app.engine import optimizer
+
+    _check_minute_strategy(registry, strategy_id)
+    params_meta = _params_meta(registry, strategy_id)
+    optimizer.count_combinations(params_meta, param_grid)
+    if param_id is not None and param_id not in param_grid:
+        raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
 
 
 def _make_run_fn_inprocess(

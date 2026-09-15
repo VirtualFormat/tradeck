@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -68,9 +68,21 @@ async def daily_signals_job() -> int:
     """每日信号定时任务入口（模块级 async def，已知坑#7：APScheduler 只接协程函数）。
 
     优雅降级：任何失败只记日志返回 0，不向上抛（调度器/API 均不受影响）。
+
+    冷启动修复（review P1-1）：screen 走纯缓存 build()，容器缓存空时全标的
+    全 NaN → 空信号表覆盖式清空 latest.parquet。job 本身是 async，先经
+    build_async 按需回源暖缓存（缺失标的经 data-api 批量补拉落缓存），
+    补拉失败按既有语义降级（全 NaN 列，不抛错）。
     """
     try:
         symbols = signal_universe()
+        from app.matrix import build_async
+        from app.screener.executor import _SCREEN_WINDOW_DAYS
+
+        today = date.today()
+        await build_async(
+            symbols, today - timedelta(days=_SCREEN_WINDOW_DAYS), today
+        )
         n = run_daily_signals(symbols, user_id=settings.QUANT_DEFAULT_USER)
         logger.info("每日信号 job done: %d rows（universe=%d，user=%s）",
                     n, len(symbols), settings.QUANT_DEFAULT_USER)

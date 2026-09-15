@@ -112,14 +112,24 @@ class ScreenRequest(_SymbolRequest):
 
 
 @app.post("/api/screen")
-def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)) -> dict:
-    """选股：返回最新交易日截面入选标的（score 降序）。"""
+async def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)) -> dict:
+    """选股：返回最新交易日截面入选标的（score 降序）。
+
+    冷启动修复：screen() 是同步函数只读本地缓存，故先经 matrix.build_async
+    暖缓存（缺失标的回源补拉落盘），补拉失败按全 NaN 列降级，不影响出参。
+    """
     from app.universe import resolve_universe
     reg = _registry(user_id)
     try:
         symbols = resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    from datetime import timedelta
+
+    from app.matrix import build_async
+    from app.screener.executor import _SCREEN_WINDOW_DAYS
+    _screen_end = req.end or date.today()
+    await build_async(symbols, _screen_end - timedelta(days=_SCREEN_WINDOW_DAYS), _screen_end)
     try:
         res = screen(req.strategy_id, symbols, end_date=req.end,
                      params=req.params or None, registry=reg)
@@ -173,6 +183,11 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
         exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
+    # 冷启动修复：worker 子进程只读本地缓存不做网络 IO（既有纪律），
+    # 日K 缺失标的必须在这里（主进程）经 build_async 补拉落盘，
+    # 否则缓存目录为空时子进程回测全员全 NaN 零成交；失败降级不阻塞。
+    from app.matrix import build_async
+    await build_async(symbols, req.start, end)
     benchmark = await _fetch_benchmark(symbols, req.start, end)
     names = await _fetch_names(symbols)
     try:
@@ -264,6 +279,10 @@ async def api_backtest_run(req: BacktestRequest,
         exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
+    # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
+    # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
+    from app.matrix import build_async
+    await build_async(symbols, req.start, end)
     benchmark = await _fetch_benchmark(symbols, req.start, end)
     names = await _fetch_names(symbols)
     # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
@@ -698,6 +717,22 @@ async def _run_optimize_route(
         symbols = resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    # 前置校验（同步、无网络）：grid 非法/组合爆炸/分钟频策略等尽早 4xx，
+    # 不做无谓的暖缓存补拉；与 runner 入口校验同源（validate_optimize_request）。
+    try:
+        quant_runner.validate_optimize_request(
+            _registry(user_id), req.strategy_id, req.param_grid,
+            param_id=extra_kwargs.get("param_id"),
+        )
+    except KeyError as e:  # 未知策略 → 404
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:  # grid 非法/组合爆炸/分钟频策略等 → 422
+        raise HTTPException(status_code=422, detail=str(e))
+    # 冷启动修复：worker 子进程与进程内串行都只读本地日K 缓存，
+    # 缺失标的必须在这里（主进程）经 build_async 补拉落盘，
+    # 否则缓存目录为空时全部组合零成交；补拉失败降级不阻塞（runner 层照常跑）。
+    from app.matrix import build_async
+    await build_async(symbols, req.start, req.end)
     runner_fn = getattr(quant_runner, runner_fn_name)
     try:
         return await runner_fn(
