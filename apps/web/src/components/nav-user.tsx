@@ -3,10 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import {
-  Avatar,
-  AvatarFallback,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,14 +14,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import {
-  CaretUpDownIcon,
-  SignOutIcon,
-} from "@phosphor-icons/react";
+import { CaretUpDownIcon, SignOutIcon } from "@phosphor-icons/react";
 
 export interface NavUserInfo {
   name: string;
@@ -34,6 +27,11 @@ export interface NavUserInfo {
 function initials(name: string): string {
   return name.trim().slice(0, 2).toUpperCase() || "U";
 }
+
+// 与 ui/sidebar.tsx 的 sidebarMenuButtonVariants({ size: "lg" }) 保持一致，
+// 不经过 render 复合，避免 base-ui 两层 useRender 嵌套冲突（见本文件 DropdownMenuTrigger）。
+const triggerClassName =
+  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate h-12 text-sm group-data-[collapsible=icon]:p-0! aria-expanded:bg-muted";
 
 export function NavUser({ user }: { user: NavUserInfo }) {
   const { isMobile } = useSidebar();
@@ -55,11 +53,7 @@ export function NavUser({ user }: { user: NavUserInfo }) {
     <SidebarMenu>
       <SidebarMenuItem>
         <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <SidebarMenuButton size="lg" className="aria-expanded:bg-muted" />
-            }
-          >
+          <DropdownMenuTrigger className={triggerClassName}>
             <Avatar className="size-8 rounded-lg">
               <AvatarFallback className="rounded-lg">
                 {initials(user.name)}

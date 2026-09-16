@@ -24,7 +24,11 @@ services:
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-tradeck_dev}
       POSTGRES_DB: tradeck_auth
     volumes:
-      - auth-db-data:/var/lib/postgresql/data
+      # bind mount 到数据盘（默认 /data/apps/tradeck/postgres/data；对齐 tradb 的
+      # TRADB_PG_DATA 模式，命名卷会落在 docker 数据目录、根盘有写满风险）。
+      # 从命名卷迁移：先 docker run --rm -v tradeck_auth-db-data:/from -v <本目录>:/to
+      # postgres:16-alpine cp -a /from/. /to/，再 up（见 TRADB-DEPLOY.md 同类操作）。
+      - ${TRADECK_PG_DATA:-/data/apps/tradeck/postgres/data}:/var/lib/postgresql/data
     # 不映射宿主机端口：仅 auth-api 经容器网络访问。
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tradeck -d tradeck_auth"]
@@ -144,6 +148,6 @@ networks:
     name: tradb_default
     external: true
 
-volumes:
-  # auth-db 数据卷（tradeck 用户域，独立于 tradb 行情库卷）
-  auth-db-data:
+# auth-db 已改 bind mount（TRADECK_PG_DATA），无命名卷；保留空 volumes 占位以便
+# 后续新增命名卷时不破坏 YAML 结构。
+volumes: {}
