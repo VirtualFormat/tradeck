@@ -56,35 +56,39 @@ export default async function RootLayout({
           disableTransitionOnChange
         >
           <TooltipProvider>
-            <SidebarProvider
-              style={
-                {
-                  "--sidebar-width": "14.5rem",
-                  "--header-height": "calc(var(--spacing) * 12)",
-                } as React.CSSProperties
-              }
-            >
-              <AppSidebar variant="inset">
-                {user ? (
+            {/* 未登录（/login 等公开页）不渲染侧边栏与顶栏，只给纯内容画布；
+                登录后才进入带 AppSidebar/SiteHeader 的应用壳。 */}
+            {user ? (
+              <SidebarProvider
+                style={
+                  {
+                    "--sidebar-width": "14.5rem",
+                    "--header-height": "calc(var(--spacing) * 12)",
+                  } as React.CSSProperties
+                }
+              >
+                <AppSidebar variant="inset">
                   <NavUser
                     user={{
                       name: user.display_name ?? user.email,
                       email: user.email,
                     }}
                   />
-                ) : null}
-              </AppSidebar>
-              <SidebarInset>
-                <SiteHeader />
-                <div className="flex flex-1 flex-col">
-                  <div className="@container/main flex flex-1 flex-col gap-2">
-                    <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-                      {children}
+                </AppSidebar>
+                <SidebarInset>
+                  <SiteHeader />
+                  <div className="flex flex-1 flex-col">
+                    <div className="@container/main flex flex-1 flex-col gap-2">
+                      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                        {children}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </SidebarInset>
-            </SidebarProvider>
+                </SidebarInset>
+              </SidebarProvider>
+            ) : (
+              children
+            )}
           </TooltipProvider>
         </ThemeProvider>
       </body>
