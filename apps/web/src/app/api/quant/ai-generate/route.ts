@@ -4,12 +4,15 @@
  * 代理 quant 容器（AI 策略生成），流式透传给浏览器，失败返回 502 JSON
  */
 import { NextRequest, NextResponse } from "next/server";
+import { assertSession } from "@/app/api/_guard";
 
 const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const body = await request.json();
     const res = await fetch(`${QUANT_API_URL}/api/ai/generate`, {

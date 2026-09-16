@@ -4,8 +4,11 @@
  */
 import { NextResponse } from "next/server";
 import { vibeTradingFetch } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 export async function GET() {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const res = await vibeTradingFetch("/swarm/runs");
     const data = await res.json().catch(() => []);

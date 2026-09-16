@@ -180,7 +180,7 @@ docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部�
 5. 颜色只用主题 CSS 变量（`var(--up)` 红涨 / `var(--down)` 绿跌等）；类名合并用 `cn()`；数据组件 Server Component、图表组件 `"use client"` 单独文件。
 6. **提交前检查清单**（对改动文件逐个 grep，必须全绿）：
    - 裸元素：`<table`、`<button`、`<input`、`<select`、`<dialog`、`<progress`（ui/ 目录外应为 0）
-   - 手搓痕迹：`title="`（悬浮提示）、`animate-spin`（除 refresh-button 已登记豁免）、「暂无」裸 div、`from "lucide-react"`
+   - 手搓痕迹：`title="`（悬浮提示）、`animate-spin`（已登记豁免：refresh-button、login-form 提交按钮 spinner）、「暂无」裸 div、`from "lucide-react"`
    - 图表：`from "recharts"` 的文件必须同文件出现 `ChartContainer`（豁免文件除外）
 
 ### 通用约定
@@ -260,6 +260,8 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 ⚠️ `init.sql` 由 postgres 容器**首次启动**时执行（`docker-entrypoint-initdb.d`）。改表结构后，已存在的数据卷不会自动重跑——需手动执行 SQL 或删数据卷重建。
 
+用户域数据存 tradeck 自有 `auth-db`（独立 PG service，auth-api 经 AUTH_DATABASE_URL 访问），与 tradb 行情库物理分离，详见 docs/AUTH.md。
+
 ## 测试与验证
 
 - data-collector 有少量 Python 标准库 `unittest`，位于 `apps/data-collector/tests/`；CI 仍仅构建 OpenBB 镜像，不自动跑测试。
@@ -314,5 +316,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 - `docs/DATA-LAYER.md` — 数据层特性（三源分工、薄门面限流降级、symbol 规范、调度错峰）
 - `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）
 - `docs/DATA-SERVICE.md` — 数据服务拆分技术方案（三条铁律、分层、容量、对外接口）
+- `docs/AUTH.md` — 用户认证与登录（邮箱+密码 session、auth schema、邀请制、分期路线图）
 - `docs/QUANT-BACKTEST.md` — 量化引擎与策略开发技术方案（Polars 矩阵引擎、AI 策略生成、因子挖掘）
 - `plans/` — 过程性施工文件目录（任务拆解/验收记录，如 TASKS-DATA-SERVICE.md、TASKS-QUANT-BACKTEST.md）；过程性计划不入 docs

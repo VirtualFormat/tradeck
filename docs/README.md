@@ -14,6 +14,12 @@ tradeck 是全球股票市场资讯看板（美股 / A 股 / 港股），并逐�
 | [DATA-SERVICE.md](DATA-SERVICE.md) | 数据服务拆分：三条铁律、分层、容量、对外接口（量化契约） |
 | [DATA-STORAGE-TIERED.md](DATA-STORAGE-TIERED.md) | 分层存储设计：热 PG / 温 ClickHouse / 冷 Parquet+COS，量级测算与选型 |
 
+## 用户与认证
+
+| 文档 | 内容 |
+|---|---|
+| [AUTH.md](AUTH.md) | 用户认证：邮箱+密码、手写 session、auth schema、邀请制、安全清单、P1-P3 路线图 |
+
 ## 量化
 
 | 文档 | 内容 |

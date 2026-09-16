@@ -18,6 +18,9 @@ class Settings:
     SERVICE_TOKENS: str
     DATA_POOL_ROOT: str
     DATA_MODE: DataMode
+    AUTH_DATABASE_URL: str
+    AUTH_INVITE_CODE: str
+    AUTH_SESSION_DAYS: int
 
     def __init__(self) -> None:
         data_mode = os.getenv("DATA_MODE", "live").strip()
@@ -61,6 +64,28 @@ class Settings:
         self.CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
         # data-api 只读挂载自有 Parquet 池，用于分钟 K UNION 查询。
         self.DATA_POOL_ROOT = os.getenv("DATA_POOL_ROOT", "/data/market-pool")
+        # ---- 用户登录（P0，/api/auth/*）----
+        # auth 库连接串：tradeck 自建 auth-api 专用（用户域数据不再放 tradb）。
+        # 行情 data-api 进程不使用本字段（仍走 DATABASE_URL 连 tradb）。
+        self.AUTH_DATABASE_URL = os.getenv(
+            "AUTH_DATABASE_URL",
+            "postgresql://tradeck:tradeck_dev@localhost:5432/tradeck_auth",
+        )
+        # 邀请码：非空时注册必须携带匹配的 invite_token；空 = 开放注册。
+        self.AUTH_INVITE_CODE = os.getenv("AUTH_INVITE_CODE", "")
+        # 会话有效期（天），登录时 expires_at = now() + N 天。
+        raw_session_days = os.getenv("AUTH_SESSION_DAYS", "7")
+        try:
+            session_days = int(raw_session_days)
+        except ValueError:
+            raise ValueError(
+                f"Invalid AUTH_SESSION_DAYS={raw_session_days!r}; expected integer >= 1"
+            ) from None
+        if session_days < 1:
+            raise ValueError(
+                f"Invalid AUTH_SESSION_DAYS={raw_session_days!r}; expected integer >= 1"
+            )
+        self.AUTH_SESSION_DAYS = session_days
 
 
 settings = Settings()

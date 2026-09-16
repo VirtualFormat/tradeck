@@ -5,10 +5,13 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { vibeTradingFetch } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(request: NextRequest, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   try {
     const body = await request.json();
@@ -25,6 +28,8 @@ export async function POST(request: NextRequest, ctx: Ctx) {
 }
 
 export async function GET(request: NextRequest, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   const limit = request.nextUrl.searchParams.get("limit") ?? "100";
   try {

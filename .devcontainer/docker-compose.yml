@@ -11,9 +11,12 @@ services:
   dev:
     image: mcr.microsoft.com/devcontainers/python:3.12
     container_name: tradeck-dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3000:3000"
-      - "8080:8080"  # backend dev server
+      # 8080 端口映射已移除：dev 环境数据层改走 prod tradb（SSH tunnel 占宿主机 8080），
+      # dev 容器内不再需要 backend dev server 端口（BACKEND_API_URL 指向 prod tradb）
     volumes:
       - ..:/workspace:cached
       - dev-node-modules:/workspace/apps/web/node_modules
@@ -24,9 +27,13 @@ services:
     environment:
       - DATA_MODE=${DATA_MODE:-live}
       - OPENBB_API_URL=http://openbb:6900
-      - BACKEND_API_URL=http://data-api:8080
-      # collector 内部运维 API（手动同步触发等，备用）
-      - COLLECTOR_API_URL=http://collector:8080
+      # 指向 prod tradb（经宿主机 SSH tunnel host.docker.internal:8080 → VPS tradb data-api）
+      - BACKEND_API_URL=${TRADB_API_URL:-http://host.docker.internal:8080}
+      # 用户登录：web 的 session 校验 / 登录注册代理走 dev auth-api（同 dev-net 容器名直达）。
+      # 不设则会回退 localhost:8080 误打行情 data-api，/api/auth/* 全部 500/404。
+      - AUTH_API_URL=http://auth-api:8080
+      # collector 内部运维 API（手动同步触发等，备用）— 指向 prod tradb collector
+      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://host.docker.internal:8082}
       # 量化引擎 HTTP 服务（/api/quant/* 代理的目标；web 容器经 dev-net 主机名访问）
       - QUANT_API_URL=http://quant:8083
       - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
@@ -169,6 +176,29 @@ services:
     # dev 模式：热重载
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
 
+  # auth-api（用户域：注册/登录/session，与行情 data-api 分离，对齐 prod 架构）
+  # 同一 backend 源码热挂载、同一 postgres 实例（auth schema 由 data-collector 的
+  # init.sql 建出），独立进程避免与行情路由/DATA_MODE 校验耦合。
+  auth-api:
+    build: ../apps/backend
+    container_name: tradeck-dev-auth-api
+    environment:
+      AUTH_DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      AUTH_INVITE_CODE: ${AUTH_INVITE_CODE:-}
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
+      # 消费方令牌（JSON）：留空 = 内网放行（dev 默认）
+      SERVICE_TOKENS: ${SERVICE_TOKENS:-}
+    volumes:
+      - ../apps/backend:/app
+    ports:
+      - "8084:8080"  # 调试端口，避开 dev 8080 / data-api 8081 / collector 8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dev-net
+    command: ["uvicorn", "app.auth_main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+
   # OpenBB Platform
   openbb:
     build:
@@ -217,11 +247,19 @@ services:
     build: ../apps/quant
     container_name: tradeck-dev-quant
     profiles: ["quant"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 显式读项目根 .env（QUANT_SERVICE_TOKEN 等；dev compose 默认只找 .devcontainer/.env）
+    env_file:
+      - ../.env
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
-      BACKEND_API_URL: http://data-api:8080
+      # 指向 prod tradb（经宿主机 SSH tunnel host.docker.internal:8080 → VPS tradb data-api）
+      BACKEND_API_URL: ${TRADB_API_URL:-http://host.docker.internal:8080}
       # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；dev 留空内网放行
-      SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
+      # 直接读 env_file（根 .env）里的 QUANT_SERVICE_TOKEN；environment 空串会覆盖 env_file，
+      # 故不写默认值，env_file 有值即生效、无值则 quant config 的 SERVICE_TOKEN 默认空串。
+      SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN}
       # Parquet 缓存目录（行情/因子缓存 + enriched 矩阵 + 报告/候选库）
       QUANT_CACHE_DIR: /data/cache
       # AI 策略生成（可选）：全部留空即关闭

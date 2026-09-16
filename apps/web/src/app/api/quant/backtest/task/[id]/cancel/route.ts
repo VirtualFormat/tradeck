@@ -4,12 +4,15 @@
  * 代理 quant 容器，失败返回 502
  */
 import { NextRequest, NextResponse } from "next/server";
+import { assertSession } from "@/app/api/_guard";
 
 const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(_request: NextRequest, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   try {
     const res = await fetch(

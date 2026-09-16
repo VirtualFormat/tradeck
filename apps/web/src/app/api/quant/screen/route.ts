@@ -4,10 +4,13 @@
  * 代理 quant 容器（条件筛选），失败降级返回空结果
  */
 import { NextRequest, NextResponse } from "next/server";
+import { assertSession } from "@/app/api/_guard";
 
 const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
 
 export async function POST(request: NextRequest) {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const body = await request.json();
     const res = await fetch(`${QUANT_API_URL}/api/screen`, {

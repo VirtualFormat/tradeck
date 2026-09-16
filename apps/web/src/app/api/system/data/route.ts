@@ -5,12 +5,15 @@
 import { NextResponse } from "next/server";
 
 import { serviceAuthHeaders } from "@/lib/service-auth";
+import { assertSession } from "@/app/api/_guard";
 
 // 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
 export async function GET() {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const res = await fetch(`${BACKEND_API_URL}/api/system/data`, {
       headers: { Accept: "application/json", ...serviceAuthHeaders() },

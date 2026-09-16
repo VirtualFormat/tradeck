@@ -3,12 +3,15 @@
  * GET /api/ai/shadow-reports/[id]?format=html|pdf
  */
 import { vibeTradingFetch } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   const format = new URL(request.url).searchParams.get("format") ?? "html";
   if (format !== "html" && format !== "pdf") {

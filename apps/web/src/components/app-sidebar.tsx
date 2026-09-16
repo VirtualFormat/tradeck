@@ -67,7 +67,7 @@ const navMain: NavItem[] = [
   { title: "数据中心", url: "/data", icon: <DatabaseIcon /> },
 ]
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({ children, ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -88,6 +88,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarContent>
       <SidebarFooter>
         <ThemeToggle />
+        {children}
       </SidebarFooter>
     </Sidebar>
   )

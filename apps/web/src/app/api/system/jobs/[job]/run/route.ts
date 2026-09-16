@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { serviceAuthHeaders } from "@/lib/service-auth";
+import { assertSession } from "@/app/api/_guard";
 
 // 默认兜底仅供本地开发；生产由环境变量注入 tradb collector 回环地址。
 const COLLECTOR_API_URL =
@@ -14,6 +15,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ job: string }> }
 ) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { job } = await params;
   const token = request.headers.get("x-data-sync-token") ?? "";
   try {

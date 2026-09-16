@@ -7,6 +7,7 @@
  */
 import { NextRequest } from "next/server";
 import { vibeTradingFetch, mintSseTicket } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,6 +15,8 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(request: NextRequest, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   try {
     const ticket = await mintSseTicket();

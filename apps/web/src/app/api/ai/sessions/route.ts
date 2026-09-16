@@ -5,8 +5,11 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { vibeTradingFetch } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 export async function POST(request: NextRequest) {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const body = await request.json().catch(() => ({}));
     const res = await vibeTradingFetch("/sessions", {
@@ -22,6 +25,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const res = await vibeTradingFetch("/sessions");
     const data = await res.json().catch(() => []);

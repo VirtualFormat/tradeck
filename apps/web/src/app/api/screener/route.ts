@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { serviceAuthHeaders } from "@/lib/service-auth";
+import { assertSession } from "@/app/api/_guard";
 
 // 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
 const BACKEND_API_URL =
@@ -42,6 +43,8 @@ function normalizeMover(item: Record<string, unknown>) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const type = request.nextUrl.searchParams.get("type") ?? "gainers";
 
   if (!VALID_TYPES.includes(type)) {

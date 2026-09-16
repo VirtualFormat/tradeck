@@ -4,10 +4,13 @@
  */
 import { NextResponse } from "next/server";
 import { vibeTradingFetch } from "@/lib/vibe-trading";
+import { assertSession } from "@/app/api/_guard";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(_request: Request, ctx: Ctx) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await ctx.params;
   try {
     const res = await vibeTradingFetch(`/sessions/${id}/cancel`, { method: "POST" });

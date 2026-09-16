@@ -4,10 +4,13 @@
  * 代理 quant 容器（挖掘出的候选因子/策略），失败降级返回空数组
  */
 import { NextResponse } from "next/server";
+import { assertSession } from "@/app/api/_guard";
 
 const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
 
 export async function GET() {
+  const guard = await assertSession();
+  if (guard) return guard;
   try {
     const res = await fetch(`${QUANT_API_URL}/api/mining/candidates`, {
       headers: { Accept: "application/json" },

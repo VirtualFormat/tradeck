@@ -2,10 +2,12 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Roboto_Slab, Public_Sans } from "next/font/google";
 import "./globals.css";
 import { AppSidebar } from "@/components/app-sidebar";
+import { NavUser } from "@/components/nav-user";
 import { SiteHeader } from "@/components/site-header";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { getSession } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const publicSansHeading = Public_Sans({subsets:['latin'],variable:'--font-heading'});
@@ -27,11 +29,12 @@ export const metadata: Metadata = {
   description: "全球股票行情 + 资讯 Dashboard",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const user = await getSession();
   return (
     <html
       lang="zh-CN"
@@ -61,7 +64,16 @@ export default function RootLayout({
                 } as React.CSSProperties
               }
             >
-              <AppSidebar variant="inset" />
+              <AppSidebar variant="inset">
+                {user ? (
+                  <NavUser
+                    user={{
+                      name: user.display_name ?? user.email,
+                      email: user.email,
+                    }}
+                  />
+                ) : null}
+              </AppSidebar>
               <SidebarInset>
                 <SiteHeader />
                 <div className="flex flex-1 flex-col">

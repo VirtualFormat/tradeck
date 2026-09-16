@@ -4,6 +4,7 @@
  * 代理 quant 容器（因子注册表），失败降级返回 502
  */
 import { NextRequest, NextResponse } from "next/server";
+import { assertSession } from "@/app/api/_guard";
 
 const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
 
@@ -14,6 +15,8 @@ async function proxy(
   context: RouteContext,
   method: "PUT" | "DELETE"
 ) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const { id } = await context.params;
   const init: RequestInit = {
     method,
