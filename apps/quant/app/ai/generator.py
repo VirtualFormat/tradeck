@@ -162,9 +162,12 @@ class AIStrategyGenerator:
         payload = {
             "model": self._model,
             "messages": messages,
-            "temperature": 0.3,
             "stream": False,
         }
+        # temperature 可选：Kimi K3 等模型服务端固定 temperature=1，显式传值会 400，
+        # 默认不传用服务端默认；仅当端点支持自定义且 .env 配了 AI_TEMPERATURE 时才携带。
+        if settings.AI_TEMPERATURE is not None:
+            payload["temperature"] = settings.AI_TEMPERATURE
         headers = {"Authorization": f"Bearer {settings.AI_API_KEY}"}
         try:
             async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_S) as client:

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""
     # AI 模型名
     AI_MODEL: str = ""
+    # 采样温度：留空不传（用服务端默认）。部分模型（如 Kimi K3）服务端固定 temperature=1，
+    # 显式传其他值会被 400 拒绝，故默认不传；仅确认端点支持自定义时填写（如 0.3）。
+    AI_TEMPERATURE: float | None = None
     # 多用户骨架（docs/QUANT-BACKTEST.md v2 §0）：未携带 X-User-Id 时的回落用户；
     # 现阶段不鉴权，仅做存储命名空间隔离。
     QUANT_DEFAULT_USER: str = "default"

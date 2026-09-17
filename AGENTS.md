@@ -162,7 +162,11 @@ bash docker/openbb/verify.sh   # OpenBB 侧检查：路由数/美股港股报价
 ### Prod 验证 / 部署
 
 ```bash
-docker compose up -d --build   # 本地验证 prod 配置；VPS 上同命令部署
+# 本地验证 prod 配置（仅本地允许 --build）
+docker compose up -d --build
+
+# VPS 部署/更新（强规则：禁源码、禁 build，只 pull CI 镜像，详见「部署」节）
+docker compose pull && docker compose up -d --force-recreate
 ```
 
 ## 代码组织与约定
@@ -275,8 +279,13 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 ## 部署
 
-- 项目根 `docker-compose.yml` **只用于 prod 部署和部署前本地验证**，开发不要用根 compose。
-- VPS 部署：`docker compose -f docker-compose.yml up -d --build`。
+- **【强规则】prod（VPS）禁止拉取源码、禁止 build**：VPS 上没有源码仓库，prod compose 只有 `image:` 段（无 `build:`），所有镜像由 CI 构建推送 GHCR。VPS 部署/更新**唯一正确姿势**：
+  ```bash
+  docker compose pull            # 拉 CI 构建好的镜像
+  docker compose up -d --force-recreate   # 重建生效（.env 变更也必须 recreate，restart 不重新注入 env）
+  ```
+  违反后果：在 VPS 上 git clone / `up -d --build` 会污染 prod 环境且镜像与 CI 脱节。镜像没更新时去触发 CI 构建推送，**绝不**在 VPS 本地 build。
+- 项目根 `docker-compose.yml` **只用于 prod 部署和部署前本地验证**，开发不要用根 compose；`--build` 仅允许在部署前本地验证时使用，VPS 上禁用。
 - prod compose 只剩消费方 `web` + `quant`（数据层 postgres/clickhouse/openbb/collector/data-api
   已迁 tradb 独立 compose，web/quant 经 `tradb_default` 外部网络访问；部署手册见 `docs/TRADB-DEPLOY.md`）。
 
