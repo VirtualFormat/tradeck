@@ -1,7 +1,8 @@
 /**
- * AI 策略生成 API 路由（SSE 流式）
+ * AI 策略生成 API 路由（任务化）
  * POST /api/quant/ai-generate
- * 代理 quant 容器（AI 策略生成），流式透传给浏览器，失败返回 502 JSON
+ * 代理 quant 容器：登记生成任务，立即返回 {task_id}（202）；
+ * 未配置 AI 时 quant 返回 200 {valid:false, error}，原样透传给前端降级展示。
  */
 import { NextRequest, NextResponse } from "next/server";
 import { assertSession } from "@/app/api/_guard";
@@ -17,29 +18,18 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const res = await fetch(`${QUANT_API_URL}/api/ai/generate`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       cache: "no-store",
     });
-    if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data === null) {
       return NextResponse.json(
         { error: "backend unavailable" },
         { status: 502 }
       );
     }
-    // 流式透传：不 await res.json()，直接把上游 SSE 流转给浏览器
-    return new Response(res.body, {
-      status: res.status,
-      headers: {
-        "Content-Type":
-          res.headers.get("Content-Type") ?? "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no",
-      },
-    });
+    return NextResponse.json(data, { status: res.status });
   } catch (err) {
     console.error("quant ai-generate proxy failed:", err);
     return NextResponse.json(

@@ -339,15 +339,76 @@ class AIGenerateRequest(BaseModel):
     description: str = Field(min_length=4, max_length=2000)
 
 
-@app.post("/api/ai/generate")
-async def api_ai_generate(req: AIGenerateRequest):
-    """AI 生成策略（轻量 JSON 条件 / 完整策略代码）。未配置 AI 时返回降级说明。"""
+# ---------------------------------------------------------------------------
+# 任务化 AI 生成 API（进度 / 断线重连 / 取消）
+#
+# 动机：AI 生成是「请求-等 LLM 跑完-一次性返回」，Kimi K3 生成长代码常超 60s
+# （实测 56s+），nginx/CF 任一环超时都会把连接砍成 504/524。任务化后 POST 秒回
+# task_id，LLM 调用在后台协程，客户端轮询拿终态结果——任务脱离连接独立存活，
+# 掉线重连轮询即恢复（与任务化回测同语义，复用 BacktestTaskRegistry）。
+# 未配置 AI 时登记前直接 200 返回错误（不产生任务，前端按原降级路径展示）。
+# ---------------------------------------------------------------------------
+
+
+async def _run_ai_generate_task(task_id: str, description: str) -> None:
+    """后台执行协程：调 LLM 生成 + 校验（含 repair 重试），终态写回注册表。"""
     from app.ai.generator import AIStrategyGenerator
-    gen = AIStrategyGenerator()
-    if not gen.enabled:
+    registry = get_task_registry()
+    token = CancelToken()
+    registry.attach_cancel_token(task_id, token)
+    registry.mark_running(task_id)
+    try:
+        if token.is_set():
+            registry.mark_cancelled(task_id)
+            return
+        gen = AIStrategyGenerator()
+        result = await gen.generate(description)
+        # LLM 调用结束后才看到取消标记（协作式取消：不打断进行中的 HTTP 调用，
+        # 只丢弃结果——AI 生成无副作用，丢弃即安全）
+        if token.is_set():
+            registry.mark_cancelled(task_id)
+            return
+    except Exception as e:  # 绝不把异常泄漏到事件循环
+        logger.exception("任务化 AI 生成异常（task=%s）", task_id)
+        registry.mark_failed(task_id, f"生成主流程异常：{e}")
+        return
+    # LLM/校验失败是业务终态（generator 永不抛异常，valid=False 带 error），
+    # 不算任务系统故障：done + result.valid=false，前端按原样展示错误文案
+    registry.mark_done(task_id, result)
+
+
+@app.post("/api/ai/generate", status_code=202)
+async def api_ai_generate(req: AIGenerateRequest):
+    """任务化 AI 生成：登记任务 + 后台跑 LLM，立即返回 {"task_id"}。
+
+    客户端轮询 GET /api/ai/task/{id} 拿终态结果（result 结构与旧同步版一致：
+    {valid, code, meta, error}）；取消走 POST /api/ai/task/{id}/cancel（协作式）。
+    """
+    from app.ai.generator import AIStrategyGenerator
+    if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
-    result = await gen.generate(req.description)
-    return result
+    task = get_task_registry().create()
+    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description))
+    return {"task_id": task.task_id}
+
+
+@app.get("/api/ai/task/{task_id}")
+def api_ai_task_poll(task_id: str) -> dict:
+    """轮询 AI 生成任务：done 带 result（{valid, code, meta, error}），failed 带 error。"""
+    try:
+        return get_task_registry().poll(task_id)
+    except UnknownTaskError:
+        raise HTTPException(status_code=404, detail=f"生成任务不存在：{task_id!r}")
+
+
+@app.post("/api/ai/task/{task_id}/cancel")
+def api_ai_task_cancel(task_id: str) -> dict:
+    """幂等取消：运行中任务置取消标记并转 cancelled；终态任务返回现状。"""
+    try:
+        task = get_task_registry().cancel(task_id)
+    except UnknownTaskError:
+        raise HTTPException(status_code=404, detail=f"生成任务不存在：{task_id!r}")
+    return get_task_registry().snapshot(task)
 
 
 class AISaveRequest(BaseModel):
