@@ -13,12 +13,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api._service_auth import read_access
 from app.auth_security import hash_password, verify_password
@@ -95,20 +96,38 @@ def _clear_failures(key: tuple[str, str]) -> None:
 # ---- 请求模型 ----
 
 
+# 邮箱格式底线：恰好一个 @、两端非空、无空白。
+# 内部部署允许无点号域名（如 best@thu），故不做域名级校验（放弃 EmailStr）。
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+
+def _check_email_shape(value: str) -> str:
+    # str_strip_whitespace 已先行 strip；此处仍兜底 strip，防直接构造模型绕过
+    value = value.strip()
+    if not _EMAIL_SHAPE.match(value):
+        raise ValueError("邮箱格式无效")
+    return value
+
+
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    email: EmailStr
-    password: str = Field(min_length=8)
+    email: str
+    # P0 内测期放宽到 6 位；P1 改密功能上线后回收到 8
+    password: str = Field(min_length=6)
     display_name: str | None = None
     invite_token: str | None = None
+
+    _validate_email = field_validator("email")(_check_email_shape)
 
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    email: EmailStr
+    email: str
     password: str = Field(min_length=1)
+
+    _validate_email = field_validator("email")(_check_email_shape)
 
 
 class LogoutRequest(BaseModel):

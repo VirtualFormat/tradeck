@@ -66,7 +66,8 @@ export function LoginForm({ next }: { next: string }) {
             <Label htmlFor="email">邮箱</Label>
             <Input
               id="email"
-              type="email"
+              type="text"
+              inputMode="email"
               autoComplete="email"
               placeholder="you@example.com"
               required

@@ -17,5 +17,3 @@ pandas>=3.0
 tickflow[all]>=0.1
 # 用户登录（P0）：web 侧 @node-rs/argon2 预哈希的 argon2id 哈希校验
 argon2-cffi>=23.1
-# 用户登录（P0）：pydantic EmailStr 校验依赖
-email-validator>=2.0
