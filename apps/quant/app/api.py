@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.ai.validator import validate_strategy_code
 from app.config import settings
 from app.mining import load_candidates, publish_candidate, run_mining
 from app.mining.runtime import save_candidate
@@ -347,6 +348,39 @@ async def api_ai_generate(req: AIGenerateRequest):
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
     result = await gen.generate(req.description)
     return result
+
+
+class AISaveRequest(BaseModel):
+    code: str = Field(min_length=20, max_length=50_000)
+
+
+@app.post("/api/ai/save")
+def api_ai_save(req: AISaveRequest, user_id: str = Depends(current_user_id)) -> dict:
+    """把 AI 生成且校验通过的策略代码落盘到用户命名空间的 strategies/ai/。
+
+    安全闸：落盘前再过一遍 validator（不信任上游生成结果，接口可被独立调用），
+    通过才写盘；文件名取 META["id"]（validator 已保证 ai_ 前缀字面量），
+    写后试加载验证可执行。幂等：同 id 覆盖更新。注册表每次请求重建，落盘即热生效。
+    """
+    result = validate_strategy_code(req.code)
+    if not result["valid"]:
+        raise HTTPException(status_code=422, detail=f"安全校验未通过：{result['error']}")
+    sid = str(result["meta"]["id"])
+    # 双保险：文件名只取白名单形态（validator 已保证 ai_ 前缀 + 合法字符）
+    if not re.fullmatch(r"ai_[A-Za-z0-9_]{1,60}", sid):
+        raise HTTPException(status_code=422, detail=f"策略 id 形态非法：{sid!r}")
+    ai_dir = user_strategy_dirs(user_id)["ai"]
+    ai_dir.mkdir(parents=True, exist_ok=True)
+    path = ai_dir / f"{sid}.py"
+    path.write_text(req.code, encoding="utf-8")
+    # 落盘后试加载：坏了立即删文件回滚，不留半截策略在注册表里
+    try:
+        _registry(user_id).get(sid)
+    except Exception as e:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"落盘后加载失败（已回滚）：{e}")
+    logger.info("AI 策略已保存：%s（user=%s, %s）", sid, user_id, path)
+    return {"saved": True, "strategy_id": sid, "name": result["meta"].get("name", sid)}
 
 
 @app.get("/api/mining/candidates")

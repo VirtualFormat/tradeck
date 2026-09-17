@@ -889,7 +889,9 @@ Review 修复（3 处提交前必改）：
 
 已知边界：
 
-- AI 真实生成未端到端（无 AI_API_KEY），降级路径已验；保存 AI 策略到库属后续（E3 已留口）。
+- ~~保存 AI 策略到库属后续（E3 已留口）~~ **2026-09-17 已落地**：quant `POST /api/ai/save`
+  （落盘前再过一遍 validator 安全闸 + 落盘后试加载回滚）+ web 代理路由 + AI 生成 Tab
+  保存按钮；保存即热生效（注册表每次请求重建），测试见 `apps/quant/tests/test_ai_save.py`。
 - E4 每日信号 cron 的调度注册（APScheduler 定时触发）未接入 quant lifespan——job 函数已验，
   定时触发待 quant 服务加 lifespan 时一并做（列入阶段 F）。
 

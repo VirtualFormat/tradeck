@@ -3,10 +3,11 @@
 /**
  * Tab 3「AI 策略生成」：描述 → SSE 流式生成策略代码
  * 后端未配置 AI 时返回非流式 JSON {valid:false, error}，这里按 Content-Type 分支处理。
- * 保存到 AI 策略库的后端接口属 E4，本期不渲染保存按钮（见下方注释）。
+ * 生成成功后可保存到 AI 策略库（POST /api/quant/ai-save → quant strategies/ai/），
+ * 保存的策略立即出现在回测/选股的策略列表（loader 每次请求重建注册表，热生效）。
  */
 import { useEffect, useRef, useState } from "react";
-import { SparkleIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, FloppyDiskIcon, SparkleIcon } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +71,9 @@ export function AIGenerateTab() {
   const [result, setResult] = useState<AIResult | null>(null);
   const [notConfigured, setNotConfigured] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // 卸载时中断未完成的流
@@ -82,6 +86,8 @@ export function AIGenerateTab() {
     setResult(null);
     setError(null);
     setNotConfigured(false);
+    setSavedId(null);
+    setSaveError(null);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -136,6 +142,34 @@ export function AIGenerateTab() {
 
   const displayCode = result?.valid && result.code ? result.code : streamText;
 
+  async function save() {
+    if (!result?.valid || !result.code || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/quant/ai-save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: result.code }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        saved?: boolean;
+        strategy_id?: string;
+        detail?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.saved) {
+        setSaveError(data.detail ?? data.error ?? "保存失败，请稍后重试");
+        return;
+      }
+      setSavedId(data.strategy_id ?? null);
+    } catch {
+      setSaveError("保存请求失败，请检查网络后重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
       <Card>
@@ -184,7 +218,28 @@ export function AIGenerateTab() {
                   ))}
                 </div>
               )}
-              {/* 保存到 AI 策略库的后端接口属 E4，落地前不渲染保存按钮 */}
+              {savedId ? (
+                <p className="text-xs text-muted-foreground">
+                  已保存为 <span className="font-medium text-foreground">{savedId}</span>，
+                  可在回测 / 选股 Tab 的策略列表中选用
+                </p>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={save}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <CircleNotchIcon className="animate-spin" />
+                  ) : (
+                    <FloppyDiskIcon />
+                  )}
+                  {saving ? "保存中…" : "保存到策略库"}
+                </Button>
+              )}
+              {saveError && <EmptyState title={saveError} compact />}
             </div>
           )}
           {result && !result.valid && result.error && !notConfigured && (
