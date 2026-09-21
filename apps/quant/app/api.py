@@ -97,6 +97,28 @@ def list_strategies(user_id: str = Depends(current_user_id)) -> list[dict]:
     return out
 
 
+@app.get("/api/strategies/{strategy_id}/code")
+def get_strategy_code(strategy_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    """读取策略源码（AI 工作台「加载已有策略」）。
+
+    builtin 策略文件在镜像内随包发布，读源码只用于展示/另存底稿，不构成写路径。
+    """
+    try:
+        sdef = _registry(user_id).get(strategy_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        code = sdef.file_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"策略文件读取失败：{e}")
+    return {
+        "id": sdef.strategy_id,
+        "name": sdef.name,
+        "source": sdef.source,
+        "code": code,
+    }
+
+
 class _SymbolRequest(BaseModel):
     symbols: list[str] | None = Field(default=None, max_length=500)
     # symbols 为空（None）时按 universe 档位展开（默认 tracked 100 只）；
@@ -337,6 +359,14 @@ def api_backtest_task_cancel(
 
 class AIGenerateRequest(BaseModel):
     description: str = Field(min_length=4, max_length=2000)
+    # 可选：基于现有策略代码做调整（AI 工作台「选中/导入 → LLM 调整」模式）
+    base_code: str | None = Field(default=None, max_length=50_000)
+
+
+class AITweakRequest(BaseModel):
+    """AI 调整请求：以 code 为底稿，按 description 让 LLM 改写。"""
+    code: str = Field(min_length=20, max_length=50_000)
+    description: str = Field(min_length=4, max_length=2000)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +380,7 @@ class AIGenerateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _run_ai_generate_task(task_id: str, description: str) -> None:
+async def _run_ai_generate_task(task_id: str, description: str, base_code: str | None = None) -> None:
     """后台执行协程：调 LLM 生成 + 校验（含 repair 重试），终态写回注册表。"""
     from app.ai.generator import AIStrategyGenerator
     registry = get_task_registry()
@@ -362,7 +392,7 @@ async def _run_ai_generate_task(task_id: str, description: str) -> None:
             registry.mark_cancelled(task_id)
             return
         gen = AIStrategyGenerator()
-        result = await gen.generate(description)
+        result = await gen.generate(description, base_code=base_code)
         # LLM 调用结束后才看到取消标记（协作式取消：不打断进行中的 HTTP 调用，
         # 只丢弃结果——AI 生成无副作用，丢弃即安全）
         if token.is_set():
@@ -388,7 +418,22 @@ async def api_ai_generate(req: AIGenerateRequest):
     if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
     task = get_task_registry().create()
-    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description))
+    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.base_code))
+    return {"task_id": task.task_id}
+
+
+@app.post("/api/ai/tweak", status_code=202)
+async def api_ai_tweak(req: AITweakRequest):
+    """任务化 AI 调整：以请求体 code 为底稿，按 description 让 LLM 改写。
+
+    与 /api/ai/generate 同一任务语义（登记 → 轮询 → 协作式取消），
+    区别仅在 prompt 组装：generate 从零生成，tweak 基于现有代码修改。
+    """
+    from app.ai.generator import AIStrategyGenerator
+    if not AIStrategyGenerator().enabled:
+        return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
+    task = get_task_registry().create()
+    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.code))
     return {"task_id": task.task_id}
 
 
@@ -442,6 +487,95 @@ def api_ai_save(req: AISaveRequest, user_id: str = Depends(current_user_id)) -> 
         raise HTTPException(status_code=422, detail=f"落盘后加载失败（已回滚）：{e}")
     logger.info("AI 策略已保存：%s（user=%s, %s）", sid, user_id, path)
     return {"saved": True, "strategy_id": sid, "name": result["meta"].get("name", sid)}
+
+
+def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None) -> dict:
+    """统一策略落盘：validator 全量校验 → 按 id 前缀归位目录 → 写盘 → 试加载。
+
+    - ai_ 前缀进 strategies/ai/，其余进 strategies/custom/（文件名 = META.id）。
+    - builtin 策略在镜像内随包发布，永远只读：overwrite_id 命中 builtin 一律 409。
+    - overwrite_id 非空且与 META.id 不同时删除旧文件（重命名 = 移动）。
+    - 幂等：同 id 覆盖更新；落盘后试加载失败即回滚，不留半截策略。
+    """
+    result = validate_strategy_code(code)
+    if not result["valid"]:
+        raise HTTPException(status_code=422, detail=f"安全校验未通过：{result['error']}")
+    sid = str(result["meta"]["id"])
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", sid):
+        raise HTTPException(status_code=422, detail=f"策略 id 形态非法：{sid!r}")
+
+    dirs = user_strategy_dirs(user_id)
+    if overwrite_id:
+        try:
+            target = _registry(user_id).get(overwrite_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"待覆盖的策略不存在：{overwrite_id!r}")
+        if target.source == "builtin":
+            raise HTTPException(
+                status_code=409,
+                detail=f"内置策略 {overwrite_id!r} 只读，请改 META.id 另存为新策略",
+            )
+
+    dest_dir = dirs["ai"] if sid.startswith("ai_") else dirs["custom"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = dest_dir / f"{sid}.py"
+    # 已有同名策略在其他目录（如 ai → custom 前缀变更）时拒绝静默双写，
+    # 避免注册表 id 冲突（同 id 两文件会让整个注册表加载报错）。
+    for other in (dirs["custom"], dirs["ai"]):
+        other_path = other / f"{sid}.py"
+        if other_path != path and other_path.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"策略 id {sid!r} 已存在于 {other.name}/ 目录，请先删除或改名",
+            )
+
+    # 先把既有文件挪到 .bak 占位再写新文件：注册表按 *.py glob 扫描，.bak 不可见；
+    # 试加载失败时整体回滚（删新文件、还原旧文件），同 id 覆盖也不丢旧策略。
+    # 需要保护的既有文件：目标路径同名文件（同 id 覆盖）+ overwrite_id 指向的旧文件
+    # （重命名场景，overwrite 校验已保证其非 builtin）。
+    backup_path: Path | None = None
+    existing = path if path.exists() else None
+    if existing is None and overwrite_id and overwrite_id != sid:
+        existing = _registry(user_id).get(overwrite_id).file_path
+    if existing is not None:
+        backup_path = existing.with_name(existing.name + ".bak")
+        existing.rename(backup_path)
+
+    path.write_text(code, encoding="utf-8")
+    try:
+        _registry(user_id).get(sid)
+    except Exception as e:
+        path.unlink(missing_ok=True)
+        if backup_path is not None:
+            try:
+                # 剥掉 .bak 还原（Path 无 removesuffix，拼路径避免 with_suffix 歧义）
+                backup_path.rename(backup_path.with_name(backup_path.name[:-4]))
+            except OSError:
+                logger.error("策略旧文件还原失败：%s", backup_path)
+        raise HTTPException(status_code=422, detail=f"落盘后加载失败（已回滚）：{e}")
+    if backup_path is not None:
+        backup_path.unlink(missing_ok=True)
+    logger.info(
+        "策略已保存：%s（user=%s, %s, overwrite=%s）",
+        sid, user_id, path, overwrite_id or "-",
+    )
+    return {"saved": True, "strategy_id": sid, "name": result["meta"].get("name", sid)}
+
+
+class StrategySaveRequest(BaseModel):
+    code: str = Field(min_length=20, max_length=50_000)
+    # 可选：声明本次保存是覆盖/重命名哪个已有策略（AI 工作台编辑保存路径）
+    overwrite_id: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/strategies/save")
+def api_strategy_save(req: StrategySaveRequest, user_id: str = Depends(current_user_id)) -> dict:
+    """AI 工作台统一保存入口：导入/手动编辑/AI 调整后的代码都经此落盘。
+
+    与 /api/ai/save 的区别：不强制 ai_ 前缀（非 ai_ 进 custom/ 目录），
+    支持 overwrite_id 声明覆盖/重命名已有策略（builtin 除外）。
+    """
+    return _save_strategy_file(user_id, req.code, overwrite_id=req.overwrite_id)
 
 
 @app.get("/api/mining/candidates")

@@ -55,34 +55,40 @@ function QuantPageInner() {
   const [optStrategyId, setOptStrategyId] = useState("");
   const [wfStrategyId, setWfStrategyId] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/quant/strategies", {
-          cache: "no-store",
-        });
-        const list: StrategyDef[] = res.ok ? await res.json() : [];
-        if (cancelled) return;
-        setStrategies(list);
-        if (list.length > 0) {
-          setBtStrategyId(list[0].id);
-          setBtParams(defaultParamValues(list[0]));
-          setScStrategyId(list[0].id);
-          setScParams(defaultParamValues(list[0]));
-          setOptStrategyId(list[0].id);
-          setWfStrategyId(list[0].id);
-        }
-      } catch {
-        if (!cancelled) setStrategies([]);
-      } finally {
-        if (!cancelled) setStrategiesLoading(false);
+  const loadStrategies = useCallback(async (resetSelection: boolean) => {
+    if (resetSelection) setStrategiesLoading(true);
+    try {
+      const res = await fetch("/api/quant/strategies", {
+        cache: "no-store",
+      });
+      const list: StrategyDef[] = res.ok ? await res.json() : [];
+      setStrategies(list);
+      // 仅首次加载时初始化各 Tab 默认选中；保存后刷新保留用户当前选择
+      if (resetSelection && list.length > 0) {
+        setBtStrategyId(list[0].id);
+        setBtParams(defaultParamValues(list[0]));
+        setScStrategyId(list[0].id);
+        setScParams(defaultParamValues(list[0]));
+        setOptStrategyId(list[0].id);
+        setWfStrategyId(list[0].id);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    } catch {
+      setStrategies([]);
+    } finally {
+      if (resetSelection) setStrategiesLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    // 首帧渲染后再拉取（setState 在 effect 微任务里，避开 react-hooks/set-state-in-effect）
+    void Promise.resolve().then(() => loadStrategies(true));
+  }, [loadStrategies]);
+
+  // AI 工作台保存策略后刷新列表（不重置各 Tab 已选策略）
+  const refreshStrategies = useCallback(
+    () => loadStrategies(false),
+    [loadStrategies]
+  );
 
   /** 切换策略时把参数表单重置为新策略 schema 的默认值 */
   const makeStrategyChange = useCallback(
@@ -164,7 +170,13 @@ function QuantPageInner() {
           />
         )}
 
-      {tab === "ai" && <AIGenerateTab />}
+      {tab === "ai" && (
+        <AIGenerateTab
+          strategies={strategies}
+          strategiesLoading={strategiesLoading}
+          onSaved={refreshStrategies}
+        />
+      )}
 
       {tab === "mining" && <MiningTab />}
 

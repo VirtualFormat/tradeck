@@ -131,7 +131,7 @@ class AIGenerateTaskApiTest(unittest.TestCase):
 
         task = self.registry.create()
 
-        async def slow_generate(_desc):
+        async def slow_generate(_desc, base_code=None):
             # 模拟 LLM 调用期间用户点了取消
             self.registry.cancel(task.task_id)
             return {"valid": True, "code": "x", "meta": {}, "error": None}

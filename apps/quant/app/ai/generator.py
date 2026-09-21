@@ -95,11 +95,13 @@ class AIStrategyGenerator:
                 self._guide_cache = _FALLBACK_GUIDE
         return self._guide_cache
 
-    async def generate(self, description: str) -> dict:
+    async def generate(self, description: str, base_code: str | None = None) -> dict:
         """生成策略代码并过安全闸；不合法时把错误反馈给 LLM 重试 repair 一轮。
 
         返回 {"valid": bool, "code": str, "meta": dict, "error": str | None}。
         永不抛异常：网络失败 / 校验失败都收敛为 valid=False + error。
+        base_code 非空时为「基于现有策略调整」模式：把策略源码放进 prompt，
+        要求 LLM 输出修改后的完整文件（META.id 允许保留原值或重命名）。
         """
         if not self._enabled:
             return {
@@ -111,9 +113,19 @@ class AIStrategyGenerator:
         if not isinstance(description, str) or not description.strip():
             return {"valid": False, "code": "", "meta": {}, "error": "策略描述为空"}
 
+        user_prompt = description.strip()
+        if base_code and base_code.strip():
+            user_prompt = (
+                "以下是现有策略的完整代码，请按下方调整要求修改它，"
+                "输出修改后的完整策略 Python 文件（META.id 可保留原值，"
+                "或改为 ai_ 前缀的新 id 另存为新策略）：\n\n"
+                f"```python\n{base_code.strip()}\n```\n\n"
+                f"调整要求：{description.strip()}"
+            )
+
         messages = [
             {"role": "system", "content": _SYSTEM_PREFIX + self._read_guide()},
-            {"role": "user", "content": description.strip()},
+            {"role": "user", "content": user_prompt},
         ]
         code = await self._call_llm(messages)
         if code is None:
