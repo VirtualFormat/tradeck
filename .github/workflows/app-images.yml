@@ -4,6 +4,8 @@ name: Build App Images
 #   web / data-api（auth-api 复用此镜像）/ quant
 # 数据管道 collector 与 openbb 镜像在 tradb 仓库的 CI 构建。
 # 正式服只 docker compose pull && up，不在服务器拉源码构建。
+# 同步推送一份到腾讯云 TCR 个人版（secrets 配置见 README/部署文档）：
+#   TCR_REGISTRY / TCR_NAMESPACE / TCR_USERNAME / TCR_PASSWORD
 #
 # 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
 #   amd64 -> ubuntu-24.04，arm64 -> ubuntu-24.04-arm（public repo 免费）。
@@ -127,3 +129,53 @@ jobs:
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"
+
+  # 把 GHCR 已合成的 manifest 原样复制到腾讯云 TCR 个人版（不重 build，纯镜像搬家）。
+  # TCR 个人版免费额度 10 个仓库 / 500GB，够本仓库 3 个镜像用。
+  sync-tcr:
+    needs: merge
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tradeck-web, tradeck-data-api, tradeck-quant]
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.TCR_REGISTRY }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
+
+      # 用 imagetools create 从 GHCR digest 直接生成 TCR manifest list，
+      # 源/目标都是 manifest，架构与 GHCR 完全一致，不重新编译。
+      - name: Mirror GHCR manifest to TCR
+        env:
+          SRC: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          DST: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          for tag in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            # tag 形如 ccr.ccs.tencentyun.com/tradeck/tradeck-web:1.2.3，取冒号后
+            short="${tag##*:}"
+            echo "sync ${SRC}:${short} -> ${DST}:${short}"
+            docker buildx imagetools create -t "${DST}:${short}" "${SRC}:${short}"
+          done
