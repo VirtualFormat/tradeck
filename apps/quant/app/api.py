@@ -44,9 +44,47 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="tradeck quant", version="0.2.0")
 
+# 预拉覆盖率前置门槛：build_async 内部降级不抛错（数据源整体挂掉时返回
+# 全 NaN 矩阵），登记回测任务前在主进程侧检查非全 NaN 列占比，低于阈值
+# 直接 503，避免 worker 白跑分钟级回测产出 stats 全零的「合法」骨架结果。
+# 0.5 的取舍：新股/停牌/尾部空洞造成的部分列缺失是常态，不能拦；
+# 数据源整体故障时缺失比例接近 1，0.5 足以识别且不误伤正常部分缺失。
+_MIN_MATRIX_COVERAGE = 0.5
+
 # 用户 id 白名单：防目录穿越（users/{uid}/ 直接拼路径）与 loader 任意路径 exec_module。
 # 内网阶段虽不鉴权，但 id 形态必须先收口，别等鉴权阶段才堵这个洞。
 _USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _matrix_coverage(matrix) -> float:
+    """矩阵数据覆盖率：非全 NaN 列（标的）占比，供预拉失败前置判定。
+
+    以 close 列为口径（OHLCV 同源同缺，close 足以代表）；
+    空矩阵（无标的/无交易日）视为 0 覆盖。
+    """
+    import numpy as np
+
+    if matrix.close.size == 0 or not matrix.symbols:
+        return 0.0
+    has_data = (~np.isnan(matrix.close)).any(axis=0)
+    return float(has_data.sum()) / len(matrix.symbols)
+
+
+def _check_matrix_coverage_or_503(matrix, symbols: list[str]) -> None:
+    """预拉覆盖率前置门槛：低于 _MIN_MATRIX_COVERAGE 直接 503，不登记任务。"""
+    coverage = _matrix_coverage(matrix)
+    if coverage < _MIN_MATRIX_COVERAGE:
+        logger.warning(
+            "预拉覆盖率不足（%.1f%% < %.0f%%，%d 只标的），拒绝登记任务",
+            coverage * 100, _MIN_MATRIX_COVERAGE * 100, len(symbols),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"行情数据源大面积不可用：{len(symbols)} 只标的预拉覆盖率 "
+                f"{coverage:.0%}（门槛 {_MIN_MATRIX_COVERAGE:.0%}），请稍后重试"
+            ),
+        )
 
 
 @app.on_event("startup")
@@ -150,7 +188,9 @@ class _SymbolRequest(BaseModel):
     symbols: list[str] | None = Field(default=None, max_length=500)
     # symbols 为空（None）时按 universe 档位展开（默认 tracked 100 只）；
     # symbols 非空时 universe 忽略（互斥，显式优先）。
-    universe: str | None = Field(default=None, pattern="^(tracked|cn|us|hk|all)$")
+    universe: str | None = Field(
+        default=None, pattern="^(hs300|csi500|tracked|cn|us|hk|all)$"
+    )
     start: date | None = None
     end: date | None = None
     params: dict[str, Any] = Field(default_factory=dict)
@@ -181,8 +221,13 @@ async def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)
     _screen_end = req.end or date.today()
     await build_async(symbols, _screen_end - timedelta(days=_SCREEN_WINDOW_DAYS), _screen_end)
     try:
-        res = screen(req.strategy_id, symbols, end_date=req.end,
-                     params=req.params or None, registry=reg)
+        # screen() 是纯同步 CPU+磁盘 IO（store.load 建矩阵→复权→enrich→策略信号），
+        # universe=all 全市场分钟级，直接调用会卡死事件循环（/health 与任务轮询
+        # 一起挂）；甩到默认线程池执行（与 api_mining_run 的 _mining_sync 同模式）。
+        res = await asyncio.to_thread(
+            screen, req.strategy_id, symbols, end_date=req.end,
+            params=req.params or None, registry=reg,
+        )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     rows = [
@@ -235,9 +280,13 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     end = req.end or date.today()
     # 冷启动修复：worker 子进程只读本地缓存不做网络 IO（既有纪律），
     # 日K 缺失标的必须在这里（主进程）经 build_async 补拉落盘，
-    # 否则缓存目录为空时子进程回测全员全 NaN 零成交；失败降级不阻塞。
+    # 否则缓存目录为空时子进程回测全员全 NaN 零成交。
     from app.matrix import build_async
-    await build_async(symbols, req.start, end)
+    matrix = await build_async(symbols, req.start, end)
+    # 预拉失败前置（缺陷 3 修复）：build_async 内部 catch 一切只记日志，
+    # 数据源整体挂掉时返回全 NaN 矩阵——此处检查覆盖率，过低直接 503，
+    # 不登记任务，避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
+    _check_matrix_coverage_or_503(matrix, symbols)
     # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
     # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
     await _warm_factor_cache(symbols)
@@ -343,7 +392,11 @@ async def api_backtest_run(req: BacktestRequest,
     # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
     # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
     from app.matrix import build_async
-    await build_async(symbols, req.start, end)
+    matrix = await build_async(symbols, req.start, end)
+    # 预拉失败前置（缺陷 3 修复）：build_async 内部 catch 一切只记日志，
+    # 数据源整体挂掉时返回全 NaN 矩阵——登记任务前检查覆盖率，过低直接 503，
+    # 避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
+    _check_matrix_coverage_or_503(matrix, symbols)
     # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
     # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
     # 失败降级不阻塞登记（缺因子标的按原始价跑并在结果标注 unadjusted）。
@@ -1028,7 +1081,18 @@ async def _run_optimize_route(
     await _warm_factor_cache(symbols)
     runner_fn = getattr(quant_runner, runner_fn_name)
     try:
-        return await runner_fn(
+        # 事件循环纪律（缺陷 2 修复）：run_optimize 等内部按组合数自选执行路径，
+        # 进程内串行路径（n <= _OPTIMIZE_OFFLOAD_THRESHOLD）是同步 CPU 循环——
+        # 8 组 × 全市场 universe 单次分钟级 = 事件循环卡死数分钟（/health 一起挂）。
+        # 整个 runner_fn 甩到默认线程池执行：worker 路径本就把 asyncio.run 包在
+        # 独立线程里（_make_run_fn_worker 自带 running-loop 隔离），线程上下文下
+        # 行为不变；进程内路径由此不再阻塞事件循环。取舍说明：不改 runner 的
+        # offload 判定（保持 runner 对 CLI 等其他调用方的语义不变），
+        # 只在 API 层统一加线程隔离——小网格仍进程内串行省 spawn 开销，
+        # 只是不再占事件循环。
+        return await asyncio.to_thread(
+            _run_optimize_blocking,
+            runner_fn,
             symbols,
             req.strategy_id,
             req.start,
@@ -1050,6 +1114,15 @@ async def _run_optimize_route(
     except Exception as e:  # 其余异常结构化 500，不走全局兜底
         logger.exception("%s 执行异常", runner_fn_name)
         raise HTTPException(status_code=500, detail=f"{runner_fn_name} 执行异常：{e}")
+
+
+def _run_optimize_blocking(runner_fn, *args, **kwargs) -> dict:
+    """在线程池线程里跑 async runner_fn：线程内无 running loop，asyncio.run 自建循环。
+
+    与 runner._make_run_fn_worker 的「独立线程 + 自有 loop」同款隔离壳；
+    由 _run_optimize_route 经 asyncio.to_thread 调用。
+    """
+    return asyncio.run(runner_fn(*args, **kwargs))
 
 
 @app.post("/api/optimize")

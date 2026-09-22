@@ -98,16 +98,52 @@ class TestResolveUniverse(unittest.TestCase):
         self.assertEqual(_resolve(symbols, "cn"), symbols)
 
     def test_default_tier_returns_full_tracked(self):
-        got = _resolve(None, None)
+        """默认档位（None）= hs300 沪深300，走指数成分接口。"""
+        with mock.patch.object(
+            universe_mod, "_fetch_index_symbols", return_value=["600519.SH", "300750.SZ"]
+        ) as fetch:
+            got = _resolve(None, None)
+        self.assertEqual(got, ["600519.SH", "300750.SZ"])
+        # 默认档位应映射到沪深300 指数代码
+        fetch.assert_called_once_with("000300.SH")
+
+    def test_tracked_tier_returns_full_tracked(self):
+        got = _resolve(None, "tracked")
         self.assertEqual(got, DEFAULT_SIGNAL_UNIVERSE)
         self.assertIsNot(got, DEFAULT_SIGNAL_UNIVERSE)  # 副本，防外部改坏源列表
+
+    def test_hs300_tier_fetches_index_constituents(self):
+        """hs300 档位：调 data-api /api/index/constituents 拉沪深300 成分。"""
+        with mock.patch.object(
+            universe_mod, "_fetch_index_symbols", return_value=["600519.SH", "000001.SZ"]
+        ) as fetch:
+            got = _resolve(None, "hs300")
+        self.assertEqual(got, ["600519.SH", "000001.SZ"])
+        fetch.assert_called_once_with("000300.SH")
+
+    def test_csi500_tier_fetches_index_constituents(self):
+        """csi500 档位：中证500 成分（index=000905.SH）。"""
+        with mock.patch.object(
+            universe_mod, "_fetch_index_symbols", return_value=["000905.SH-x"]
+        ) as fetch:
+            _resolve(None, "csi500")
+        fetch.assert_called_once_with("000905.SH")
+
+    def test_hs300_tier_fallback_to_tracked_cn_subset(self):
+        """hs300 档位：成分接口不可达/为空时回退 tracked 的 cn 子集。"""
+        with mock.patch.object(
+            universe_mod, "_fetch_index_symbols", return_value=[]
+        ):
+            got = _resolve(None, "hs300")
+        self.assertTrue(got)
+        self.assertTrue(all(s.endswith(_CN_SUFFIXES) for s in got))
 
     def test_cn_tier_fetches_market_universe(self):
         """cn 档位：调 data-api /api/universe 拉全市场清单（含 TTL 缓存）。"""
         with mock.patch.object(
             universe_mod,
             "_fetch_market_symbols",
-            side_effect=lambda m: _async_return(_fake_market_symbols(m)["symbols"]),
+            side_effect=lambda m: _fake_market_symbols(m)["symbols"],
         ) as fetch:
             got = _resolve(None, "cn")
             self.assertEqual(got, ["600519.SH", "000001.SZ", "300750.SZ"])
@@ -142,7 +178,7 @@ class TestResolveUniverse(unittest.TestCase):
         with mock.patch.object(
             universe_mod,
             "_fetch_market_symbols",
-            side_effect=lambda m: _async_return(_fake_market_symbols(m)["symbols"]),
+            side_effect=lambda m: _fake_market_symbols(m)["symbols"],
         ):
             got = _resolve(None, "all")
         self.assertEqual(got[:3], ["600519.SH", "000001.SZ", "300750.SZ"])

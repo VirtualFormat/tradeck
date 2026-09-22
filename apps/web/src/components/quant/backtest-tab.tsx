@@ -25,7 +25,6 @@ import {
 } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
-import { UNIVERSE_PLACEHOLDER } from "./optimize-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -136,11 +135,22 @@ function rowKeyActivate(
 
 /** 标的池 universe 选项（标的输入为空时生效，自定义标的时置灰） */
 const UNIVERSE_OPTIONS = [
-  { value: "tracked", label: "tracked 100 只（默认）" },
+  { value: "hs300", label: "沪深300 成分（默认）" },
+  { value: "csi500", label: "中证500 成分" },
+  { value: "tracked", label: "tracked 100 只" },
   { value: "cn", label: "A 股全市场" },
   { value: "all", label: "全部（A 股全市场 + tracked 美港）" },
 ] as const;
 type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
+
+/** 各 universe 档位下标的输入框的占位提示（本地维护，含 hs300/csi500） */
+const BT_UNIVERSE_PLACEHOLDER: Record<UniverseValue, string> = {
+  hs300: "留空 = 沪深300 成分（可逗号分隔自定义）",
+  csi500: "留空 = 中证500 成分（可逗号分隔自定义）",
+  tracked: "留空 = tracked 100 只（可逗号分隔自定义）",
+  cn: "留空 = A 股全市场（可逗号分隔自定义）",
+  all: "留空 = A 股全市场 + tracked 美港（可逗号分隔自定义）",
+};
 
 /** 回测配置 localStorage 记忆（key 固定，页面加载时恢复、回测成功后写入） */
 const BT_CONFIG_KEY = "quant-backtest-config";
@@ -231,7 +241,7 @@ export function BacktestTab({
       s?.universe && UNIVERSE_OPTIONS.some((o) => o.value === s.universe)
         ? s.universe
         : undefined,
-    "tracked"
+    "hs300"
   );
   const [startDate, setStartDate] = useSavedState((s) => s?.start, "");
   const [endDate, setEndDate] = useSavedState((s) => s?.end, "");
@@ -516,7 +526,7 @@ export function BacktestTab({
             <Label htmlFor="quant-bt-symbols">标的（逗号分隔，可选）</Label>
             <Input
               id="quant-bt-symbols"
-              placeholder={UNIVERSE_PLACEHOLDER[universe]}
+              placeholder={BT_UNIVERSE_PLACEHOLDER[universe]}
               value={symbolsInput}
               onValueChange={(v) => setSymbolsInput(v)}
               disabled={loading}
