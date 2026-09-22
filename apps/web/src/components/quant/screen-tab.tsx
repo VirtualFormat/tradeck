@@ -7,6 +7,7 @@ import { useState } from "react";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
+import { UNIVERSE_PLACEHOLDER } from "./optimize-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -162,7 +163,7 @@ export function ScreenTab({
             </Label>
             <Input
               id="quant-sc-symbols"
-              placeholder="留空 = tracked 100 只（可逗号分隔自定义）"
+              placeholder={UNIVERSE_PLACEHOLDER[universe]}
               value={symbolsInput}
               onValueChange={(v) => setSymbolsInput(v)}
               disabled={loading}

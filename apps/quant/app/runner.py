@@ -205,14 +205,17 @@ async def _fetch_names(symbols: list[str]) -> dict[str, str]:
     """
     if not symbols:
         return {}
-    data = await client.get_json("/api/quotes", {"symbols": ",".join(symbols)})
     names: dict[str, str] = {}
-    if isinstance(data, list):
-        names = {
-            row["symbol"]: row["name"]
-            for row in data
-            if isinstance(row, dict) and row.get("symbol") and row.get("name")
-        }
+    # URL query 长度有限（httpx 超限直接 InvalidURL 抛异常）：全市场回测时
+    # symbols 达 5500+，必须分批（200 只/批，对齐 /api/bars 单请求上限的稳妥值）
+    _QUOTES_BATCH = 200
+    for i in range(0, len(symbols), _QUOTES_BATCH):
+        chunk = symbols[i : i + _QUOTES_BATCH]
+        data = await client.get_json("/api/quotes", {"symbols": ",".join(chunk)})
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and row.get("symbol") and row.get("name"):
+                    names.setdefault(row["symbol"], row["name"])
     # 兜底：quote_snapshots 未覆盖的标的（非 tracked，如 ST 股）从 instrument_master 取
     missing = [s for s in symbols if s not in names]
     if missing:

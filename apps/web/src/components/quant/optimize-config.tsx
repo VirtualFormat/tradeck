@@ -39,6 +39,13 @@ export const UNIVERSE_OPTIONS = [
 ] as const;
 export type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 
+/** 标的输入框 placeholder 跟随选股池档位（留空时实际生效的池子） */
+export const UNIVERSE_PLACEHOLDER: Record<UniverseValue, string> = {
+  tracked: "留空 = tracked 100 只（可逗号分隔自定义）",
+  cn: "留空 = A 股全市场（可逗号分隔自定义）",
+  all: "留空 = A 股全市场 + tracked 美港（可逗号分隔自定义）",
+};
+
 /** Date → YYYY-MM-DD */
 export function fmtDate(d: Date): string {
   const y = d.getFullYear();
@@ -130,7 +137,7 @@ export function OptimizeConfigFields({
         <Label htmlFor="quant-opt-symbols">标的（逗号分隔，可选）</Label>
         <Input
           id="quant-opt-symbols"
-          placeholder="留空 = tracked 100 只（可逗号分隔自定义）"
+          placeholder={UNIVERSE_PLACEHOLDER[universe]}
           value={symbolsInput}
           onValueChange={(v) => setSymbolsInput(v)}
           disabled={disabled}
