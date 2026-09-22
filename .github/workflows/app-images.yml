@@ -39,7 +39,7 @@ jobs:
       matrix:
         image:
           - { name: tradeck-web, dockerfile: apps/web/Dockerfile, context: apps/web, target: prod }
-          - { name: tradeck-data-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
+          - { name: tradeck-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
           - { name: tradeck-quant, dockerfile: apps/quant/Dockerfile, context: apps/quant, target: "" }
         arch:
           - { platform: linux/amd64, runner: ubuntu-24.04, suffix: amd64 }
@@ -91,7 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [tradeck-web, tradeck-data-api, tradeck-quant]
+        image: [tradeck-web, tradeck-api, tradeck-quant]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -140,7 +140,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [tradeck-web, tradeck-data-api, tradeck-quant]
+        image: [tradeck-web, tradeck-api, tradeck-quant]
     steps:
       - uses: docker/setup-buildx-action@v3
 

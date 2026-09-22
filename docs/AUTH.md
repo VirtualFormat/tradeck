@@ -18,7 +18,7 @@ tradeck 此前只有「服务身份」（service token，见 `DATA-SERVICE.md`�
 web (Next.js :3000, BFF)
   │  ② Route Handler 代理 auth-api，X-Service-Token: web-bff（AUTH_API_URL）
   ▼
-auth-api (FastAPI :8080, tradeck 自建 auth 服务；复用 tradeck-data-api 镜像，
+auth-api (FastAPI :8080, tradeck 自建 auth 服务；复用 tradeck-api 镜像，
           command 覆盖为 uvicorn app.auth_main:app)
   │  ③ /api/auth/{register,login,session,logout}
   ▼

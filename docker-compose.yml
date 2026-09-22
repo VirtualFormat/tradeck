@@ -10,10 +10,10 @@
 #   前端：http://localhost:3000（仅绑回环，对外经宿主机 nginx 反代）
 
 services:
-  # ── tradeck 应用层用户域（auth）：auth-db + auth-api ─────────────
-  # 职责分离：auth-db / auth-api 只承载 tradeck 用户域（注册/登录/session），
+  # ── tradeck 应用层 API（auth）：auth-db + api ───────────────────
+  # 职责分离：auth-db / api 只承载 tradeck 用户域（注册/登录/session），
   # 行情数据仍全部走 tradb（tradb_net 外部网络），本 compose 不复活任何行情数据服务。
-  # auth-db/auth-api 只在 default 网络，不接 tradb_net，与 tradb 行情库物理分离。
+  # auth-db/api 只在 default 网络，不接 tradb_net，与 tradb 行情库物理分离。
   auth-db:
     image: postgres:16-alpine
     container_name: tradeck-auth-db
@@ -29,7 +29,7 @@ services:
       # 从命名卷迁移：先 docker run --rm -v tradeck_auth-db-data:/from -v <本目录>:/to
       # postgres:16-alpine cp -a /from/. /to/，再 up（见 TRADB-DEPLOY.md 同类操作）。
       - ${TRADECK_PG_DATA:-/data/apps/tradeck/postgres/data}:/var/lib/postgresql/data
-    # 不映射宿主机端口：仅 auth-api 经容器网络访问。
+      # 不映射宿主机端口：仅 api 服务经容器网络访问。
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tradeck -d tradeck_auth"]
       interval: 5s
@@ -37,11 +37,10 @@ services:
       retries: 10
     restart: unless-stopped
 
-  auth-api:
-    # 复用 data-api 镜像（CI 已覆盖 tradeck-data-api 镜像构建，auth-api 无需新流水线），
-    # command 覆盖为独立 auth 入口 app.auth_main。
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-data-api:latest
-    container_name: tradeck-auth-api
+  api:
+    # tradeck 应用层总 API（当前为用户域 auth 入口 app.auth_main；apps/backend 构建）。
+    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-api:latest
+    container_name: tradeck-api
     command: uvicorn app.auth_main:app --host 0.0.0.0 --port 8080 --workers 1
     mem_limit: 512m
     environment:
@@ -59,7 +58,7 @@ services:
       auth-db:
         condition: service_healthy
     # 探活供 web depends_on service_healthy 消费（镜像自带 curl）；
-    # 注意 /health 不查库，auth-db 运行期故障只能靠 auth-api 日志排查（已知取舍）。
+    # 注意 /health 不查库，auth-db 运行期故障只能靠 api 服务日志排查（已知取舍）。
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
@@ -117,7 +116,7 @@ services:
       # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
       - BACKEND_API_URL=${TRADB_API_URL:-http://tradb-data-api:8080}
       # tradeck 自建 auth 服务（session 校验/登录/注册转发目标；容器网络服务名直达）
-      - AUTH_API_URL=http://auth-api:8080
+      - AUTH_API_URL=http://api:8080
       # standalone server.js 默认绑 $HOSTNAME，多网络容器下容器 ID 可能解析到
       # 非默认网络的 IP，导致宿主机 docker-proxy 端口映射 reset（2026-09-12 实测）。
       - HOSTNAME=0.0.0.0
@@ -129,8 +128,6 @@ services:
       - TRADB_SERVICE_NAME=web-bff
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
       - QUANT_API_URL=http://quant:8083
-      # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
-      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
       - NODE_ENV=production
     # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
     networks:
@@ -140,8 +137,8 @@ services:
       # web 经 tradb_net 访问 tradb，不依赖任何本仓库数据层服务。
       quant:
         condition: service_started
-      # auth-api 起不来不阻塞行情页面，但登录链路需要它，故等其健康
-      auth-api:
+      # api 起不来不阻塞行情页面，但登录链路需要它，故等其健康
+      api:
         condition: service_healthy
     restart: unless-stopped
 
