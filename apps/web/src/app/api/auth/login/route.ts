@@ -1,21 +1,21 @@
 /**
  * 登录 API 路由（BFF 转发）
  * POST /api/auth/login {email, password}
- * 转发 tradeck auth-api /api/auth/login；成功则把 token 写入 httpOnly cookie。
+ * 转发 tradeck api 服务 /api/auth/login；成功则把 token 写入 httpOnly cookie。
  *
- * 说明：明文密码经同站 POST 到本路由，再在服务端转发 auth-api，
- * 浏览器不直连 auth-api；P2 上 HTTPS 后传输链路闭环。
+ * 说明：明文密码经同站 POST 到本路由，再在服务端转发 api 服务，
+ * 浏览器不直连 api 服务；P2 上 HTTPS 后传输链路闭环。
  */
 import { NextRequest, NextResponse } from "next/server";
 
 import { SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth";
 import { serviceAuthHeaders } from "@/lib/service-auth";
 
-// 默认兜底仅供本地开发；生产由环境变量注入 tradeck auth-api 地址。
+// 默认兜底仅供本地开发；生产由环境变量注入 tradeck api 服务 地址。
 const AUTH_API = process.env.AUTH_API_URL ?? "http://localhost:8080";
 
 /**
- * 取真实客户端 IP 注入 X-Forwarded-For（auth-api 登录限流按来源计数）。
+ * 取真实客户端 IP 注入 X-Forwarded-For（api 服务登录限流按来源计数）。
  * 优先取入站 x-forwarded-for 最左值（反代注入的原始客户端），其次 x-real-ip；
  * 都取不到则不加该头——无反代时 BFF 直连场景 backend 会回退 client.host。
  */

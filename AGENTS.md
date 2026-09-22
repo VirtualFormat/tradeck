@@ -264,7 +264,7 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 ⚠️ `init.sql` 由 postgres 容器**首次启动**时执行（`docker-entrypoint-initdb.d`）。改表结构后，已存在的数据卷不会自动重跑——需手动执行 SQL 或删数据卷重建。
 
-用户域数据存 tradeck 自有 `auth-db`（独立 PG service，auth-api 经 AUTH_DATABASE_URL 访问），与 tradb 行情库物理分离，详见 docs/AUTH.md。
+用户域数据存 tradeck 自有 `auth-db`（独立 PG service，api 服务经 AUTH_DATABASE_URL 访问），与 tradb 行情库物理分离，详见 docs/AUTH.md。
 
 ## 测试与验证
 

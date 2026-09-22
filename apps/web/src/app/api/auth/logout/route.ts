@@ -1,15 +1,15 @@
 /**
  * 登出 API 路由（BFF 转发）
  * POST /api/auth/logout
- * 通知 tradeck auth-api 作废 token，并删除本地 httpOnly cookie。
- * auth-api 不可达时也照常删 cookie（本地登出必然成功）。
+ * 通知 tradeck api 服务 作废 token，并删除本地 httpOnly cookie。
+ * api 服务不可达时也照常删 cookie（本地登出必然成功）。
  */
 import { NextRequest, NextResponse } from "next/server";
 
 import { SESSION_COOKIE } from "@/lib/auth";
 import { serviceAuthHeaders } from "@/lib/service-auth";
 
-// 默认兜底仅供本地开发；生产由环境变量注入 tradeck auth-api 地址。
+// 默认兜底仅供本地开发；生产由环境变量注入 tradeck api 服务 地址。
 const AUTH_API = process.env.AUTH_API_URL ?? "http://localhost:8080";
 
 export async function POST(request: NextRequest) {
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
         cache: "no-store",
       });
     } catch (err) {
-      console.error("logout notify auth-api failed:", err);
+      console.error("logout notify api failed:", err);
     }
   }
 

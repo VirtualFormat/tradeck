@@ -1,6 +1,6 @@
 # devcontainer 的 docker-compose — 开发环境
 # 与项目根的 docker-compose.yml（prod）独立
-# 架构：dev（开发容器）+ auth-db（auth 域 PG）+ auth-api + quant（profile）
+# 架构：dev（开发容器）+ auth-db（auth 域 PG）+ api + quant（profile）
 # 行情数据层（postgres/clickhouse/openbb/collector/data-api）已全部迁往 tradb
 # 独立仓库，dev 经宿主机 SSH tunnel（host.docker.internal:8080/8082）访问 prod
 # tradb；本文件不再内嵌任何行情数据服务，勿复活。
@@ -26,9 +26,9 @@ services:
       - DATA_MODE=${DATA_MODE:-live}
       # 指向 prod tradb（经宿主机 SSH tunnel host.docker.internal:8080 → VPS tradb data-api）
       - BACKEND_API_URL=${TRADB_API_URL:-http://host.docker.internal:8080}
-      # 用户登录：web 的 session 校验 / 登录注册代理走 dev auth-api（同 dev-net 容器名直达）。
+      # 用户登录：web 的 session 校验 / 登录注册代理走 dev api 服务（同 dev-net 容器名直达）。
       # 不设则会回退 localhost:8080 误打行情 data-api，/api/auth/* 全部 500/404。
-      - AUTH_API_URL=http://auth-api:8080
+      - AUTH_API_URL=http://api:8080
       # 量化引擎 HTTP 服务（/api/quant/* 代理的目标；web 容器经 dev-net 主机名访问）
       - QUANT_API_URL=http://quant:8083
       # Vibe-Trading AI 研究引擎（独立 devcontainer，宿主机 8899；web 容器经 host.docker.internal 访问）
@@ -63,11 +63,11 @@ services:
     networks:
       - dev-net
 
-  # auth-api（用户域：注册/登录/session，对齐 prod 架构）
+  # api（tradeck 应用层 API：用户域注册/登录/session，对齐 prod 架构）
   # backend 源码热挂载、auth-db 实例（auth schema 由 apps/backend/init.sql 建出）。
-  auth-api:
+  api:
     build: ../apps/backend
-    container_name: tradeck-dev-auth-api
+    container_name: tradeck-dev-api
     environment:
       AUTH_DATABASE_URL: postgresql://tradeck:tradeck_dev@auth-db:5432/tradeck_auth
       AUTH_INVITE_CODE: ${AUTH_INVITE_CODE:-}

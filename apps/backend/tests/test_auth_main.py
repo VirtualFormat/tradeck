@@ -32,7 +32,7 @@ class TestAuthMain(unittest.TestCase):
 
     def test_importable(self):
         self.assertIsNotNone(self.module.app)
-        self.assertEqual(self.module.app.title, "tradeck auth-api")
+        self.assertEqual(self.module.app.title, "tradeck api")
 
     def test_has_auth_routes_and_health(self):
         paths = _route_paths(self.module.app)

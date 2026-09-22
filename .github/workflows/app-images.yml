@@ -1,7 +1,7 @@
 name: Build App Images
 
 # 构建并发布 tradeck 应用镜像到 GHCR（org: virtualformat）：
-#   web / data-api（auth-api 复用此镜像）/ quant
+#   web / api（tradeck 应用层总 API，当前为用户域 auth 入口）/ quant
 # 数据管道 collector 与 openbb 镜像在 tradb 仓库的 CI 构建。
 # 正式服只 docker compose pull && up，不在服务器拉源码构建。
 # 同步推送一份到腾讯云 TCR 个人版（secrets 配置见 README/部署文档）：

@@ -64,7 +64,7 @@ class Settings:
         # data-api 只读挂载自有 Parquet 池，用于分钟 K UNION 查询。
         self.DATA_POOL_ROOT = os.getenv("DATA_POOL_ROOT", "/data/market-pool")
         # ---- 用户登录（P0，/api/auth/*）----
-        # auth 库连接串：tradeck 自建 auth-api 专用（用户域数据不再放 tradb）。
+        # auth 库连接串：tradeck 自建 api 服务专用（用户域数据不再放 tradb）。
         # 行情 data-api 进程不使用本字段（仍走 DATABASE_URL 连 tradb）。
         self.AUTH_DATABASE_URL = os.getenv(
             "AUTH_DATABASE_URL",

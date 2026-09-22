@@ -1,4 +1,4 @@
-"""tradeck auth-api：用户域独立服务入口（/api/auth/* + /health）。
+"""tradeck api（应用层总 API）：用户域独立服务入口（/api/auth/* + /health）。
 
 本服务是 tradeck 应用层组件（用户域），与 tradb（行情数据服务）职责分离：
 - 只服务 auth（注册 / 登录 / 会话校验 / 登出），不 import 任何行情路由；
@@ -6,9 +6,9 @@
 - DB 连接走 AUTH_DATABASE_URL（独立 auth-db 小库），与行情库物理隔离。
 
 单 pool 复用设计：auth.py 通过 app.db.get_pool() 取全局连接池。app.db 模块级
-只持有「一个」全局 pool（与行情库无关，只是函数名沿用），因此 auth-api 进程里
+只持有「一个」全局 pool（与行情库无关，只是函数名沿用），因此 api 进程里
 直接把 settings.DATABASE_URL 指向 AUTH_DATABASE_URL，复用 get_pool/close_pool
-既有函数即可——auth.py 零改动。auth-api 与 data-api 是不同进程，互不干扰。
+既有函数即可——auth.py 零改动。tradeck api 与 tradb data-api 是不同进程，互不干扰。
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth.sessions (expire
 async def lifespan(app: FastAPI):
     """启动：连 auth-db 建 pool（单 pool 复用，见模块 docstring）+ 幂等建表；
     关闭：释放连接池。不校验 DATA_MODE/marker，auth-db 无此概念。"""
-    logger.info("tradeck auth-api starting...")
+    logger.info("tradeck api starting...")
 
     # 单 pool 复用：把 settings.DATABASE_URL 指向 AUTH_DATABASE_URL，
     # 让 app.db.get_pool() 建出的全局 pool 就是 auth 库连接池，auth.py 零改动。
@@ -76,16 +76,16 @@ async def lifespan(app: FastAPI):
             await conn.execute(_SCHEMA_DDL)
             logger.info("auth schema initialized (idempotent)")
 
-        logger.info("tradeck auth-api ready")
+        logger.info("tradeck api ready")
         yield
     finally:
-        logger.info("tradeck auth-api shutting down...")
+        logger.info("tradeck api shutting down...")
         await close_pool()
 
 
-app = FastAPI(title="tradeck auth-api", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="tradeck api", version="0.1.0", lifespan=lifespan)
 
-# CORS：与 data-api 同款——auth-api 是服务间 API（web BFF 经容器网络调用，
+# CORS：与 data-api 同款——tradeck api 是服务间 API（web BFF 经容器网络调用，
 # 消费方走 X-Service-Token 鉴权），默认不放开浏览器跨域（空列表 = CORSMiddleware
 # 不放行任何跨域来源，同源/服务端调用不受影响）。确有浏览器直连场景时经
 # 环境变量 CORS_ORIGINS（逗号分隔）显式配置。

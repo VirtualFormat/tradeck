@@ -372,7 +372,7 @@ CREATE TABLE IF NOT EXISTS yield_curve_rates (
 -- ============================================================================
 -- auth schema：用户登录（P0）专用，与行情 public schema 物理隔离
 -- 由 /api/auth/* 端点读写；行情数据流不经此 schema。
--- 注：tradeck prod 的 auth 数据存独立 auth-db（由 auth-api 的 auth_main lifespan
+-- 注：tradeck prod 的 auth 数据存独立 auth-db（由 api 服务的 auth_main lifespan
 -- 幂等建表），本段仅服务 tradb/旧 dev 场景（auth 与行情同库时的兜底初始化）。
 -- ============================================================================
 CREATE SCHEMA IF NOT EXISTS auth;

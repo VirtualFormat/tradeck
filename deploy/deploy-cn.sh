@@ -45,7 +45,7 @@ log "校验 compose 配置"
 docker compose -f "${COMPOSE_FILE}" config --quiet
 
 log "串行拉取 tradeck 应用镜像，避免镜像站并发大层超时"
-for service in auth-api quant web; do
+for service in api quant web; do
   pull_service "${service}"
 done
 

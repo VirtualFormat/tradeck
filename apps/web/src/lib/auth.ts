@@ -1,7 +1,7 @@
 /**
  * 用户会话（server-only）：浏览器侧只持有 httpOnly cookie（tdk_session），
- * 真正的校验由 tradeck 自建 auth-api 的 /api/auth/session 完成（BFF 模式）。
- * 双后端分离：auth 走 tradeck auth-api（AUTH_API_URL），行情走 tradb data-api
+ * 真正的校验由 tradeck 自建 api 服务 的 /api/auth/session 完成（BFF 模式）。
+ * 双后端分离：auth 走 tradeck api 服务（AUTH_API_URL），行情走 tradb data-api
  * （BACKEND_API_URL，见 lib/openbb.ts）。
  *
  * 本模块仅允许在 Server Component / Route Handler（Node 运行时）中调用，
@@ -17,8 +17,8 @@ export const SESSION_COOKIE = "tdk_session";
 /** session cookie 有效期：7 天 */
 export const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
-// 默认兜底仅供本地开发；生产由环境变量注入 tradeck auth-api 地址
-// （compose 固定为 http://auth-api:8080，容器网络直达）。
+// 默认兜底仅供本地开发；生产由环境变量注入 tradeck api 服务 地址
+// （compose 固定为 http://api:8080，容器网络直达）。
 const AUTH_API = process.env.AUTH_API_URL ?? "http://localhost:8080";
 
 export interface SessionUser {
