@@ -143,6 +143,18 @@ const UNIVERSE_OPTIONS = [
 ] as const;
 type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 
+/**
+ * 从 localStorage 恢复时允许的记忆档位（仅轻档位）。
+ * cn/all 为全市场重档位，历史上被记住后恢复会导致全市场回测把 quant 容器打 OOM；
+ * 故恢复时只接受轻档位，旧记忆若为 cn/all 则回退默认 hs300；
+ * 不影响用户在页面上本次会话手动选择 cn/all（下拉框选项不变）。
+ */
+const RESTORABLE_UNIVERSES: readonly UniverseValue[] = [
+  "hs300",
+  "csi500",
+  "tracked",
+];
+
 /** 各 universe 档位下标的输入框的占位提示（本地维护，含 hs300/csi500） */
 const BT_UNIVERSE_PLACEHOLDER: Record<UniverseValue, string> = {
   hs300: "留空 = 沪深300 成分（可逗号分隔自定义）",
@@ -199,6 +211,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 服务网关类状态码：quant 容器 OOM 重启/忙时 ingress 常见 502/503/504 */
+const GATEWAY_STATUS = new Set([502, 503, 504]);
+
+/** 尽量从错误响应体里读后端给出的 error/detail 文案，读不到返回 null */
+async function readErrorDetail(res: Response): Promise<string | null> {
+  try {
+    const body = (await res.json()) as { error?: unknown; detail?: unknown };
+    // detail 可能是字符串或 FastAPI 校验错的数组，统一转字符串
+    const msg = body.error ?? body.detail;
+    if (typeof msg === "string" && msg.trim()) return msg;
+    if (msg != null) return JSON.stringify(msg);
+  } catch {
+    // 非 JSON 响应（如网关 502 HTML 页）静默忽略
+  }
+  return null;
+}
+
+/** 按 HTTP 状态生成回测失败提示：网关类单独说明，其余尽量带后端错误详情 */
+async function describeHttpFailure(res: Response): Promise<string> {
+  if (GATEWAY_STATUS.has(res.status)) {
+    return "回测服务暂时不可用（服务忙或重启中），请稍后重试";
+  }
+  const detail = await readErrorDetail(res);
+  return detail ?? `回测请求被拒绝（HTTP ${res.status}）`;
+}
+
 /** 指标卡 label → tooltip 解释文案 */
 const METRIC_HINTS: Record<string, string> = {
   总收益: "回测期末权益相对初始资金的累计收益率，已含费用/滑点/成交约束。",
@@ -238,7 +276,8 @@ export function BacktestTab({
   );
   const [universe, setUniverse] = useSavedState<UniverseValue>(
     (s) =>
-      s?.universe && UNIVERSE_OPTIONS.some((o) => o.value === s.universe)
+      // 记忆归一：旧档位 cn/all（全市场重档位）不恢复，回退默认 hs300 防 OOM
+      s?.universe && RESTORABLE_UNIVERSES.includes(s.universe)
         ? s.universe
         : undefined,
     "hs300"
@@ -391,11 +430,12 @@ export function BacktestTab({
     });
     if (!runRes.ok) {
       const legacy = await runBacktestLegacy(payload);
-      if (!legacy) {
-        setError("回测服务不可用，请稍后重试");
+      if (!legacy.ok) {
+        // 优先用 run 接口的状态描述失败原因（兜底接口多半同样不可用）
+        setError(await describeHttpFailure(runRes));
         setResult(null);
       }
-      return legacy;
+      return legacy.result;
     }
     const { task_id } = (await runRes.json()) as BacktestRunResponse;
     taskRef.current = { id: task_id, cancelled: false };
@@ -419,11 +459,12 @@ export function BacktestTab({
         if (failures >= POLL_RETRY_GIVEUP) {
           setReconnecting(false);
           const legacy = await runBacktestLegacy(payload);
-          if (!legacy) {
-            setError("回测服务不可用，请稍后重试");
+          if (!legacy.ok) {
+            // 轮询连续失败说明任务通道已断，兜底也失败时按兜底接口状态提示
+            setError(legacy.error);
             setResult(null);
           }
-          return legacy;
+          return legacy.result;
         }
         continue;
       }
@@ -447,28 +488,36 @@ export function BacktestTab({
     }
   }
 
-  /** 旧同步接口一次性回退（任务 API 未部署时兜底），失败返回 null */
+  /** 旧同步接口一次性回退（任务 API 未部署时兜底）；
+   * 返回 { ok, result, error }，失败时 error 尽量带 HTTP 状态码供上层提示 */
   async function runBacktestLegacy(
     payload: Record<string, unknown>
-  ): Promise<BacktestAnyResult | null> {
+  ): Promise<
+    | { ok: true; result: BacktestAnyResult }
+    | { ok: false; result: null; error: string }
+  > {
     try {
       const res = await fetch("/api/quant/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return { ok: false, result: null, error: await describeHttpFailure(res) };
+      }
       const body = (await res.json()) as Partial<BacktestResult> & {
         error?: string;
       };
       // 分钟频回放结果（mode = minute_replay）无 stats，是合法成功结果，直接放行
-      if (isMinuteReplayResult(body)) return body;
+      if (isMinuteReplayResult(body)) return { ok: true, result: body };
       // worker 失败时同步接口返回 200 + 错误骨架（{error, stats: null}），
       // 不能当成功结果渲染（P2-7）
-      if (body.error || body.stats == null) return null;
-      return body as BacktestResult;
+      if (body.error || body.stats == null) {
+        return { ok: false, result: null, error: body.error ?? "回测执行失败" };
+      }
+      return { ok: true, result: body as BacktestResult };
     } catch {
-      return null;
+      return { ok: false, result: null, error: "回测服务不可用，请稍后重试" };
     }
   }
 
