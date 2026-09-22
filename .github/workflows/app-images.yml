@@ -135,6 +135,9 @@ jobs:
   sync-tcr:
     needs: merge
     runs-on: ubuntu-24.04
+    # TCR_* secrets 放在 GitHub Environment `production` 下，
+    # 不声明 environment 的 job 读不到环境级 secrets（会解析为空导致 login 失败）。
+    environment: production
     permissions:
       contents: read
     strategy:
