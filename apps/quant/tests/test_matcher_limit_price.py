@@ -77,8 +77,14 @@ def _adjusted_matrix() -> MarketMatrix:
     """本地前复权：i=0 复权价 19.90×1/2=9.95，i=1/i=2 复权价 = 原始价。"""
     adjusted, _ = forward_adjust(
         _raw_matrix(),
-        # 除权因子表：i=1（除权日）起累计因子由 1.0 跳变到 2.0
-        {SYM: pl.DataFrame({"date": [_dates(3)[1]], "ex_factor": [2.0]})},
+        # 除权因子表两行：i=0 基准因子 1.0，i=1（除权日）起跳变到 2.0。
+        # _factor_series 对首个因子日之前的交易日向历史延伸首因子值，
+        # 单行 [2.0] 会让 i=0 也取 2.0（缩放 1.0），无法构成复权差异场景。
+        {
+            SYM: pl.DataFrame(
+                {"date": [_dates(3)[0], _dates(3)[1]], "ex_factor": [1.0, 2.0]}
+            )
+        },
     )
     return adjusted
 

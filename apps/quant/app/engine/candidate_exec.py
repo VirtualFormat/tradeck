@@ -88,6 +88,7 @@ def simulate_independent(
     config: MatcherConfig,
     names: dict[str, str] | None = None,
     adjusted_flags: dict[str, bool] | None = None,
+    raw_close: np.ndarray | None = None,
     progress_cb=None,
     cancel_event=None,
 ) -> CandidateExecResult:
@@ -100,6 +101,10 @@ def simulate_independent(
     逐日回调，任务化进度条可直接复用）。
     cancel_event：协作式取消（threading.Event 语义），置位后停止开新样本、
     返回已完成部分（部分结果同样可用，体现在成交笔数 < 候选数上）。
+    raw_close：原始价 close 矩阵（与 matrix.close 同形），仅供一字板涨跌停
+    判定——matrix 为前复权价时，除权日前后整体被静态比例缩放，涨跌停基准
+    必须取真实市价（口径同 matcher.simulate 的 raw_close）。None 时回退用
+    matrix.close（向后兼容；调用方传入本就是原始矩阵时无损）。
     """
     names = names or {}
     dates = matrix.dates
@@ -155,13 +160,18 @@ def simulate_independent(
         same = max(o, h, lo, c) - min(o, h, lo, c) <= max(abs(c) * 1e-4, 0.01)
         if not same:
             return False
-        pc = close[i - 1, j]
+        # 涨跌停基准必须取原始价（真实市价）：matrix 传入前复权价时，
+        # 除权日前后整体被静态比例缩放，复权 close 算出的涨跌停价会失真
+        # （与 matcher.blocked_by_limit 同源失真，口径对齐修复）。
+        lim_close = raw_close if raw_close is not None else close
+        pc = lim_close[i - 1, j]
+        c_raw = lim_close[i, j]
         if not _valid_price(pc):
             return False
         pct = limit_pct(symbols[j], dates[i], names.get(symbols[j], ""))
         if direction == "up":
-            return c >= pc * (1 + pct) - 1e-9
-        return c <= pc * (1 - pct) + 1e-9
+            return c_raw >= pc * (1 + pct) - 1e-9
+        return c_raw <= pc * (1 - pct) + 1e-9
 
     def can_buy(i: int, j: int) -> str:
         """返回拦截原因；空串表示可成交。"""

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -60,10 +61,20 @@ def load(symbol: str) -> pl.DataFrame:
 
 
 def save(symbol: str, df: pl.DataFrame) -> None:
-    """写单标的缓存（调用方保证 df 已按 date 排序去重）。"""
+    """写单标的缓存（调用方保证 df 已按 date 排序去重）。
+
+    原子写：先写同目录 tmp 文件再 os.replace（POSIX 同目录 rename 原子），
+    防进程崩溃留半截 parquet、并发写互相覆盖出损坏文件。
+    """
     path = _file_of(symbol)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(path)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    try:
+        df.write_parquet(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # 失败不留残文件
+        raise
 
 
 def merge(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:

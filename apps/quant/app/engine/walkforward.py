@@ -42,6 +42,13 @@ def generate_folds(
     """滚动窗口 fold 切分：训练窗口固定长度，测试窗口紧接其后，按 step 前移。
 
     测试区间超出 end 即停止。数据区间放不下一折则抛错。
+
+    purge 口径声明（review 缺陷 3 锁定）：本切分**无 purge 隔离带（purge=0）**——
+    训练窗末与测试窗首仅按日历日后移 1 天隔断同日重叠，不留 horizon 长度的
+    embargo 缓冲。这是有意选择：窗口按日历天数对齐参照 tick-stock-panel，
+    与 mining 模块「purge_bars >= horizon」的交易日 embargo 铁律口径不同，
+    两者不可混用比较。若未来要与 mining 对齐，需另加 purge_bars 参数并按
+    交易日轴切分（当前 Fold 只有日历日期，不改行为仅声明）。
     """
     if train_days <= 0 or test_days <= 0 or step_days <= 0:
         raise ValueError("train_days / test_days / step_days 必须为正")
@@ -281,5 +288,16 @@ def run_walk_forward(
         "compounded_oos_return": summary["compounded_oos_return"],
         "degradation": summary.get("degradation"),
         "consistency": summary.get("consistency"),
+        # purge 口径元信息（review 缺陷 3 锁定）：折切分无 purge 隔离带
+        # （purge=0，训练窗末与测试窗首仅后移 1 个日历日隔断同日重叠），
+        # 与 mining 模块「purge_bars >= horizon」的交易日 embargo 口径不同。
+        # 前端可据此在 walk-forward 报告页展示口径说明。
+        "meta": {
+            "purge_bars": 0,
+            "purge_note": (
+                "折切分无 purge 隔离带：训练窗末与测试窗首无 embargo 缓冲"
+                "（仅后移 1 个日历日防同日重叠），与 mining 的 purge 口径不同"
+            ),
+        },
         "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
     }

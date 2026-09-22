@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -46,7 +47,11 @@ class MiningRunResult:
     # 统计检验（I2）：因子 IC 的 NW t / p 值与 BH-FDR q 值；各候选的 DSR 通缩夏普
     factor_ic_stats: dict[str, dict] | None = None
     candidate_dsr: dict[str, float | None] | None = None
-    n_trials: int = 0  # DSR 的 N：内层候选评估总次数（有效折数 × beam_width × max_size，不去重）
+    # DSR 的 N：内层候选评估总次数的保守上界估算（有效折数 × pool 截断 8 × 内层折数，
+    # 不去重）。真实评估计数在 core.beam_search 内部，runtime 不改 core 拿不到精确值，
+    # 故 N 刻意与 beam_width 脱钩（避免调大 beam_width 的人为压低 DSR 的反直觉杠杆），
+    # 以实际进入内层测试段评估的候选池规模估算，偏保守（N 偏大 → DSR 偏低）。
+    n_trials: int = 0
     dsr_note: str = ""  # DSR 的 N 口径说明（前端展示用）
 
 
@@ -164,8 +169,11 @@ def _select_combo_inner(
         return None
     # 内层评估预算：只在 top 候选上比内层测试段 IC（控成本）
     pool = combos[:8]
-    # DSR 试验计数：beam 搜索每层扩展 beam_width 条路径、共 max_size 层
-    n_evaluations = beam_width * max_size
+    # DSR 试验计数（N 的上界估算，不改 core.py 拿不到 beam_search 内部精确评估数）：
+    # 用实际进入内层测试段评估的候选池规模 × 内层折数估算，与 beam_width 脱钩——
+    # beam_width 是 API 可调参数，调大会把旧的 折数×beam_width×max_size 上界放大、
+    # 压低 DSR 形成反直觉杠杆；本口径只随真实参与评估的候选数与折数变化。
+    n_evaluations = len(pool) * len(nested.inner)
     best_combo: tuple[str, ...] | None = None
     best_score = -np.inf
     for combo, _ in pool:
@@ -321,14 +329,15 @@ def run_mining(
     dropped = sorted(dropped_counts, key=lambda p: (-dropped_counts[p], p))
 
     # 4. DSR 通缩夏普：候选样本外夏普对多重试验校正
-    # N 口径：真实搜索空间——各折内层 beam 池的候选评估总次数
-    # （折数 × beam_width × max_size，不去重：DSR 惩罚的是搜索强度，
-    # 重复评估同一候选也算一次试验）。原口径 max(去重候选数, 1) 系统性低估 N，
-    # 导致 expected_max_sharpe 偏低、DSR 偏高，已修正。
+    # N 口径：内层候选评估总次数的上界估算——各有效外层折的
+    # 「内层评估池规模（≤8）× 内层折数」之和，不去重（DSR 惩罚的是搜索强度，
+    # 重复评估同一候选也算一次试验）。core.beam_search 内部的真实评估计数
+    # 在 runtime 侧不可见（不改 core），此处按实际参与内层评估的候选规模估算，
+    # 刻意与 beam_width 脱钩，避免调大 beam_width 放大 N、压低 DSR 的杠杆。
     n_trials = max(n_trials, 1)
     dsr_note = (
-        f"DSR 的 N 为真实搜索空间估算：折数 × beam_width × max_size "
-        f"（本次 N={n_trials}，不去重——DSR 惩罚的是搜索强度）；"
+        f"DSR 的 N 为内层候选评估次数的上界估算：Σ各外层折（评估池规模≤8 × 内层折数），"
+        f"与 beam_width 无关（本次 N={n_trials}，不去重——DSR 惩罚的是搜索强度）；"
         f"样本外回测为 open_t+1 口径（T 日信号、T+1 开盘买入、T+2 开盘卖出），"
         f"与主回测引擎一致。"
     )
@@ -402,7 +411,11 @@ def load_candidates(user_id: str | None = None) -> pl.DataFrame:
 
 def save_candidate(c: core.CandidateResult, user_id: str | None = None) -> str:
     """候选入库（status=pending，永不自动发布）。返回 candidate_id。"""
-    cid = "cand_" + "_".join(c.combo)[:40]
+    # cid = 组合名截断 + 组合短哈希后缀：长组合名截断后不同组合不再静默撞 cid 覆盖。
+    # 兼容：旧格式 cid（无哈希后缀）的存量记录保留在库中，仅新写入/查找用新格式
+    #（挖掘候选是短生命周期数据，不做迁移）。
+    combo_key = "+".join(c.combo)
+    cid = "cand_" + "_".join(c.combo)[:40] + "_" + hashlib.sha1(combo_key.encode()).hexdigest()[:8]
     ok, reasons = core.evaluate_gate(c)
     df = load_candidates(user_id)
     row = pl.DataFrame({
@@ -434,20 +447,34 @@ def publish_candidate(candidate_id: str, user_id: str | None = None) -> tuple[bo
     if row.is_empty():
         return False, f"候选不存在 {candidate_id!r}"
     r = row.row(0, named=True)
-    cr = core.CandidateResult(
-        combo=tuple(json.loads(r["combo"])), directions=json.loads(r["directions"]),
-    )
-    # 重建最小 folds 用于门槛判定（直接用库存指标）
-    cr.folds = [
-        core.FoldResult(
-            fold_index=i, combo=cr.combo, oos_sharpe=r["oos_sharpe"],
-            oos_return=1.0 if r["positive_fold_ratio"] > 0 else -1.0,
-            oos_max_drawdown=r["oos_max_drawdown"], oos_trades=r["oos_trades"],
-            oos_positive=r["positive_fold_ratio"] > 0,
-        )
-        for i in range(r["valid_folds"])
-    ]
-    ok, reasons = core.evaluate_gate(cr)
+    # 直接复核候选库里的聚合指标（入库时由真实折明细聚合写入），不再伪造
+    # FoldResult 逐项推断——旧写法用 positive_fold_ratio>0 猜每折正负，
+    # 等于绕过了 positive_fold_ratio 门槛（如 ratio=0.5 会被伪造成全正）。
+    # 库存字段缺失（None）时按不达标处理（fail-closed）。
+    def _num(key: str) -> float | None:
+        v = r.get(key)
+        return float(v) if v is not None else None
+
+    valid_folds = _num("valid_folds")
+    pos_ratio = _num("positive_fold_ratio")
+    sharpe = _num("oos_sharpe")
+    max_dd = _num("oos_max_drawdown")
+    trades = _num("oos_trades")
+    reasons: list[str] = []
+    if valid_folds is None or valid_folds < core.GATE_MIN_VALID_FOLDS:
+        reasons.append(f"有效外层折不足 {core.GATE_MIN_VALID_FOLDS}（{valid_folds}）")
+    if pos_ratio is None or pos_ratio < core.GATE_MIN_POSITIVE_FOLD_RATIO:
+        shown = f"{pos_ratio:.0%}" if pos_ratio is not None else "缺失"
+        reasons.append(f"正收益折占比不足 {core.GATE_MIN_POSITIVE_FOLD_RATIO:.0%}（{shown}）")
+    if sharpe is None or np.isnan(sharpe) or sharpe < core.GATE_MIN_OOS_SHARPE:
+        shown = f"{sharpe:.2f}" if sharpe is not None else "缺失"
+        reasons.append(f"样本外夏普不足 {core.GATE_MIN_OOS_SHARPE}（{shown}）")
+    if max_dd is None or np.isnan(max_dd) or max_dd < core.GATE_MAX_DRAWDOWN:
+        shown = f"{max_dd:.0%}" if max_dd is not None else "缺失"
+        reasons.append(f"样本外最大回撤超 {abs(core.GATE_MAX_DRAWDOWN):.0%}（{shown}）")
+    if trades is None or trades < core.GATE_MIN_TRADES:
+        reasons.append(f"样本外交易数不足 {core.GATE_MIN_TRADES}（{trades}）")
+    ok = not reasons
     if not ok:
         return False, "未达晋级门槛：" + "；".join(reasons)
     out = df.with_columns(

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -71,10 +72,19 @@ def load_minute(symbol: str, year: int) -> pl.DataFrame:
 
 
 def save_minute(symbol: str, year: int, df: pl.DataFrame) -> None:
-    """写单标的单年缓存（调用方保证 df 已按 datetime 排序去重）。"""
+    """写单标的单年缓存（调用方保证 df 已按 datetime 排序去重）。
+
+    原子写：同目录 tmp + os.replace（与 data/store.save 同款语义）。
+    """
     path = _file_of(symbol, year)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(path)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    try:
+        df.write_parquet(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # 失败不留残文件
+        raise
 
 
 def merge_minute(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:

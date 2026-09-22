@@ -97,8 +97,20 @@ def compute(result: SimResult) -> dict:
     turnover_value = sum(t.shares * (t.entry_price + t.exit_price) for t in result.trades)
     avg_equity = float(equity.mean())
     turnover = (turnover_value / avg_equity) if avg_equity > 0 else 0.0
-    # 平均持仓天数（交易日）
-    durations = [(t.exit_date - t.entry_date).days for t in result.trades]
+    # 平均持仓天数（交易日口径）：按净值交易日轴的索引差计算，跨周末/长假不放大。
+    # 不用自然日差 (exit_date - entry_date).days —— 周末 2 天、长假更多天会被计入，
+    # 系统性偏长（如周五买周一卖自然日=3 但实际只隔 1 个交易日）。
+    # 实现走 equity_dates.index()（O(n) 线性扫描，笔数小时与 dict 构建成本相当，
+    # 且无需改动 matcher 的 Trade 结构）；日期不在交易日轴上（防御性）时回退自然日差。
+    durations = []
+    for t in result.trades:
+        try:
+            durations.append(
+                result.equity_dates.index(t.exit_date)
+                - result.equity_dates.index(t.entry_date)
+            )
+        except ValueError:
+            durations.append((t.exit_date - t.entry_date).days)
     avg_hold_days = float(np.mean(durations)) if durations else 0.0
     # 蒙特卡洛最大回撤（bootstrap 重排日收益，口径见模块 docstring）
     mc_p50, mc_p95 = _mc_maxdd(rets)

@@ -147,9 +147,21 @@ def _rsi(close: np.ndarray, n: int = 14) -> np.ndarray:
     # avg_loss == 0 的特判：有涨无跌 → 100；无涨无跌（横盘）→ 50
     rsi = np.where(valid & (avg_loss == 0) & (avg_gain > 0), 100.0, rsi)
     rsi = np.where(valid & (avg_loss == 0) & (avg_gain == 0), 50.0, rsi)
-    # 预热期：首个有效 delta 后仍需 n-1 期平滑才稳定，前 n 行强制 NaN
+    # 预热期：首个有效 delta 后仍需 n-1 期平滑才稳定，预热段强制 NaN。
+    # 口径（review 缺陷 4 修复）：预热按**每列首个有效收盘价**起算，而非按全局行号
+    # 强置前 n 行——上市新股列前段全 NaN 时，首个有效 delta 出现在第 k>n 行，
+    # 按行号截断会让 RSI 在平滑不足 n 期时就提前出数（预热不足的值不可信）。
+    # 全列向量化：first_valid_row[c] = 该列首个非 NaN 行号；预热掩码 =
+    # 行号 < first_valid_row + n（首个有效收盘后需 n 个 delta 才有 n-1 期平滑；
+    # 首个有效 delta 在 first_valid_row+1 行，第 first_valid_row+n 行恰累计 n-1 期）。
     if close.shape[0] > 0:
-        rsi[:n] = np.nan
+        rows = np.arange(close.shape[0])[:, None]
+        first_valid_row = np.where(
+            (~np.isnan(close)).any(axis=0),
+            np.where(np.isnan(close), close.shape[0], rows).min(axis=0),
+            close.shape[0],  # 全 NaN 列：阈值超界，整列保持 NaN
+        )
+        rsi = np.where(rows < first_valid_row[None, :] + n, np.nan, rsi)
     return rsi
 
 

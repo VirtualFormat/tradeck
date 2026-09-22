@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable
@@ -16,9 +17,11 @@ from typing import Callable
 import numpy as np
 
 from app.engine.limits import limit_pct
-from app.engine.minute_fill import resolve_minute_fill
+from app.engine.minute_fill import resolve_minute_fill_with_mode
 from app.engine.minute_trigger import resolve_minute_exit_trigger
 from app.matrix import MarketMatrix
+
+logger = logging.getLogger(__name__)
 
 # 分钟K 加载回调签名：(symbol, date) → 当日分钟K float64 2D 数组
 # （列序 [open, high, low, close, volume, amount]），缺失返回 None。
@@ -232,7 +235,6 @@ def simulate(
     # 峰值跟踪用当日 high；矩阵暂无 high 字段时降级 close（与参照 max_high 口径最接近）
     high = getattr(matrix, "high", None)
     sym_idx = {s: j for j, s in enumerate(symbols)}
-
     cash = config.initial_capital
     positions: dict[str, dict] = {}
     trades: list[Trade] = []
@@ -258,40 +260,67 @@ def simulate(
     )
     minute_fill_on = config.minute_fill and minute_loader is not None
     _minute_cache: dict[tuple[str, date], np.ndarray | None] = {}
+    # 缺陷 2：分钟K 为原始价（client_minute 数据），而 matrix/entry_refs/exit_refs
+    # 为复权口径，直接比较跨除权日会系统性偏离。raw_close 提供时按交易日逐日
+    # 计算复权比例 scale = 复权收盘 / 原始收盘，把分钟K 帧乘以 scale 换算到
+    # 复权口径后再做穿越判定与定价（除权日 scale 突变，换算必须按日进行）。
+    _scale_cache: dict[tuple[str, int], float] = {}
+    _minute_scale_warned = False
 
     def minute_arr_of(sym: str, i: int) -> np.ndarray | None:
-        """(symbol, 当日) 的分钟K（带会话内缓存；loader 异常按无数据降级）。"""
+        """(symbol, 当日) 的分钟K（带会话内缓存；loader 异常按无数据降级）。
+
+        缺陷 2 口径换算：返回前已按当日复权比例乘到复权口径（见上注释）。
+        """
         key = (sym, dates[i])
         if key not in _minute_cache:
             try:
                 _minute_cache[key] = minute_loader(sym, dates[i])
             except Exception:  # 数据通路故障不阻塞回测，按分钟缺失降级
                 _minute_cache[key] = None
-        return _minute_cache[key]
+        arr = _minute_cache[key]
+        if arr is None:
+            return None
+        scale = _adjusted_scale_of(sym, i)
+        return arr * scale if scale != 1.0 else arr
+
+    def _adjusted_scale_of(sym: str, i: int) -> float:
+        """(symbol, 当日) 复权比例 scale = 复权收盘 / 原始收盘（缓存到会话内）。"""
+        nonlocal _minute_scale_warned
+        if raw_close is None:
+            # 未传 raw_close：无法换算，保持现状（原始价口径直接比较），
+            # 记 warning 一次避免刷屏。
+            if not _minute_scale_warned:
+                _minute_scale_warned = True
+                logger.warning(
+                    "分钟口径未提供 raw_close，分钟K（原始价）与参考线（复权价）"
+                    "直接比较，跨除权日判定可能失真"
+                )
+            return 1.0
+        key = (sym, i)
+        if key not in _scale_cache:
+            j = sym_idx.get(sym)
+            scale = 1.0
+            if j is not None:
+                rc, ac = raw_close[i, j], close[i, j]
+                # 原始收盘非零且两侧均为有效价时才换算，否则按 1.0 降级
+                if np.isfinite(rc) and rc > 0 and np.isfinite(ac) and ac > 0:
+                    scale = ac / rc
+            _scale_cache[key] = scale
+        return _scale_cache[key]
 
     def ref_of(refs: dict[str, np.ndarray], sym: str, i: int) -> float | None:
         """信号参考价（无效值按 None = 无参考线处理）。"""
+        # 缺陷 3：sig_i < 0（open_t+1 口径下成交日 i=0 时信号日 -1）按 None
+        # 处理——负数下标是 Python 负索引，会读到参考线数组最后一天，构成
+        # 隐蔽未来函数；此时走 VWAP 分支。
+        if i < 0:
+            return None
         arr = refs.get(sym)
         if arr is None:
             return None
         v = float(arr[i])
         return v if np.isfinite(v) and v > 0 else None
-
-    def _minute_crossed(marr: np.ndarray, ref: float, side: str) -> bool:
-        """当日分钟K 是否穿越参考线（用于区分穿越价与信号确认收盘价）。"""
-        if marr.shape[1] < 3:
-            return False
-        if side == "sell":
-            return bool(np.isfinite(marr[0, 0]) and marr[0, 0] <= ref
-                        or np.any(np.isfinite(marr[:, 2]) & (marr[:, 2] <= ref)))
-        return bool(np.isfinite(marr[0, 0]) and marr[0, 0] >= ref
-                    or np.any(np.isfinite(marr[:, 1]) & (marr[:, 1] >= ref)))
-
-    def _minute_mode(marr: np.ndarray, ref: float | None, side: str) -> str:
-        """分钟成交模式标注（无参考线→VWAP；穿越→穿越价；未穿越→信号确认收盘）。"""
-        if ref is None:
-            return "minute_vwap"
-        return "minute_ref" if _minute_crossed(marr, ref, side) else "minute_close"
 
     def minute_entry_price(i: int, j: int, sym: str, daily_price: float) -> tuple[float, str]:
         """开仓分钟精确成交：有参考线→穿越价，无参考线→VWAP；缺失降级日K。"""
@@ -305,12 +334,13 @@ def simulate(
         # 参考价取信号日（open_t+1 口径为昨日，close_t 口径为当日）
         sig_i = i - 1 if config.entry_fill == "open_t+1" else i
         ref = ref_of(entry_refs, sym, sig_i)
-        precise = resolve_minute_fill(marr, ref, "buy")
+        # 缺陷 4：模式标注由 minute_fill 返回分支带出，消除调用侧二次推导
+        precise, mode = resolve_minute_fill_with_mode(marr, ref, "buy")
         if precise is None:
             minute_entry_fallback += 1
             return daily_price, "daily"
         minute_entry_used += 1
-        return precise, _minute_mode(marr, ref, "buy")
+        return precise, mode or "daily"
 
     def minute_exit_price(
         i: int, j: int, sym: str, daily_price: float, reason: str,
@@ -350,12 +380,13 @@ def simulate(
                 minute_exit_fallback += 1
                 return daily_price, "daily", False
             ref = ref_of(exit_refs, sym, sig_i)
-            precise = resolve_minute_fill(marr, ref, "sell")
+            # 缺陷 4：模式标注由 minute_fill 返回分支带出
+            precise, mode = resolve_minute_fill_with_mode(marr, ref, "sell")
             if precise is None:
                 minute_exit_fallback += 1
                 return daily_price, "daily", False
             minute_exit_used += 1
-            return precise, _minute_mode(marr, ref, "sell"), False
+            return precise, mode or "daily", False
         return daily_price, "daily", False
 
     def entry_price_of(i: int, j: int) -> float:
@@ -610,6 +641,9 @@ def simulate(
             entry_price=pos["entry_price"], exit_price=px, shares=pos["shares"],
             pnl=pnl, ret=pnl / (pos["entry_price"] * pos["shares"]),
             exit_reason="end",
+            # 分钟成交标注在期末强平路径同样带出（缺陷 4 配套：否则开仓/平仓
+            # 走了分钟口径的样本在最常见的 end 退出下模式被静默重置为 daily）
+            entry_fill_mode=pos["entry_fill_mode"],
         ))
 
     result = SimResult(

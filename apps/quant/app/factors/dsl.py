@@ -13,6 +13,7 @@
 
 编译期红线（照搬参照）：
 - ts_* 负 shift 拒绝（E005，负数即未来函数）；
+- power 非整数指数要求底数静态可证非负（E010，防负数底数静默产 NaN）；
 - 截面算子禁嵌时序窗口内（E009，如 ts_mean(rank(x), 5)）；
 - AST 深度 / token 数 / 窗口 / power 指数 / winsorize k 硬上限；
 - 除数静态为常量 0 拒绝（E008）；公式必须引用至少一个数据列或因子（E016）。
@@ -335,6 +336,47 @@ def _const_value(node: dict) -> float | None:
     return None
 
 
+# power 非整数指数的底数非负静态判定白名单：
+# - 列：行情语义上恒非负的量价列（volume/amount 与 OHLC，均为正价/非负量）；
+# - 函数：abs（恒非负）、sqrt（非法输入产 NaN 而非负数）；
+# - 递归：max(abs(...) 类可证非负参数, ...) 与 clamp(非负下界, ...) 的输出也非负。
+# 其余表达式（含用户注册因子、ts_* 等窗口算子）无法静态判定，编译期拒绝（E010）。
+_NONNEG_COLUMNS: frozenset[str] = frozenset(
+    {"volume", "amount", "open", "high", "low", "close"}
+)
+
+
+def _is_static_nonneg(node: dict) -> bool:
+    """静态判定表达式是否恒非负（保守：判不出非负一律 False）。"""
+    kind = node["kind"]
+    if kind == "col":
+        return node["value"] in _NONNEG_COLUMNS
+    if kind == "num":
+        return float(node["value"]) >= 0
+    if kind == "unary" and node["value"] == "-":
+        # 仅常量数字可折叠判号
+        return _const_value(node) is not None and float(_const_value(node)) >= 0
+    if kind == "call":
+        name = node["value"]
+        children = node["children"]
+        if name in ("abs", "sqrt"):
+            return True
+        if name in ("min", "max"):
+            # min 要全部参数非负（取小者），max 只要任一参数非负（取大者）
+            n_expr = OPERATORS.get(name, (0, ()))[0]
+            exprs = children[:n_expr]
+            if name == "min":
+                return all(_is_static_nonneg(c) for c in exprs)
+            return any(_is_static_nonneg(c) for c in exprs)
+        if name == "clamp":
+            # clamp(x, lo, hi)：输出 ≥ lo，lo 为非负数字常量即非负
+            if len(children) >= 2:
+                lo = _const_value(children[1])
+                return lo is not None and lo >= 0
+            return False
+    return False
+
+
 def _check_call(node: dict, errors: list[DslError]) -> dict[str, float]:
     """检查函数签名与常量参数范围；返回解析出的常量参数表。"""
     name = node["value"]
@@ -399,6 +441,19 @@ def _check_call(node: dict, errors: list[DslError]) -> dict[str, float]:
     if "c" in constants and abs(constants["c"]) > POWER_ABS_MAX:
         errors.append(DslError(
             "E010", f"power 指数 |c| ≤ {POWER_ABS_MAX}",
+            offset=node["offset"], detail={"c": constants["c"]},
+        ))
+    if (
+        name == "power"
+        and "c" in constants
+        and constants["c"] != int(constants["c"])  # 整数指数负底数合法（如 (-2)^3）
+        and args
+        and not _is_static_nonneg(args[0])
+    ):
+        errors.append(DslError(
+            "E010",
+            f"power 非整数指数（c={constants['c']}）要求底数静态可证非负"
+            f"（abs/sqrt/max/clamp 下界 ≥ 0 或量价列），否则负数底数会静默产 NaN",
             offset=node["offset"], detail={"c": constants["c"]},
         ))
     if "k" in constants and not (WINSORIZE_K_RANGE[0] <= constants["k"] <= WINSORIZE_K_RANGE[1]):
@@ -628,15 +683,23 @@ def _compile_node(node: dict) -> Evaluator | None:
 
             return _cmp
         if op == "and":
-            return lambda m, g: np.where(
-                np.isnan(left(m, g)) | np.isnan(right(m, g)), np.nan,
-                ((left(m, g) != 0) & (right(m, g) != 0)).astype(np.float64),
-            )
+            def _and(m, g):
+                a, b = left(m, g), right(m, g)
+                return np.where(
+                    np.isnan(a) | np.isnan(b), np.nan,
+                    ((a != 0) & (b != 0)).astype(np.float64),
+                )
+
+            return _and
         if op == "or":
-            return lambda m, g: np.where(
-                np.isnan(left(m, g)) | np.isnan(right(m, g)), np.nan,
-                ((left(m, g) != 0) | (right(m, g) != 0)).astype(np.float64),
-            )
+            def _or(m, g):
+                a, b = left(m, g), right(m, g)
+                return np.where(
+                    np.isnan(a) | np.isnan(b), np.nan,
+                    ((a != 0) | (b != 0)).astype(np.float64),
+                )
+
+            return _or
         return None
     if kind == "call":
         return _compile_call(node)
@@ -865,4 +928,3 @@ def compile_formula(text: str, user_id: str | None = None) -> CompiledFormula:
         cross_sectional=cross_sectional,
         formula_text=text,
     )
-

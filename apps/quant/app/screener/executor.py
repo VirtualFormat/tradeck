@@ -25,6 +25,7 @@ from app.strategy import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+
 # 截面窗口：取最近 ~90 个自然日（约 60 个交易日）。
 # 依据：选股只看最新截面，但指标需预热 —— enriched 最长窗口为 ma60，
 # RSI14 另有 14 行预热 + 递推稳定期；60 个交易日足以让全部指标出数，
@@ -140,12 +141,61 @@ def screen(
         eligible = np.ones(len(matrix.symbols), dtype=bool)
 
     enriched = enrich(adjusted_matrix)
-    signals = reg.run(strategy_id, enriched, params)
+    n = len(matrix.symbols)
+    # getattr 防御：外部注入的桩定义可能无 is_composite 属性（test_universe 的
+    # _FakeStrat），缺省按非 composite 处理（真实 StrategyDef 必有该 property）。
+    if getattr(strat, "is_composite", False):
+        # composite 选股走截面口径（merge_screen_results），与回测的持仓窗口投影
+        # 口径（merge_signal_matrices）不同：选股无组合持仓状态，exit 表达
+        # 「任一子策略当日 exit」——与子策略单独选股的 exit 语义一致。
+        child_sigs: list = []
+        child_weights: list[float] = []
+        for cid, w in strat.composite_children:
+            try:
+                child_sigs.append(reg.run(cid, enriched, None))
+                child_weights.append(w)
+            except KeyError as e:  # 子策略被移除等竞态：剔除不崩（对齐 loader._run_composite）
+                logger.warning("composite %s 的子策略不可用，剔除：%s", strategy_id, e)
+        # 逐子策略 run（params 不传给子策略——loader._run_composite 同款约定，
+        # 子策略用各自 params_schema 默认值）
+        from app.strategy.composite import CompositeChildResult, merge_screen_results
 
-    # 最新交易日截面：entry=True 且通过 basic_filter 的标的入选
-    entry_row = signals.entry[last] & eligible
-    exit_row = signals.exit[last]
-    score_row = signals.score[last]
+        child_results = [
+            CompositeChildResult(
+                # 入选截面口径：当日 entry 或 exit 的标的都进合并（exit 标的
+                # 参与排名融合，其入选与否由 merge_mode/min_confirm 判定）
+                symbols={
+                    matrix.symbols[j]
+                    for j in range(n)
+                    if sig.entry[last, j] or sig.exit[last, j]
+                },
+                scores={
+                    matrix.symbols[j]: float(sig.score[last, j])
+                    for j in range(n)
+                    if np.isfinite(sig.score[last, j])
+                },
+            )
+            for sig in child_sigs
+        ]
+        fused = merge_screen_results(
+            child_results, child_weights,
+            strat.composite_merge_mode, strat.composite_min_confirm,
+        )
+        entry_row = np.array(
+            [matrix.symbols[j] in fused for j in range(n)], dtype=bool
+        ) & eligible
+        exit_row = np.array(
+            [any(sig.exit[last, j] for sig in child_sigs) for j in range(n)], dtype=bool
+        )
+        score_row = np.array(
+            [fused.get(matrix.symbols[j], np.nan) for j in range(n)], dtype=float
+        )
+    else:
+        signals = reg.run(strategy_id, enriched, params)
+        # 最新交易日截面：entry=True 且通过 basic_filter 的标的入选
+        entry_row = signals.entry[last] & eligible
+        exit_row = signals.exit[last]
+        score_row = signals.score[last]
     as_of = matrix.dates[last]
 
     # 排序：score 降序（META.descending 默认 True），NaN 排最后（不丢弃）

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -51,11 +52,16 @@ def _write_meta(symbol: str, df: pl.DataFrame) -> None:
         "max_date": df["date"].max().isoformat() if not df.is_empty() else None,
         "rows": df.height,
     }
+    # 原子写：同目录 tmp + os.replace，防崩溃留半截 JSON（半截 meta 会被
+    # is_stale 判 stale 无限重拉，虽然可自愈但徒增回源）
+    meta_path = _meta_of(symbol)
+    tmp = meta_path.with_name(f"{meta_path.name}.tmp.{os.getpid()}")
     try:
-        _meta_of(symbol).write_text(
-            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-        )
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, meta_path)
     except OSError as e:
+        tmp.unlink(missing_ok=True)  # 失败不留残文件
         logger.warning("因子缓存 meta 写入失败（%s 将按 stale 重拉）：%s", symbol, e)
 
 
@@ -130,7 +136,15 @@ async def fetch(
         ).sort("date")
         path = _file_of(symbol)
         path.parent.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(path)
+        # 原子写：同目录 tmp + os.replace（与 data/store.save 同款语义），
+        # 防崩溃留半截 parquet / 并发写互相覆盖
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            df.write_parquet(tmp)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)  # 失败不留残文件
+            raise
         _write_meta(symbol, df)
         result[symbol] = df
     missing = set(symbols) - set(result)

@@ -184,7 +184,10 @@ async def _fetch_benchmark(
         return None
     # 按日期升序的收盘序列
     rows = sorted(data, key=lambda r: r["date"])
-    closes = [r["close"] for r in rows if r.get("close") is not None]
+    # close 为 None 的行连 date 一起剔除：单独过滤 closes 会让 zip/位置配对
+    # 在空洞处整体前移一天，静默错配基准净值
+    rows = [r for r in rows if r.get("close") is not None]
+    closes = [r["close"] for r in rows]
     if not closes:
         return None
     total_return = closes[-1] / closes[0] - 1.0 if closes[0] else 0.0
@@ -672,6 +675,7 @@ def run_backtest_full(
         cfg,
         names=names,
         adjusted_flags=adjusted_flags,
+        raw_close=matrix.close,  # 涨跌停判定用原始价（与 run_backtest 的 simulate 调用对齐）
         progress_cb=progress_cb,
         cancel_event=cancel_event,
     )
@@ -853,14 +857,21 @@ def validate_optimize_request(
 
     与 run_optimize/run_sensitivity/run_walkforward 入口校验同源：
     策略存在性/分钟频检查 → count_combinations（grid spec 全量校验 + 组合爆炸
-    预判，含未知参数/类型/范围）→ sensitivity 另要求 param_id 在 grid 中。
+    预判，含未知参数/类型/范围）→ GRID_MAX_COMBINATIONS 上限检查（与
+    expand_param_grid 同阈值，避免超限网格先跑分钟级全市场暖缓存才被 422）
+    → sensitivity 另要求 param_id 在 grid 中。
     只做校验不返回内容；非法输入抛 KeyError（策略不存在）或 ValueError。
     """
     from app.engine import optimizer
 
     _check_minute_strategy(registry, strategy_id)
     params_meta = _params_meta(registry, strategy_id)
-    optimizer.count_combinations(params_meta, param_grid)
+    total = optimizer.count_combinations(params_meta, param_grid)
+    if total > optimizer.GRID_MAX_COMBINATIONS:
+        raise ValueError(
+            f"参数组合数 {total} 超过上限 {optimizer.GRID_MAX_COMBINATIONS}，"
+            "请增大 step 或缩小范围"
+        )
     if param_id is not None and param_id not in param_grid:
         raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
 
