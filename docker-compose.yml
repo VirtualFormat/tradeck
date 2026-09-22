@@ -74,7 +74,8 @@ services:
   quant:
     image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-quant:latest
     container_name: tradeck-quant
-    mem_limit: 1g
+    # 全市场矩阵（~5500 只全历史）峰值内存会顶到 1g 被 OOM 杀（2026-09-22 事故），放宽到 2g
+    mem_limit: 2g
     environment:
       # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
       # tradb 独立部署：quant 与 tradb 同处 tradb_default 外部网络（见底部 networks），
@@ -90,7 +91,6 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
-      AI_TEMPERATURE: ${AI_TEMPERATURE:-}
     volumes:
       - ./quant/cache:/data/cache
     ports:
@@ -121,13 +121,16 @@ services:
       # standalone server.js 默认绑 $HOSTNAME，多网络容器下容器 ID 可能解析到
       # 非默认网络的 IP，导致宿主机 docker-proxy 端口映射 reset（2026-09-12 实测）。
       - HOSTNAME=0.0.0.0
-      # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
+      # 手动同步/任务状态转发目标（tradb collector 是唯一写者，持有 scheduler/registry；
+      # data-api 不暴露 /api/system/jobs，web 必须直连 collector）
       - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
       # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
       - TRADB_SERVICE_TOKEN=${TRADB_SERVICE_TOKEN:-}
       - TRADB_SERVICE_NAME=web-bff
       # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
       - QUANT_API_URL=http://quant:8083
+      # 手动同步/任务状态转发目标（collector 是唯一写者，持有 scheduler/registry）
+      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
       - NODE_ENV=production
     # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
     networks:
