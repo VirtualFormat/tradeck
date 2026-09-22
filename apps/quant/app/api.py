@@ -360,12 +360,12 @@ def api_backtest_task_cancel(
 class AIGenerateRequest(BaseModel):
     description: str = Field(min_length=4, max_length=2000)
     # 可选：基于现有策略代码做调整（AI 工作台「选中/导入 → LLM 调整」模式）
-    base_code: str | None = Field(default=None, max_length=50_000)
+    base_code: str | None = Field(default=None, max_length=10_000_000)
 
 
 class AITweakRequest(BaseModel):
     """AI 调整请求：以 code 为底稿，按 description 让 LLM 改写。"""
-    code: str = Field(min_length=20, max_length=50_000)
+    code: str = Field(min_length=20, max_length=10_000_000)
     description: str = Field(min_length=4, max_length=2000)
 
 
@@ -457,7 +457,7 @@ def api_ai_task_cancel(task_id: str) -> dict:
 
 
 class AISaveRequest(BaseModel):
-    code: str = Field(min_length=20, max_length=50_000)
+    code: str = Field(min_length=20, max_length=10_000_000)
 
 
 @app.post("/api/ai/save")
@@ -563,7 +563,7 @@ def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None
 
 
 class StrategySaveRequest(BaseModel):
-    code: str = Field(min_length=20, max_length=50_000)
+    code: str = Field(min_length=20, max_length=10_000_000)
     # 可选：声明本次保存是覆盖/重命名哪个已有策略（AI 工作台编辑保存路径）
     overwrite_id: str | None = Field(default=None, max_length=64)
 

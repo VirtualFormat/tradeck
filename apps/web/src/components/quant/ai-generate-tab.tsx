@@ -22,6 +22,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
+import { CodeEditor } from "@/components/quant/code-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,7 +78,7 @@ const MODE_OPTIONS: { value: Mode; label: string }[] = [
 const POLL_INTERVAL_MS = 2000;
 const POLL_RETRY_WARN = 3;
 const POLL_RETRY_GIVEUP = 90;
-const MAX_IMPORT_BYTES = 50_000;
+const MAX_IMPORT_BYTES = 10_000_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -171,7 +172,9 @@ export function AIGenerateTab({
   async function importFile(file: File) {
     resetOutput();
     if (file.size > MAX_IMPORT_BYTES) {
-      setError(`文件过大（${(file.size / 1024).toFixed(1)} KB），上限 50 KB`);
+      setError(
+        `文件过大（${(file.size / 1024 / 1024).toFixed(1)} MB），上限 10 MB`
+      );
       return;
     }
     try {
@@ -570,17 +573,14 @@ export function AIGenerateTab({
               ))}
             </div>
           ) : hasCode ? (
-            <Textarea
-              aria-label="策略代码编辑器"
-              className="h-[520px] resize-none rounded-lg border bg-muted/30 p-4 font-mono text-xs leading-relaxed"
+            <CodeEditor
               value={code}
-              onChange={(e) => {
-                setCode(e.target.value);
+              onChange={(v) => {
+                setCode(v);
                 setDirty(true);
                 setSavedId(null);
               }}
-              disabled={busy}
-              spellCheck={false}
+              readOnly={busy}
             />
           ) : (
             <EmptyState
