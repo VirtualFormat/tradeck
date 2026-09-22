@@ -73,6 +73,28 @@ def _registry(user_id: str) -> StrategyRegistry:
     return StrategyRegistry(user_strategy_dirs(user_id))
 
 
+async def _warm_factor_cache(symbols: list[str]) -> None:
+    """复权因子预拉：worker 子进程只读本地因子缓存（factors.load 纯文件读），
+    缺失标的必须在主进程回源落盘；失败只记日志（缺因子标的按原始价口径跑，
+    结果里以 unadjusted 显式标注，与既有降级语义一致）。
+    """
+    from app.data import factors
+
+    missing = [s for s in symbols if factors.load(s).is_empty()]
+    if not missing:
+        return
+    try:
+        got = await factors.fetch(missing)
+        logger.info(
+            "因子缓存预拉：%d 只缺失，补到 %d 只（%d 只无因子按无复权降级）",
+            len(missing),
+            len(got),
+            len(missing) - len(got),
+        )
+    except Exception as e:  # noqa: BLE001 - 预拉失败不阻塞回测（降级口径一致）
+        logger.warning("因子缓存预拉失败（%d 只按无复权降级）：%s", len(missing), e)
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -211,6 +233,9 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     # 否则缓存目录为空时子进程回测全员全 NaN 零成交；失败降级不阻塞。
     from app.matrix import build_async
     await build_async(symbols, req.start, end)
+    # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
+    # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
+    await _warm_factor_cache(symbols)
     benchmark = await _fetch_benchmark(symbols, req.start, end)
     names = await _fetch_names(symbols)
     try:
@@ -306,6 +331,10 @@ async def api_backtest_run(req: BacktestRequest,
     # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
     from app.matrix import build_async
     await build_async(symbols, req.start, end)
+    # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
+    # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
+    # 失败降级不阻塞登记（缺因子标的按原始价跑并在结果标注 unadjusted）。
+    await _warm_factor_cache(symbols)
     benchmark = await _fetch_benchmark(symbols, req.start, end)
     names = await _fetch_names(symbols)
     # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
@@ -972,6 +1001,9 @@ async def _run_optimize_route(
     # 否则缓存目录为空时全部组合零成交；补拉失败降级不阻塞（runner 层照常跑）。
     from app.matrix import build_async
     await build_async(symbols, req.start, req.end)
+    # 复权因子预拉：优化系路由同样走 worker 子进程（只读本地因子缓存），
+    # 缺失因子需在主进程落盘，否则全市场优化大面积无复权。
+    await _warm_factor_cache(symbols)
     runner_fn = getattr(quant_runner, runner_fn_name)
     try:
         return await runner_fn(
