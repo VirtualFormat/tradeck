@@ -1,18 +1,22 @@
 """universe 解析 + screen(symbols=None) 集成路径的回归测试。
 
 覆盖点：
-- resolve_universe：显式 symbols 优先 / 各档位展开 / 未知档位报错
+- resolve_universe：显式 symbols 优先 / 各档位展开 / 未知档位报错；
+  cn 档位从 data-api /api/universe 拉全市场清单（mock get_json），
+  源不可达时回退 tracked 子集
 - screen(symbols=None)：走 resolve_universe 展开（tracked 全集），不触网
   （mock build 返回合成矩阵 + 桩 registry 返回合成信号）。
 """
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import date, timedelta
 from unittest import mock
 
 import numpy as np
 
+import app.universe as universe_mod
 from app.jobs import DEFAULT_SIGNAL_UNIVERSE
 from app.matrix import MarketMatrix
 from app.screener.executor import screen
@@ -20,6 +24,22 @@ from app.universe import resolve_universe
 
 _CN_SUFFIXES = (".SH", ".SS", ".SZ", ".BJ")
 _D0 = date(2026, 1, 5)
+
+
+def _resolve(symbols, tier):
+    """同步包装 async resolve_universe（unittest 不引 IsolatedAsyncioTestCase）。"""
+    return asyncio.run(resolve_universe(symbols, tier))
+
+
+def _fake_market_symbols(market: str) -> dict:
+    """模拟 /api/universe 响应：只造 CN 全市场，美港返回空（走回退）。"""
+    if market == "CN":
+        return {"symbols": ["600519.SH", "000001.SZ", "300750.SZ"], "count": 3}
+    return {"symbols": [], "count": 0}
+
+
+async def _async_return(value):
+    return value
 
 
 def _fake_matrix(symbols: list[str], n: int = 70) -> MarketMatrix:
@@ -67,40 +87,73 @@ class _FakeRegistry:
 
 
 class TestResolveUniverse(unittest.TestCase):
+    def setUp(self):
+        # 每个用例清空清单缓存，避免跨用例污染
+        universe_mod._universe_cache.clear()
+
     def test_explicit_symbols_returned_as_is(self):
         symbols = ["AAPL", "600519.SH"]
         # 显式 symbols 优先：即使带 universe 参数也忽略
-        self.assertEqual(resolve_universe(symbols, None), symbols)
-        self.assertEqual(resolve_universe(symbols, "cn"), symbols)
+        self.assertEqual(_resolve(symbols, None), symbols)
+        self.assertEqual(_resolve(symbols, "cn"), symbols)
 
     def test_default_tier_returns_full_tracked(self):
-        got = resolve_universe(None, None)
+        got = _resolve(None, None)
         self.assertEqual(got, DEFAULT_SIGNAL_UNIVERSE)
         self.assertIsNot(got, DEFAULT_SIGNAL_UNIVERSE)  # 副本，防外部改坏源列表
 
-    def test_cn_tier_only_cn_suffixes(self):
-        got = resolve_universe(None, "cn")
+    def test_cn_tier_fetches_market_universe(self):
+        """cn 档位：调 data-api /api/universe 拉全市场清单（含 TTL 缓存）。"""
+        with mock.patch.object(
+            universe_mod,
+            "_fetch_market_symbols",
+            side_effect=lambda m: _async_return(_fake_market_symbols(m)["symbols"]),
+        ) as fetch:
+            got = _resolve(None, "cn")
+            self.assertEqual(got, ["600519.SH", "000001.SZ", "300750.SZ"])
+            # 第二次命中缓存，不再调 data-api
+            got2 = _resolve(None, "cn")
+            self.assertEqual(got2, got)
+            self.assertEqual(fetch.call_count, 1)
+
+    def test_cn_tier_fallback_to_tracked_subset(self):
+        """cn 档位：data-api 不可达/为空时回退 tracked 的 cn 子集。"""
+        with mock.patch.object(
+            universe_mod, "_fetch_market_symbols", return_value=[]
+        ):
+            got = _resolve(None, "cn")
         self.assertTrue(got)
         self.assertTrue(all(s.endswith(_CN_SUFFIXES) for s in got))
 
     def test_hk_tier_only_hk_suffix(self):
-        got = resolve_universe(None, "hk")
+        got = _resolve(None, "hk")
         self.assertTrue(got)
         self.assertTrue(all(s.endswith(".HK") for s in got))
 
     def test_us_tier_has_no_suffix(self):
-        got = resolve_universe(None, "us")
+        got = _resolve(None, "us")
         self.assertTrue(got)
         self.assertTrue(
             all(not s.endswith(_CN_SUFFIXES) and not s.endswith(".HK") for s in got)
         )
 
-    def test_all_tier_equals_tracked(self):
-        self.assertEqual(resolve_universe(None, "all"), DEFAULT_SIGNAL_UNIVERSE)
+    def test_all_tier_cn_market_plus_tracked_rest(self):
+        """all 档位：cn 全市场 + tracked 的美港部分。"""
+        with mock.patch.object(
+            universe_mod,
+            "_fetch_market_symbols",
+            side_effect=lambda m: _async_return(_fake_market_symbols(m)["symbols"]),
+        ):
+            got = _resolve(None, "all")
+        self.assertEqual(got[:3], ["600519.SH", "000001.SZ", "300750.SZ"])
+        rest = got[3:]
+        self.assertEqual(
+            rest, [s for s in DEFAULT_SIGNAL_UNIVERSE if not s.endswith(_CN_SUFFIXES)]
+        )
 
     def test_unknown_tier_raises(self):
         with self.assertRaises(ValueError):
-            resolve_universe(None, "unknown")
+            _resolve(None, "unknown")
 
 
 class TestScreenWithUniverse(unittest.TestCase):

@@ -34,10 +34,8 @@ import type { ParamGridRange, StrategyDef } from "./types";
 /** 标的池 universe 选项（与回测页签一致） */
 export const UNIVERSE_OPTIONS = [
   { value: "tracked", label: "tracked 100 只（默认）" },
-  { value: "cn", label: "A 股" },
-  { value: "us", label: "美股" },
-  { value: "hk", label: "港股" },
-  { value: "all", label: "全部" },
+  { value: "cn", label: "A 股全市场" },
+  { value: "all", label: "全部（A 股全市场 + tracked 美港）" },
 ] as const;
 export type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 

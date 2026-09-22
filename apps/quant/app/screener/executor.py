@@ -22,7 +22,6 @@ from app.engine import forward_adjust
 from app.matrix import build, enrich
 from app.runner import _default_strategy_dirs
 from app.strategy import StrategyRegistry
-from app.universe import resolve_universe
 
 logger = logging.getLogger(__name__)
 
@@ -96,15 +95,20 @@ def screen(
 ) -> ScreenResult:
     """在给定标的池上执行策略选股，返回最新交易日截面结果。
 
-    symbols 为空时按默认 universe 档位（tracked）展开 —— 本函数不感知具体档位，
-    由调用方（API 层）解析好经 resolve_universe 传入或直接传 symbols。
+    symbols 为空时按默认 universe 档位（tracked，纯本地不触网）展开 ——
+    本函数不感知具体档位，由调用方（API 层）解析好经 resolve_universe
+    传入或直接传 symbols。
 
     与 runner.run_backtest 共用同一条数据管线，保证选股/回测信号口径一致。
     """
     reg = registry or StrategyRegistry(_default_strategy_dirs())
     strat = reg.get(strategy_id)  # 先取定义，策略不存在时尽早报错（不白跑矩阵）
 
-    symbols = resolve_universe(symbols, None)
+    if not symbols:
+        # 默认 tracked 档位是同步快路径（不调 data-api），直接取，不走 async 展开
+        from app.jobs import DEFAULT_SIGNAL_UNIVERSE
+
+        symbols = list(DEFAULT_SIGNAL_UNIVERSE)
     if not symbols:
         logger.warning("universe 展开为空，返回空结果")
         return ScreenResult(

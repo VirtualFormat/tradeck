@@ -1,7 +1,9 @@
-"""GET /api/instruments — 证券主数据批量查询（instrument_master）。
+"""证券主数据接口（instrument_master）。
 
-供 quant 等消费方批量取证券简称（ST 判定用中文名）等主数据；
-quote_snapshots 只覆盖 tracked 报价池，instrument_master 覆盖全市场。
+- GET /api/instruments：批量取证券简称（ST 判定用中文名）等主数据；
+  quote_snapshots 只覆盖 tracked 报价池，instrument_master 覆盖全市场。
+- GET /api/universe：全市场标的清单（universe 档位展开用，如 quant 的
+  universe=cn 回测 A 股全市场）。
 """
 from __future__ import annotations
 
@@ -18,6 +20,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 Symbol = Annotated[str, Field(pattern=r"^[A-Z0-9.\-]{1,20}$")]
+
+
+@router.get("/api/universe")
+async def get_universe(
+    market: Annotated[str, Query(pattern="^(CN|US|HK)$")],
+    identity: ServiceIdentity = Depends(read_access),
+):
+    """全市场标的清单：instrument_master 按 asset='stock' + market 过滤。
+
+    优雅降级：DB 异常记日志返回空 symbols，不 500（quant 侧回退 tracked 子集）。
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT symbol
+                FROM instrument_master
+                WHERE asset = 'stock' AND market = $1
+                ORDER BY symbol
+                """,
+                market,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("/api/universe 查询失败（market=%s）", market)
+        return {"symbols": [], "count": 0, "market": market}
+    symbols = [r["symbol"] for r in rows]
+    return {"symbols": symbols, "count": len(symbols), "market": market}
 
 
 @router.get("/api/instruments")

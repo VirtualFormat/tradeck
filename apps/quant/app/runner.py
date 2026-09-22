@@ -216,14 +216,18 @@ async def _fetch_names(symbols: list[str]) -> dict[str, str]:
     # 兜底：quote_snapshots 未覆盖的标的（非 tracked，如 ST 股）从 instrument_master 取
     missing = [s for s in symbols if s not in names]
     if missing:
-        # /api/instruments 用 FastAPI list 查询参数（重复 symbols 键，非逗号分隔）
-        inst = await client.get_json(
-            "/api/instruments", [("symbols", s) for s in missing]
-        )
-        rows = inst.get("instruments", []) if isinstance(inst, dict) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("symbol") and row.get("name"):
-                names.setdefault(row["symbol"], row["name"])
+        # /api/instruments 单请求上限 500（Query max_length）：全市场回测 missing
+        # 可达数千只，必须分批，否则 422 整体落空、ST 判定静默失效
+        for i in range(0, len(missing), 500):
+            chunk = missing[i : i + 500]
+            # FastAPI list 查询参数（重复 symbols 键，非逗号分隔）
+            inst = await client.get_json(
+                "/api/instruments", [("symbols", s) for s in chunk]
+            )
+            rows = inst.get("instruments", []) if isinstance(inst, dict) else []
+            for row in rows:
+                if isinstance(row, dict) and row.get("symbol") and row.get("name"):
+                    names.setdefault(row["symbol"], row["name"])
     return names
 
 

@@ -144,7 +144,7 @@ async def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)
     from app.universe import resolve_universe
     reg = _registry(user_id)
     try:
-        symbols = resolve_universe(req.symbols, req.universe)
+        symbols = await resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     from datetime import timedelta
@@ -193,7 +193,7 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     if req.strategy_id not in {s.strategy_id for s in reg.all()}:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
     try:
-        symbols = resolve_universe(req.symbols, req.universe)
+        symbols = await resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     cfg = MatcherConfig(
@@ -289,7 +289,7 @@ async def api_backtest_run(req: BacktestRequest,
     if req.strategy_id not in {s.strategy_id for s in reg.all()}:
         raise HTTPException(status_code=404, detail=f"策略不存在 {req.strategy_id!r}")
     try:
-        symbols = resolve_universe(req.symbols, req.universe)
+        symbols = await resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     cfg = MatcherConfig(
@@ -607,17 +607,27 @@ class MiningRequest(_SymbolRequest):
 
 
 @app.post("/api/mining/run")
-def api_mining_run(req: MiningRequest, user_id: str = Depends(current_user_id)) -> dict:
+async def api_mining_run(req: MiningRequest, user_id: str = Depends(current_user_id)) -> dict:
     """跑因子挖掘：返回因子 IC + 候选（不入库，入库由前端确认后调 candidates/save）。"""
     from datetime import timedelta
-    from app.matrix import build, enrich
     from app.universe import resolve_universe
     end = req.end or date.today()
     start = req.start or (end - timedelta(days=250))
     try:
-        symbols = resolve_universe(req.symbols, req.universe)
+        symbols = await resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    # build/run_mining 是纯 CPU 同步段：全市场矩阵构建分钟级，直接 await 会
+    # 卡死事件循环（健康检查一起挂），必须甩到线程池
+    return await asyncio.to_thread(_mining_sync, symbols, start, end, req, user_id)
+
+
+def _mining_sync(
+    symbols: list[str], start: date, end: date, req: MiningRequest, user_id: str
+) -> dict:
+    """mining 同步段（build → enrich → run_mining），由 api_mining_run 经 to_thread 调用。"""
+    from app.matrix import build, enrich
+
     matrix = build(symbols, start, end)
     if not matrix.dates:
         return {"candidates": [], "factor_ics": {}, "kept_factors": [], "error": "无缓存数据"}
@@ -943,7 +953,7 @@ async def _run_optimize_route(
 
     _validate_objective(req.objective)
     try:
-        symbols = resolve_universe(req.symbols, req.universe)
+        symbols = await resolve_universe(req.symbols, req.universe)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     # 前置校验（同步、无网络）：grid 非法/组合爆炸/分钟频策略等尽早 4xx，
