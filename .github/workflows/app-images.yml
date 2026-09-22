@@ -130,8 +130,11 @@ jobs:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"
 
-  # 把 GHCR 已合成的 manifest 原样复制到腾讯云 TCR 个人版（不重 build，纯镜像搬家）。
+  # 把 GHCR 的 amd64 镜像复制到腾讯云 TCR 个人版（不重 build，纯镜像搬家）。
   # TCR 个人版免费额度 10 个仓库 / 500GB，够本仓库 3 个镜像用。
+  # 只同步 linux/amd64 单架构：prod VPS 为 x86，无需 arm64；
+  # 且 imagetools 复制多架构 manifest 时是并发 blob 流，TCR 网关会断流
+  # （PROTOCOL_ERROR），单架构 digest 复制是单流，避开该问题。
   sync-tcr:
     needs: merge
     runs-on: ubuntu-24.04
@@ -145,6 +148,13 @@ jobs:
       matrix:
         image: [tradeck-web, tradeck-api, tradeck-quant]
     steps:
+      # 只取 amd64 的 digest（artifact 名后缀架构名在末尾，见 build job 注释）
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-amd64-${{ matrix.image }}
+          path: /tmp/digests
+          merge-multiple: true
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -168,17 +178,20 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
 
-      # 用 imagetools create 从 GHCR digest 直接生成 TCR manifest list，
-      # 源/目标都是 manifest，架构与 GHCR 完全一致，不重新编译。
-      - name: Mirror GHCR manifest to TCR
+      # imagetools create 直接引用 GHCR 的 amd64 digest（server-side 复制，不重新编译）。
+      - name: Mirror GHCR amd64 image to TCR
+        working-directory: /tmp/digests
         env:
           SRC: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
           DST: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ matrix.image }}
         run: |
           set -euo pipefail
+          # /tmp/digests 下只有一个文件：amd64 镜像 digest（不含 sha256: 前缀）
+          digest=$(ls)
+          echo "amd64 digest: ${digest}"
           for tag in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
             # tag 形如 ccr.ccs.tencentyun.com/tradeck/tradeck-web:1.2.3，取冒号后
             short="${tag##*:}"
-            echo "sync ${SRC}:${short} -> ${DST}:${short}"
-            docker buildx imagetools create -t "${DST}:${short}" "${SRC}:${short}"
+            echo "sync ${SRC}@sha256:${digest} -> ${DST}:${short}"
+            docker buildx imagetools create -t "${DST}:${short}" "${SRC}@sha256:${digest}"
           done
