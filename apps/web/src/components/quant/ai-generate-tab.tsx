@@ -22,7 +22,6 @@ import {
 } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
-import { CodeEditor } from "@/components/quant/code-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -573,14 +572,17 @@ export function AIGenerateTab({
               ))}
             </div>
           ) : hasCode ? (
-            <CodeEditor
+            <Textarea
+              aria-label="策略代码编辑器"
+              className="h-[520px] resize-none rounded-lg border bg-muted/30 p-4 font-mono text-xs leading-relaxed"
               value={code}
-              onChange={(v) => {
-                setCode(v);
+              onChange={(e) => {
+                setCode(e.target.value);
                 setDirty(true);
                 setSavedId(null);
               }}
-              readOnly={busy}
+              disabled={busy}
+              spellCheck={false}
             />
           ) : (
             <EmptyState
