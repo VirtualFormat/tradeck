@@ -32,7 +32,7 @@ from app.runner import (
 )
 from app.screener import screen
 from app.strategy import StrategyRegistry
-from app.tasks import UnknownTaskError, get_registry as get_task_registry
+from app.tasks import RegistryFullError, UnknownTaskError, get_registry as get_task_registry
 from app.worker import (
     BacktestCancelledError,
     BacktestWorkerError,
@@ -77,22 +77,27 @@ async def _warm_factor_cache(symbols: list[str]) -> None:
     """复权因子预拉：worker 子进程只读本地因子缓存（factors.load 纯文件读），
     缺失标的必须在主进程回源落盘；失败只记日志（缺因子标的按原始价口径跑，
     结果里以 unadjusted 显式标注，与既有降级语义一致）。
+
+    缺失判定带新鲜度：qfq 锚定最新交易日，标的除权后服务端因子全表重建，
+    本地旧缓存不刷新会让旧锚因子拼新原始价、除权日前后凭空跳空。stale 判定
+    只读 meta sidecar 小文件（is_stale），不读 parquet 全表；meta 缺失的旧缓存
+    一律视为 stale，重拉一次后自动补齐 meta。
     """
     from app.data import factors
 
-    missing = [s for s in symbols if factors.load(s).is_empty()]
-    if not missing:
+    stale = [s for s in symbols if factors.is_stale(s)]
+    if not stale:
         return
     try:
-        got = await factors.fetch(missing)
+        got = await factors.fetch(stale)
         logger.info(
-            "因子缓存预拉：%d 只缺失，补到 %d 只（%d 只无因子按无复权降级）",
-            len(missing),
+            "因子缓存预拉：%d 只缺失或过期，补到 %d 只（%d 只无因子按无复权降级）",
+            len(stale),
             len(got),
-            len(missing) - len(got),
+            len(stale) - len(got),
         )
     except Exception as e:  # noqa: BLE001 - 预拉失败不阻塞回测（降级口径一致）
-        logger.warning("因子缓存预拉失败（%d 只按无复权降级）：%s", len(missing), e)
+        logger.warning("因子缓存预拉失败（%d 只按无复权降级）：%s", len(stale), e)
 
 
 @app.get("/health")
@@ -327,6 +332,14 @@ async def api_backtest_run(req: BacktestRequest,
         exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
+    # 容量预检必须在预拉暖缓存之前：注册表满时直接 429，
+    # 避免超限请求白跑分钟级预拉（build_async/因子/分钟K 都是重活）。
+    registry = get_task_registry()
+    if not registry.has_capacity():
+        raise HTTPException(
+            status_code=429,
+            detail="回测任务队列已满（pending+running 达上限），请稍后重试或取消在途任务",
+        )
     # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
     # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
     from app.matrix import build_async
@@ -349,8 +362,11 @@ async def api_backtest_run(req: BacktestRequest,
         except Exception as e:
             logger.warning("任务化回测分钟K 预拉失败，分钟口径降级日K：%s", e)
 
-    registry = get_task_registry()
-    task = registry.create()
+    # 兜底：预拉期间容量可能被并发请求占满，create 拒绝同样转 429
+    try:
+        task = registry.create()
+    except RegistryFullError as e:
+        raise HTTPException(status_code=429, detail=f"回测任务队列已满：{e}")
     asyncio.create_task(
         _run_backtest_task(
             task.task_id, symbols, req.strategy_id, req.start, end,
@@ -446,7 +462,10 @@ async def api_ai_generate(req: AIGenerateRequest):
     from app.ai.generator import AIStrategyGenerator
     if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
-    task = get_task_registry().create()
+    try:
+        task = get_task_registry().create()
+    except RegistryFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.base_code))
     return {"task_id": task.task_id}
 
@@ -461,7 +480,10 @@ async def api_ai_tweak(req: AITweakRequest):
     from app.ai.generator import AIStrategyGenerator
     if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
-    task = get_task_registry().create()
+    try:
+        task = get_task_registry().create()
+    except RegistryFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.code))
     return {"task_id": task.task_id}
 

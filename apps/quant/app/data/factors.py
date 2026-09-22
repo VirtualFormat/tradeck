@@ -10,6 +10,7 @@ _factor_series 把因子对齐交易日轴后 factor[T_last]=1，engine 再除�
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
@@ -30,6 +31,55 @@ _DEFAULT_START = date(1980, 1, 1)
 
 def _file_of(symbol: str) -> Path:
     return Path(settings.QUANT_CACHE_DIR) / "factors" / f"symbol={symbol}.parquet"
+
+
+def _meta_of(symbol: str) -> Path:
+    """因子缓存的元数据 sidecar 路径（与 parquet 同目录，记录新鲜度信息）。"""
+    return Path(settings.QUANT_CACHE_DIR) / "factors" / f"symbol={symbol}.meta.json"
+
+
+def _write_meta(symbol: str, df: pl.DataFrame) -> None:
+    """写缓存 meta sidecar：fetched_at（落盘当日）+ 因子最大日期 + 行数。
+
+    qfq 锚定「最新交易日」，标的除权后服务端因子全表重建、历史 qfq 整体平移；
+    meta 是缓存新鲜度的唯一判据，is_stale 据此决定是否需要重拉。
+    meta 写失败只记日志（缺 meta 会被判 stale 触发重拉，不影响本次结果）。
+    """
+    meta = {
+        "symbol": symbol,
+        "fetched_at": date.today().isoformat(),
+        "max_date": df["date"].max().isoformat() if not df.is_empty() else None,
+        "rows": df.height,
+    }
+    try:
+        _meta_of(symbol).write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError as e:
+        logger.warning("因子缓存 meta 写入失败（%s 将按 stale 重拉）：%s", symbol, e)
+
+
+def is_stale(symbol: str, max_age_days: int = 1) -> bool:
+    """判定因子缓存是否过期（需要重拉）。
+
+    以下任一成立即 stale：
+    - 缓存 parquet 与 meta 都不存在（从未拉过）；
+    - meta sidecar 缺失或损坏（旧缓存兼容：一律视为 stale，触发一次重拉）；
+    - meta.fetched_at 距今天超过 max_age_days 天。
+    meta 存在且新鲜但 parquet 缺席 = 近期已确认「无因子记录」，不算 stale
+    （避免无因子标的每次回测重复回源不收敛）。
+    只读 meta 小文件，不读 parquet 全表。
+    """
+    meta_path = _meta_of(symbol)
+    if not meta_path.exists():
+        return True
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        fetched_at = date.fromisoformat(meta["fetched_at"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.warning("因子缓存 meta 损坏，按 stale 处理（%s）：%s", meta_path, e)
+        return True
+    return (date.today() - fetched_at).days > max_age_days
 
 
 def load(symbol: str) -> pl.DataFrame:
@@ -81,9 +131,14 @@ async def fetch(
         path = _file_of(symbol)
         path.parent.mkdir(parents=True, exist_ok=True)
         df.write_parquet(path)
+        _write_meta(symbol, df)
         result[symbol] = df
     missing = set(symbols) - set(result)
     if missing:
         logger.info("复权因子缺失 %d 只（无因子记录或非 CN 市场），按无复权降级：%s",
                     len(missing), sorted(missing)[:5])
+        # 无因子标的也落 meta（rows=0）：meta 新鲜即不判 stale（见 is_stale 判据），
+        # 否则同一批无因子标的每次回测都重复回源不收敛。
+        for symbol in missing:
+            _write_meta(symbol, pl.DataFrame(schema=_SCHEMA))
     return result

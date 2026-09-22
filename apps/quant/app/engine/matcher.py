@@ -198,6 +198,7 @@ def simulate(
     entry_refs: dict[str, np.ndarray] | None = None,
     exit_refs: dict[str, np.ndarray] | None = None,
     minute_loader: MinuteLoader | None = None,
+    raw_close: np.ndarray | None = None,
     progress_cb=None,
     progress_every: int = 1,
 ) -> SimResult:
@@ -210,6 +211,10 @@ def simulate(
     minute_loader：(symbol, date) → 当日分钟K float64 2D 数组或 None；
     仅分钟口径（minute_fill 或 exit_fill="signal_next_minute"）启用时按需调用，
     返回 None 自动降级日K 口径并计入 fallback 统计。
+    raw_close：原始价 close 矩阵（与 matrix.close 同形），仅供涨跌停判定使用
+    ——matrix 为前复权价时，复权矩阵在除权日前后被整体比例缩放，涨跌停价必须
+    基于真实市价（原始价）判定，否则跨除权日后一字涨停漏判/非一字误拦。
+    None 时回退用 matrix.close（向后兼容；调用方若传的本就是原始矩阵则无损）。
     names：symbol → 证券简称（键用 symbol 原样查找）。缺省 None 或缺失标的时
     按无名称降级——即一律按非 ST 分档（宁少拦 ST 不臆造），与历史行为兼容。
     progress_cb：可选逐日进度回调，每 progress_every 天回调一次
@@ -368,7 +373,10 @@ def simulate(
         """CN 涨跌停不可成交：buy 遇涨停不开仓，sell 遇跌停不平仓。"""
         if not config.price_limit or not _is_cn(symbols[j]) or i == 0:
             return False
-        pc, c = close[i - 1, j], close[i, j]
+        # 涨跌停基准必须取原始价（真实市价）：matrix 传入前复权价时，
+        # 除权日前后整体被静态比例缩放，复权 close 算出的涨跌停价会失真。
+        lim_close = raw_close if raw_close is not None else close
+        pc, c = lim_close[i - 1, j], lim_close[i, j]
         if np.isnan(pc) or np.isnan(c):
             return False
         lo, hi = _cn_limit_prices(pc, symbols[j], dates[i], names.get(symbols[j], ""))

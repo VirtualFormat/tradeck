@@ -490,6 +490,8 @@ def run_backtest(
             if exit_refs is not None else None
         ),
         minute_loader=minute_loader,
+        # 涨跌停判定须用原始价（真实市价）：复权矩阵跨除权日失真，会漏判一字涨停。
+        raw_close=matrix.close,
         progress_cb=progress_cb,
         progress_every=progress_every,
     )

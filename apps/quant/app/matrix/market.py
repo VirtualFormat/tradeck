@@ -11,13 +11,17 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 
+from app.config import settings
 from app.data import store
 
 logger = logging.getLogger(__name__)
@@ -112,6 +116,48 @@ def build(symbols: list[str], start: date, end: date) -> MarketMatrix:
     return MarketMatrix(dates=dates, symbols=syms, **fields)
 
 
+def _checked_file(symbol: str) -> Path:
+    """停牌水位标记文件路径（与 parquet 缓存同目录的 sidecar）。"""
+    return store._file_of(symbol).parent / f"symbol={symbol}.checked.json"
+
+
+def _read_checked(symbol: str) -> dict | None:
+    """读水位标记；不存在或损坏返回 None（按未检查过处理，正常补拉）。"""
+    path = _checked_file(symbol)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            "last_checked_date": date.fromisoformat(data["last_checked_date"]),
+            "requested_start": date.fromisoformat(data["requested_start"]),
+            "requested_end": date.fromisoformat(data["requested_end"]),
+        }
+    except Exception as e:  # 损坏当未检查过：正常补拉并重建标记
+        logger.warning("水位标记读取失败，按未检查处理（%s）：%s", path, e)
+        return None
+
+
+def _write_checked(symbol: str, start: date, end: date) -> None:
+    """写水位标记：tmp + rename 原子落盘（与缓存写入同风格，防半写文件）。
+
+    语义：last_checked_date 表示「该标的在 [requested_start, last_checked_date]
+    内已确认无任何数据」，覆盖判定据此跳过重复补拉。
+    """
+    path = _checked_file(symbol)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_checked_date": end.isoformat(),
+        "requested_start": start.isoformat(),
+        "requested_end": end.isoformat(),
+    }
+    # tmp 文件名带 PID：并发 build_async 写同一标的时各写各的临时文件，
+    # rename 原子覆盖，不留半写文件（固定名 tmp 会被并发协程互相覆盖）
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
 async def build_async(
     symbols: list[str],
     start: date,
@@ -121,6 +167,9 @@ async def build_async(
 
     覆盖判定：区间内行数为 0 = 全缺；有数据但首尾日期盖不住 [start, end] = 部分缺
     （与 store.missing_ranges 同口径，区间内的停牌空洞不算缺）。
+    停牌水位：缓存仍缺但 sidecar 的 last_checked_date >= end，说明此前已确认到
+    end 为止无任何数据（长期停牌/退市尾部空洞），跳过补拉直接全 NaN 降级；
+    sidecar 的 last_checked_date < end 时正常补拉，补拉后按结果更新/清除标记。
     有缺失标的时，经 client.fetch_bars 一次性批量补拉
     （自带分片分窗），逐标的 store.merge + store.save 落缓存，之后重新走 build()。
     「跳过回源」的语义由同步 build() 承担（纯缓存读），本函数始终按需回源。
@@ -140,6 +189,7 @@ async def build_async(
 
     cached: dict[str, pl.DataFrame] = {}
     missing: list[str] = []
+    stale_checked = 0
     for s in syms:
         df = store.load(s)
         if not df.is_empty():
@@ -150,6 +200,15 @@ async def build_async(
             or df["date"].min() > start
             or df["date"].max() < end
         ):
+            # 水位命中（此前已确认到 end 无数据）则跳过补拉；
+            # 缓存有数据的标的顺手清掉过期的历史标记（数据本身即覆盖证明）
+            marker = _read_checked(s)
+            if marker is not None:
+                if df.is_empty() and marker["last_checked_date"] >= end:
+                    stale_checked += 1
+                    continue
+                if not df.is_empty():
+                    _checked_file(s).unlink(missing_ok=True)
             missing.append(s)
 
     if not missing:
@@ -170,13 +229,17 @@ async def build_async(
     filled = 0
     for s in missing:
         if not by_symbol[s]:
+            # 补拉仍无数据：落水位标记，下次同区间回测不再重复回源
+            _write_checked(s, start, end)
             continue  # 该标的区间内无数据（停牌/退市/上游缺数），保留全 NaN 列
         store.save(s, store.merge(store.load(s), store.bars_to_frame(by_symbol[s])))
+        # 补到数据即证明有覆盖，清除可能残留的历史水位标记
+        _checked_file(s).unlink(missing_ok=True)
         filled += 1
 
     failed = len(missing) - filled
     logger.info(
-        "build_async：%d 只命中缓存，%d 只回源补拉（%d 只补拉无数据/失败）",
-        len(syms) - len(missing), len(missing), failed,
+        "build_async：%d 只命中缓存，%d 只水位跳过，%d 只回源补拉（%d 只补拉无数据/失败）",
+        len(syms) - len(missing) - stale_checked, stale_checked, len(missing), failed,
     )
     return build(symbols, start, end)
