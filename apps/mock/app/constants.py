@@ -1,9 +1,9 @@
 """共享常量副本：TRACKED_SYMBOLS / 指数与大宗商品清单。
 
-⚠️ 本文件与 apps/data-collector/app/constants.py 保持同步：
-TRACKED_SYMBOLS 的单一事实源在 data-collector，此处为 mock seed 独立容器
+⚠️ 本文件与 tradb 仓库 data-collector 的 app/constants.py 保持同步：
+TRACKED_SYMBOLS 的单一事实源在 tradb data-collector，此处为 mock seed 独立容器
 的只读副本；修改时两侧需一起更新。TRACKED_INDICES / TRACKED_COMMODITIES
-源自 apps/data-collector/app/jobs/indices.py，同样需保持同步。
+源自 tradb data-collector 的 app/jobs/indices.py，同样需保持同步。
 """
 
 TRACKED_SYMBOLS = [
@@ -29,7 +29,7 @@ TRACKED_SYMBOLS = [
     "00005.HK", "01299.HK", "00883.HK", "00939.HK", "02318.HK",
 ]
 
-# 跟踪的指数（与 apps/data-collector/app/jobs/indices.py 保持同步）
+# 跟踪的指数（与 tradb data-collector 的 app/jobs/indices.py 保持同步）
 TRACKED_INDICES = [
     {"symbol": "^GSPC", "market": "US"},
     {"symbol": "^IXIC", "market": "US"},
@@ -44,7 +44,7 @@ TRACKED_INDICES = [
     {"symbol": "^VIX", "market": "VOL"},  # 恐慌指数
 ]
 
-# 大宗商品（与 apps/data-collector/app/jobs/indices.py 保持同步）
+# 大宗商品（与 tradb data-collector 的 app/jobs/indices.py 保持同步）
 TRACKED_COMMODITIES = [
     {"symbol": "GC=F", "market": "US"},  # 黄金
     {"symbol": "CL=F", "market": "US"},  # 原油

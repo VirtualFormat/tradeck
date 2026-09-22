@@ -91,29 +91,17 @@ bash deploy/deploy-cn.sh        # 或 docker compose up -d web quant
 
 验证：web 首页/个股页/宏观页渲染正常、数据中心面板任务状态正常（数据来自 tradb）。
 
-## 步骤 5 — 停用 tradeck 内嵌数据服务
+## 步骤 5 — 停用 tradeck 内嵌数据服务（已完成，仅存档）
 
-确认步骤 4 全链路正常后：
-```bash
-cd tradeck
-docker compose stop collector data-api postgres clickhouse
-# 观察 web 仍正常后，可选 docker compose rm -f collector data-api
-```
-
-> ⚠️ 若步骤 2 选 B（复用 PG/data-pool），不要删卷；仅停容器。
+> 本节为历史操作记录：内嵌数据服务已于 2026-09-12 从根 compose 删除，
+> `apps/data-collector` 源码与 dev 内嵌数据层亦已移除，无需再执行任何停用操作。
 
 ## 回滚
 
-> ⚠️ tradeck 根 compose 已于 2026-09-12 删除内嵌服务，以下两条回滚路径的前提
-> （内嵌服务仍在 compose 中）已不成立。如需回滚，先恢复旧 compose：
-> `git show eb5e188:docker-compose.yml > docker-compose.yml`（`eb5e188` 为最后一个
-> 仍含内嵌服务的提交），再按下述操作。
-
-- **步骤 4 出问题**：把 tradeck `.env` 的 `TRADB_API_URL`/`TRADB_COLLECTOR_URL` 删去（回退默认
-  值 `http://data-api:8080` 同 compose 服务名），重启 web/quant 即回到内嵌模式。内嵌服务在
-  步骤 5 前一直保持运行，回滚零数据风险。
-- **步骤 5 后回滚**：`docker compose up -d collector data-api postgres clickhouse` 重启内嵌服务 +
-  回退 `.env`。
+> ⚠️ 内嵌回滚路径已彻底退役：tradeck 根 compose 于 2026-09-12 删除内嵌服务，
+> `apps/data-collector` 源码与 dev 内嵌数据层（postgres/clickhouse/openbb/
+> collector/data-api）也已全部移除。回滚 tradb 切换的唯一方式是恢复旧镜像/旧
+> compose（git 历史），本仓库不再保留可复活的内嵌数据层。
 
 ## 排障
 

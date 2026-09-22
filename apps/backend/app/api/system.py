@@ -1,10 +1,11 @@
-"""系统数据 API（data-api 侧）：仅保留库表扫描概览 /api/system/data。
+"""系统数据 API（data-api 侧）：库表扫描概览 + 任务状态聚合。
 
 拆分后职责划分：
 - /api/system/data 留在 data-api——纯库表统计（业务表行数/体积/新鲜度、
   daily_prices 市场覆盖），不依赖任何进程内调度状态。
-- /api/system/jobs 与手动触发 /run 已归位 collector（唯一写者持有
-  scheduler / registry / progress，见 apps/data-collector/app/api/system.py）。
+- /api/system/jobs 与手动触发 /run 的真实执行在 tradb 的 collector
+  （唯一写者持有 scheduler / registry / progress）；data-api 聚合后
+  统一对外，消费方不直连 collector。
 - next_run_at：data-api 进程内没有 scheduler，改为向 collector 的
   /api/system/schedules 发起 HTTP 查询；last_run 同理来自 collector 的
   /api/system/jobs。collector 不可达（mock 模式无 collector、或尚未

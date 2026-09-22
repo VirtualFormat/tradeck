@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 # 中国大陆生产部署入口：GHCR 镜像经南京大学镜像站拉取。
-# 官方公共镜像（postgres/nginx）保持原仓库，不经过 GHCR 镜像站。
+# 官方公共镜像（postgres）保持原仓库，不经过 GHCR 镜像站。
+# 行情数据层镜像（collector/openbb/data-api）由 tradb 仓库部署，与本脚本无关。
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -44,7 +45,7 @@ log "校验 compose 配置"
 docker compose -f "${COMPOSE_FILE}" config --quiet
 
 log "串行拉取 tradeck 应用镜像，避免镜像站并发大层超时"
-for service in openbb collector data-api quant web; do
+for service in auth-api quant web; do
   pull_service "${service}"
 done
 

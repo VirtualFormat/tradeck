@@ -36,10 +36,9 @@ class Settings:
             "postgresql://tradeck:tradeck_dev@postgres:5432/tradeck",
         )
         self.OPENBB_API_URL = os.getenv("OPENBB_API_URL", "http://openbb:6900")
-        # data-collector 运维 API（任务状态/调度信息）。海外分流属写路径，
-        # 已收敛在 collector，data-api 不再持有 OPENBB_OVERSEAS_* 配置。
+        # tradb data-collector 运维 API（任务状态/调度信息聚合）。
         self.COLLECTOR_API_URL = os.getenv(
-            "COLLECTOR_API_URL", "http://collector:8080"
+            "COLLECTOR_API_URL", "http://tradb-collector:8080"
         )
         # ClickHouse 温层（分钟K 在线 1 年）。data-api 只读查询，查不到/不可达
         # 即降级空数组，无需 ENABLED 开关（与 DB 查询失败降级一致）。

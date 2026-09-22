@@ -1,5 +1,6 @@
 /**
- * 手动同步 API 代理（转发到 collector——任务触发属写者进程内能力）
+ * 手动同步 API 代理（转发到 tradb collector——任务触发属写者进程内能力，
+ * data-api 不暴露此路由）
  * POST /api/system/jobs/:job/run
  */
 import { NextRequest, NextResponse } from "next/server";

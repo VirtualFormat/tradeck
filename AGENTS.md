@@ -268,12 +268,12 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 
 ## 测试与验证
 
-- data-collector 有少量 Python 标准库 `unittest`，位于 `apps/data-collector/tests/`；CI 仍仅构建 OpenBB 镜像，不自动跑测试。
+- backend 有 Python 标准库 `unittest`，位于 `apps/backend/tests/`（auth/service-auth）；CI 仅构建镜像，不自动跑测试。
 - 验证手段：
-  - `PYTHONPATH=apps/data-collector python -m unittest discover -s apps/data-collector/tests -p 'test_*.py' -v`
+  - `PYTHONPATH=apps/backend python -m unittest discover -s apps/backend/tests -p 'test_*.py' -v`
   - `pnpm lint`（前端 ESLint）
-  - `bash docker/openbb/verify.sh`（数据层 8 项冒烟检查）
-  - backend `/health` + 各 `/api/*` 手测（Swagger: `:8080/docs`、`:6900/docs`）
+  - 数据层冒烟检查（OpenBB verify 等）在 tradb 仓库执行
+  - 各 `/api/*` 手测（Swagger 走 prod tradb，经 SSH tunnel: `localhost:8080/docs`）
   - 部署前本地 `docker compose up -d --build` 跑通 prod 配置自我验证
 - 改代码后按上述手段自查；若引入了测试框架，请同步更新本节。
 

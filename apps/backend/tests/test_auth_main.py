@@ -9,7 +9,19 @@ except ImportError:
 
 
 def _route_paths(app) -> set[str]:
-    return {getattr(r, "path", "") for r in app.routes}
+    # fastapi>=0.141 的 include_router 生成 _IncludedRouter 代理（无 .path，
+    # 真实路由在 .original_router.routes 内），需递归展开。
+    paths: set[str] = set()
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.add(path)
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            stack.extend(getattr(inner, "routes", []))
+    return paths
 
 
 @unittest.skipIf(fastapi is None, "fastapi 未安装（沙箱缺依赖）")

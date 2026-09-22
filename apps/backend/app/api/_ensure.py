@@ -1,6 +1,6 @@
-"""读 API 的按需回源助手：DB 无数据时经 collector 的 /api/ondemand 回源
+"""读 API 的按需回源助手：DB 无数据时经 tradb collector 的 /api/ondemand 回源
 （首访 2-5s，此后读库）。data-api 不直接 import job、不碰外部源——
-外部调用与写库全部收敛在 data-collector（单一写者）。
+外部调用与写库全部收敛在 tradb data-collector（单一写者）。
 
 - 防踩踏锁与重试隔离在 collector 侧（api/ondemand.py），data-api 只做转发
 - symbol 白名单校验，防止任意字符串触发外部调用

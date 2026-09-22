@@ -1,7 +1,7 @@
 """data-api（原 backend）FastAPI 入口 + lifespan。
 
-拆分后职责：唯一读出口，只暴露 18 个业务读路由，从库读数据（<50ms）。
-- 不起 scheduler、不写库（写路径全部收敛在 data-collector，单一写者）。
+拆分后职责：唯一读出口，只暴露业务读路由，从库读数据（<50ms）。
+- 不起 scheduler、不写库（写路径全部收敛在 tradb 的 data-collector，单一写者）。
 - 不 seed（mock 数据准备属独立流程，见 docs/TASKS-DATA-SERVICE.md 阶段二 2.3）。
 - DATA_MODE 仅用于：mock 模式下关闭「读 API 按需回源」（不触发真实数据回源）。
 数据库身份 marker 由 collector 绑定；data-api 启动时只校验一致性，不匹配 fail fast。

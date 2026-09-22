@@ -1,7 +1,8 @@
 name: Build App Images
 
 # 构建并发布 tradeck 应用镜像到 GHCR（org: virtualformat）：
-#   web / collector / data-api / quant（openbb 镜像由 openbb-images.yml 单独构建）。
+#   web / data-api（auth-api 复用此镜像）/ quant
+# 数据管道 collector 与 openbb 镜像在 tradb 仓库的 CI 构建。
 # 正式服只 docker compose pull && up，不在服务器拉源码构建。
 #
 # 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
@@ -16,7 +17,6 @@ on:
     branches: ["develop"]
     paths:
       - "apps/web/**"
-      - "apps/data-collector/**"
       - "apps/backend/**"
       - "apps/quant/**"
       - ".github/workflows/app-images.yml"
@@ -37,7 +37,6 @@ jobs:
       matrix:
         image:
           - { name: tradeck-web, dockerfile: apps/web/Dockerfile, context: apps/web, target: prod }
-          - { name: tradeck-collector, dockerfile: apps/data-collector/Dockerfile, context: apps/data-collector, target: "" }
           - { name: tradeck-data-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
           - { name: tradeck-quant, dockerfile: apps/quant/Dockerfile, context: apps/quant, target: "" }
         arch:
@@ -90,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [tradeck-web, tradeck-collector, tradeck-data-api, tradeck-quant]
+        image: [tradeck-web, tradeck-data-api, tradeck-quant]
     steps:
       - uses: actions/download-artifact@v4
         with:

@@ -1,5 +1,6 @@
 /**
- * 数据任务状态 API 代理（转发到 collector——任务运行记录/调度属写者进程内状态）
+ * 数据任务状态 API 代理（转发到 tradb collector——任务运行记录/进度
+ * 属写者进程内状态，data-api 不暴露此路由，web 不直连 data-api 拿进度）
  * GET /api/system/jobs
  */
 import { NextResponse } from "next/server";

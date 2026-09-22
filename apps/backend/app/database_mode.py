@@ -1,6 +1,6 @@
 """数据库 DATA_MODE 身份校验（live/mock 互斥的持久化 marker 机制）。
 
-data-api 与 data-collector 各持一份本模块（同一契约的两个副本）。
+本模块与 tradb 仓库的 data-collector 各持一份（同一契约的两个副本）。
 数据库身份的「绑定」通常由 collector 先启动完成；data-api 启动时调用
 ``ensure_database_mode`` 校验一致性，不匹配 fail fast。metadata 表结构、
 marker ID、advisory lock ID 两侧必须保持一致，不得单侧修改。

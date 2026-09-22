@@ -1,10 +1,9 @@
 # devcontainer 的 docker-compose — 开发环境
 # 与项目根的 docker-compose.yml（prod）独立
-# 架构：dev（开发容器）+ postgres + clickhouse（温层）+ collector + data-api + openbb
-#
-# DATA_MODE=mock 用法（拆分后 seed 无归属进程，由独立 Job 容器完成）：
-#   1) 先灌种子：docker compose -f .devcontainer/docker-compose.yml --profile mock run --rm mock-seed
-#   2) 再以 DATA_MODE=mock 起 dev/postgres/data-api（见 AGENTS.md「数据运行模式」一节）
+# 架构：dev（开发容器）+ auth-db（auth 域 PG）+ auth-api + quant（profile）
+# 行情数据层（postgres/clickhouse/openbb/collector/data-api）已全部迁往 tradb
+# 独立仓库，dev 经宿主机 SSH tunnel（host.docker.internal:8080/8082）访问 prod
+# tradb；本文件不再内嵌任何行情数据服务，勿复活。
 name: tradeck_devcontainer
 
 services:
@@ -21,49 +20,41 @@ services:
       - ..:/workspace:cached
       - dev-node-modules:/workspace/apps/web/node_modules
       - dev-venv:/workspace/.venv
-      - dev-openbb-config:/root/.openbb_platform
       - /var/run/docker.sock:/var/run/docker.sock
     command: sleep infinity
     environment:
       - DATA_MODE=${DATA_MODE:-live}
-      - OPENBB_API_URL=http://openbb:6900
       # 指向 prod tradb（经宿主机 SSH tunnel host.docker.internal:8080 → VPS tradb data-api）
       - BACKEND_API_URL=${TRADB_API_URL:-http://host.docker.internal:8080}
       # 用户登录：web 的 session 校验 / 登录注册代理走 dev auth-api（同 dev-net 容器名直达）。
       # 不设则会回退 localhost:8080 误打行情 data-api，/api/auth/* 全部 500/404。
       - AUTH_API_URL=http://auth-api:8080
-      # collector 内部运维 API（手动同步触发等，备用）— 指向 prod tradb collector
-      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://host.docker.internal:8082}
       # 量化引擎 HTTP 服务（/api/quant/* 代理的目标；web 容器经 dev-net 主机名访问）
       - QUANT_API_URL=http://quant:8083
-      - DATABASE_URL=postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
       # Vibe-Trading AI 研究引擎（独立 devcontainer，宿主机 8899；web 容器经 host.docker.internal 访问）
       - VIBE_TRADING_API_URL=${VIBE_TRADING_API_URL:-http://host.docker.internal:8899}
       - VIBE_TRADING_API_KEY=${VIBE_TRADING_API_KEY:-}
-      # 海外节点（可选）：为空则海外源回落国内 openbb
-      - OPENBB_OVERSEAS_API_URL=${OPENBB_OVERSEAS_API_URL:-}
-      - OPENBB_OVERSEAS_TOKEN=${OPENBB_OVERSEAS_TOKEN:-}
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
     networks:
       - dev-net
     depends_on:
-      openbb:
-        condition: service_healthy
-      postgres:
+      auth-db:
         condition: service_healthy
 
-  # PostgreSQL（init.sql 由 data-collector 持有；不映射宿主机端口，仅内网可见）
-  postgres:
+  # auth-db（PostgreSQL）：仅承载 auth 域（auth schema 由 apps/backend/init.sql 建出；
+  # init.sql 仅空卷首次启动执行）。行情库在 tradb，本库不存行情数据。
+  # 不映射宿主机端口，仅内网可见。
+  auth-db:
     image: postgres:16-alpine
-    container_name: tradeck-dev-postgres
+    container_name: tradeck-dev-auth-db
     environment:
-      POSTGRES_DB: tradeck
+      POSTGRES_DB: tradeck_auth
       POSTGRES_USER: tradeck
       POSTGRES_PASSWORD: tradeck_dev
     volumes:
-      - dev-postgres-data:/var/lib/postgresql/data
-      - ../apps/data-collector/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - dev-auth-db-data:/var/lib/postgresql/data
+      - ../apps/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tradeck"]
       interval: 10s
@@ -72,118 +63,13 @@ services:
     networks:
       - dev-net
 
-  # ClickHouse 温层（单节点；分钟K 在线 1 年窗口，collector 双写 / data-api 读）
-  # 钉 25.8-alpine（跟随 postgres:16-alpine 的 major-alpine 钉版风格）；
-  # 单节点即可，不上 Cluster/Keeper/副本（纪律见 docs/DATA-STORAGE-TIERED.md）
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.8-alpine
-    container_name: tradeck-dev-clickhouse
-    # 不设密码：仅容器网络内可达，与 postgres 开发默认值同级
-    ports:
-      # HTTP 接口映射仅绑宿主机回环（方便本机手测），不暴露局域网——
-      # 因为 default 用户无密码（users.d 仅放行容器网络段 + 回环）。
-      - "127.0.0.1:8123:8123"
-    volumes:
-      - dev-clickhouse-data:/var/lib/clickhouse
-      # 初始化 SQL（建库 tradeck + minute_bars 表），仅首次启动执行
-      - ../docker/clickhouse/initdb:/docker-entrypoint-initdb.d:ro
-      # IPv4 监听（见该目录注释）
-      - ../docker/clickhouse/config.d:/etc/clickhouse-server/config.d:ro
-      # 放开 default 用户容器网络访问（否则 entrypoint 锁死 localhost-only，
-      # collector/data-api 经容器 IP 访问会 401；prod 公网暴露须自行加固）
-      - ../docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
-    healthcheck:
-      # 注意用 127.0.0.1 而非 localhost：CH 只监听 IPv4（config.d 覆写），
-      # 容器内 localhost 会解析到 ::1 导致 connection refused
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-    networks:
-      - dev-net
-
-  # collector（数据管道/写者：定时拉取数据源写库 + 内部运维 API）
-  # dev 环境从源码跑 uvicorn --reload；映射 8082 仅供宿主机调试
-  collector:
-    build: ../apps/data-collector
-    container_name: tradeck-dev-collector
-    # 显式读项目根 .env（dev compose 默认只找 .devcontainer/.env，根 .env 的
-    # FINDB_KEY/TICKFLOW_API_KEY/OPENBB_OVERSEAS_* 才不会丢）
-    env_file:
-      - ../.env
-    environment:
-      DATA_MODE: ${DATA_MODE:-live}
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-      OPENBB_API_URL: http://openbb:6900
-      # 海外节点 / TickFlow / findb 密钥由上方 env_file（根 .env）注入，
-      # 不在此处插值（environment 空串会覆盖 env_file 的值）。
-      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
-      # 温层 ClickHouse（分钟K 在线窗口；collector 双写）
-      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
-      DATA_POOL_ROOT: /data/market-pool
-      COLD_STORAGE_BACKEND: local
-      COLD_STORAGE_LOCAL_ROOT: /data/market-pool
-    volumes:
-      - ../apps/data-collector:/app
-      # 自有 data pool（findb 仅作一次性初始化源）；重建 collector 后保留。
-      - dev-market-pool:/data/market-pool
-    ports:
-      - "8082:8080"  # 调试端口，避免与 dev 8080 / data-api 8081 冲突
-    depends_on:
-      postgres:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      openbb:
-        condition: service_healthy
-    networks:
-      - dev-net
-    # dev 模式：热重载
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
-
-  # data-api（读 API 服务，dev 环境从源码跑 uvicorn --reload）
-  data-api:
-    build: ../apps/backend
-    container_name: tradeck-dev-data-api
-    environment:
-      DATA_MODE: ${DATA_MODE:-live}
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-      OPENBB_API_URL: http://openbb:6900
-      DATA_SYNC_TOKEN: ${DATA_SYNC_TOKEN:-tradeck-dev-sync}
-      # 温层 ClickHouse（分钟K 在线窗口；data-api 读）
-      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
-      # 消费方鉴权令牌表（JSON：{"<token>": "<consumer_name>"}）。留空 = 内网放行；
-      # 配置后量化批量接口（/api/bars）强制有效 X-Service-Token。
-      SERVICE_TOKENS: ${SERVICE_TOKENS:-}
-      DATA_POOL_ROOT: /data/market-pool
-    volumes:
-      - ../apps/backend:/app
-      - dev-market-pool:/data/market-pool:ro
-    ports:
-      - "8081:8080"  # 避免和 dev 容器 8080 冲突
-    depends_on:
-      postgres:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      openbb:
-        condition: service_healthy
-      collector:
-        condition: service_started
-    networks:
-      - dev-net
-    # dev 模式：热重载
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
-
-  # auth-api（用户域：注册/登录/session，与行情 data-api 分离，对齐 prod 架构）
-  # 同一 backend 源码热挂载、同一 postgres 实例（auth schema 由 data-collector 的
-  # init.sql 建出），独立进程避免与行情路由/DATA_MODE 校验耦合。
+  # auth-api（用户域：注册/登录/session，对齐 prod 架构）
+  # backend 源码热挂载、auth-db 实例（auth schema 由 apps/backend/init.sql 建出）。
   auth-api:
     build: ../apps/backend
     container_name: tradeck-dev-auth-api
     environment:
-      AUTH_DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
+      AUTH_DATABASE_URL: postgresql://tradeck:tradeck_dev@auth-db:5432/tradeck_auth
       AUTH_INVITE_CODE: ${AUTH_INVITE_CODE:-}
       AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
       # 消费方令牌（JSON）：留空 = 内网放行（dev 默认）
@@ -191,53 +77,13 @@ services:
     volumes:
       - ../apps/backend:/app
     ports:
-      - "8084:8080"  # 调试端口，避开 dev 8080 / data-api 8081 / collector 8082
+      - "8084:8080"  # 调试端口
     depends_on:
-      postgres:
+      auth-db:
         condition: service_healthy
     networks:
       - dev-net
     command: ["uvicorn", "app.auth_main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
-
-  # OpenBB Platform
-  openbb:
-    build:
-      context: ..
-      dockerfile: docker/openbb/Dockerfile
-    container_name: tradeck-dev-openbb
-    ports:
-      - "6900:6900"
-    volumes:
-      - dev-openbb-config:/root/.openbb_platform
-    environment:
-      - FMP_API_KEY=${FMP_API_KEY:-}
-      - FRED_API_KEY=${FRED_API_KEY:-}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - dev-net
-    # dev 仅启 1 个 worker，避免本地 OpenBB 占用约 1.3 GiB；prod Dockerfile 仍保留 4 workers
-    command: ["uvicorn", "openbb_platform_api.main:app", "--host", "0.0.0.0", "--port", "6900", "--workers", "1"]
-
-  # mock 种子（Job 型一次性容器：灌完 mock 数据即退出）
-  # 仅在显式启用 mock profile 时运行：--profile mock run --rm mock-seed
-  mock-seed:
-    build: ../apps/mock
-    container_name: tradeck-dev-mock-seed
-    profiles: ["mock"]
-    environment:
-      DATA_MODE: mock
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - dev-net
 
   # quant（量化引擎：回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）
   # Job/服务型容器，默认不启动，按需显式启用 quant profile：
@@ -270,74 +116,18 @@ services:
       AI_TEMPERATURE: ${AI_TEMPERATURE:-}
     volumes:
       - quant-cache:/data/cache
-      # dev 热挂载（与 collector 同模式）
+      # dev 热挂载（改动无需重建镜像）
       - ../apps/quant:/app
     ports:
       - "8083:8083"  # HTTP 服务（web 经 Next 代理消费；CLI 用 run --rm 覆盖 CMD）
-    depends_on:
-      data-api:
-        condition: service_started
-    networks:
-      - dev-net
-
-  # MinIO（S3 兼容对象存储，本地「假 COS」）
-  # 用于上线真 COS 前验收 S3 后端（boto3 协议路径/endpoint/网络）。
-  # 日常开发用本地文件 provider（COLD_STORAGE_BACKEND=local），不需要本服务；
-  # 仅在显式启用 s3-test profile 时起：--profile s3-test up -d minio minio-init
-  minio:
-    image: minio/minio:latest
-    container_name: tradeck-dev-minio
-    profiles: ["s3-test"]
-    environment:
-      # 开发专用默认值（勿用于生产；生产 COS 走 COLD_S3_* 环境变量注入真实密钥）
-      MINIO_ROOT_USER: ${COLD_S3_ACCESS_KEY:-tradeck}
-      MINIO_ROOT_PASSWORD: ${COLD_S3_SECRET_KEY:-tradeck_dev_cold}
-    command: ["server", "/data", "--console-address", ":9001"]
-    ports:
-      - "9000:9000"  # S3 API（调试/宿主机直连用；容器内走 minio:9000）
-      - "9001:9001"  # 控制台（可选，调试用）
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - dev-net
-
-  # MinIO 初始化：建 cold-lake bucket（Job 型，起一次即退）
-  minio-init:
-    image: minio/mc:latest
-    container_name: tradeck-dev-minio-init
-    profiles: ["s3-test"]
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-tradeck} $${MINIO_ROOT_PASSWORD:-tradeck_dev_cold}
-        && mc mb -p local/$${COLD_S3_BUCKET:-tradeck-lake} || true
-    environment:
-      MINIO_ROOT_USER: ${COLD_S3_ACCESS_KEY:-tradeck}
-      MINIO_ROOT_PASSWORD: ${COLD_S3_SECRET_KEY:-tradeck_dev_cold}
-      COLD_S3_BUCKET: ${COLD_S3_BUCKET:-tradeck-lake}
     networks:
       - dev-net
 
 volumes:
   dev-node-modules:
   dev-venv:
-  dev-openbb-config:
-  dev-clickhouse-data:
-  minio-data:
   quant-cache:
-  dev-market-pool:
-  dev-postgres-data:
-    # DATA_MODE 与数据库 marker 在 backend 启动时强校验；错误卷组合会拒绝启动。
-    # live 默认沿用旧卷；mock 命令必须显式指定独立卷。
-    name: ${DEV_POSTGRES_VOLUME:-tradeck_devcontainer_dev-postgres-data}
+  dev-auth-db-data:
 
 networks:
   dev-net:
