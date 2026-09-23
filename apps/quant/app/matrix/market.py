@@ -5,8 +5,17 @@
   绝不把下一行数据错位接上。
 - 价格口径为 daily_prices 原始价（adjust=none）；复权在 engine/adjust.py 做，这里不管。
 - 矩阵只在内存构建，不做落盘缓存、多线程、懒加载（保持简单）。
-- build_async（async 入口）：build 前先按需回源补拉缓存缺失标的
-  （prod 容器缓存目录易随重建清空，只读缓存会全员全 NaN → 回测 0 成交）；
+- 字段默认 float32（环境变量 QUANT_MATRIX_DTYPE=float64 可回退）：价格/量
+  精度足够（相对误差 ~1e-7，不会翻转信号），内存直接减半——全市场
+  universe（5455 只 × 多年日K）的矩阵物化是容器 OOM 的头号来源。
+- 两段式入口（内存优化方向 B）：
+  prefetch_async（async）：只做回源补拉落盘 + 覆盖率统计，不物化大矩阵，
+    供主进程（HTTP API）调用——网络 IO 与 parquet 写留在主进程/worker 池外，
+    内存密集的 build() 下沉到 spawn 子进程（OOM 也只杀子进程，事件循环
+    不被 numpy 物化阻塞）。
+  build_async（async）：prefetch + build 一步到位的包装，仍在用的调用方：
+    app/jobs.py 每日信号 job 暖缓存、runner.py 分钟面板暖缓存 /
+    run_backtest_async 同进程回测、api_screen 暖缓存（返回值丢弃，仅为补拉）。
   build() 保持纯缓存读（cli / worker 子进程等同步调用方行为不变）。
 """
 from __future__ import annotations
@@ -34,7 +43,8 @@ FIELDS = ("open", "high", "low", "close", "volume", "amount")
 class MarketMatrix:
     """市场矩阵：dates 为全局交易日轴（升序），symbols 为标的轴（升序）。
 
-    每个字段一个 (len(dates), len(symbols)) 的 float64 二维数组，缺失为 NaN。
+    每个字段一个 (len(dates), len(symbols)) 的浮点二维数组（默认 float32，
+    见 build 的 dtype 参数），缺失为 NaN。
     """
 
     dates: list[date]
@@ -79,12 +89,32 @@ class MarketMatrix:
         )
 
 
-def build(symbols: list[str], start: date, end: date) -> MarketMatrix:
+def build(
+    symbols: list[str],
+    start: date,
+    end: date,
+    dtype: np.dtype | type | None = None,
+) -> MarketMatrix:
     """从 data 层 Parquet 缓存构建市场矩阵。
 
     逐标的读 store.load，过滤到 [start, end] 后 outer join 到全局交易日轴；
     缓存为空/损坏的标的保留为全 NaN 列（优雅降级，不抛错）。
+
+    dtype：矩阵字段的浮点精度，默认读环境变量 QUANT_MATRIX_DTYPE
+    （"float64" 回退旧口径），缺省 float32（内存减半，见模块 docstring）。
     """
+    if dtype is None:
+        env = os.environ.get("QUANT_MATRIX_DTYPE", "").lower()
+        if env == "float64":
+            dtype = np.float64
+        else:
+            # 非法值（手误如 float6）记 warning 后按默认 float32 优雅降级，不抛错
+            if env and env != "float32":
+                logger.warning(
+                    "QUANT_MATRIX_DTYPE=%r 非法（仅支持 float32/float64），按 float32 处理",
+                    os.environ.get("QUANT_MATRIX_DTYPE"),
+                )
+            dtype = np.float32
     syms = sorted(symbols)
     frames: list[pl.DataFrame] = []
     for s in syms:
@@ -103,15 +133,15 @@ def build(symbols: list[str], start: date, end: date) -> MarketMatrix:
     row_of = {d: i for i, d in enumerate(dates)}
 
     n_dates, n_syms = len(dates), len(syms)
-    fields = {f: np.full((n_dates, n_syms), np.nan) for f in FIELDS}
+    fields = {f: np.full((n_dates, n_syms), np.nan, dtype=dtype) for f in FIELDS}
     for j, df in enumerate(frames):
         if df.is_empty():
             logger.warning("标的 %s 缓存为空，矩阵对应列全为 NaN", syms[j])
             continue
         rows = np.array([row_of[d] for d in df["date"].to_list()], dtype=int)
         for f in FIELDS:
-            # 统一转 float64：Int64 的 volume 含 null 时也能安全落进 NaN 矩阵
-            fields[f][rows, j] = df[f].cast(pl.Float64).to_numpy()
+            # 统一转浮点：Int64 的 volume 含 null 时也能安全落进 NaN 矩阵
+            fields[f][rows, j] = df[f].cast(pl.Float64).to_numpy().astype(dtype, copy=False)
 
     return MarketMatrix(dates=dates, symbols=syms, **fields)
 
@@ -158,12 +188,12 @@ def _write_checked(symbol: str, start: date, end: date) -> None:
     tmp.replace(path)
 
 
-async def build_async(
+async def prefetch_async(
     symbols: list[str],
     start: date,
     end: date,
-) -> MarketMatrix:
-    """异步构建市场矩阵：缓存缺失标的先回源补拉落缓存，再按同步逻辑建矩阵。
+) -> dict:
+    """异步预拉：缓存缺失标的回源补拉落盘（只写 parquet，不物化矩阵）。
 
     覆盖判定：区间内行数为 0 = 全缺；有数据但首尾日期盖不住 [start, end] = 部分缺
     （与 store.missing_ranges 同口径，区间内的停牌空洞不算缺）。
@@ -174,18 +204,25 @@ async def build_async(
     （自带分片分窗），逐标的 store.merge + store.save 落缓存，之后重新走 build()。
     「跳过回源」的语义由同步 build() 承担（纯缓存读），本函数始终按需回源。
 
+    返回覆盖率摘要（供调用方做预拉失败前置判定，替代旧的全矩阵物化检查）：
+      {"total", "covered", "coverage", "missing", "stale_checked"}；
+      coverage = 区间内有数据的标的占比（基于 parquet 元数据/轻量读，不建矩阵）。
+
     降级语义（与 build 一致，绝不抛错）：
-    - 补拉请求整体失败 / 单个标的没补到数据：该标的保留全 NaN 列；
-    - 只记日志，矩阵照常返回。
+    - 补拉请求整体失败 / 单个标的没补到数据：该标的计为未覆盖；
+    - 只记日志，摘要照常返回。
 
     注意：补拉只发生在主进程（HTTP API / CLI 的 async 入口）；worker 子进程
     只调同步 build() 读已暖好的缓存，不做网络 IO（与分钟K 预拉模式一致）。
+    本函数刻意不物化矩阵（内存优化方向 B）：大 universe 的 numpy 物化下沉到
+    spawn 子进程，主进程事件循环不被阻塞、OOM 也只杀子进程。
     """
     from app.data import client
 
     syms = sorted(symbols)
     if not syms:
-        return build(symbols, start, end)
+        return {"total": 0, "covered": 0, "coverage": 0.0,
+                "missing": 0, "stale_checked": 0}
 
     cached: dict[str, pl.DataFrame] = {}
     missing: list[str] = []
@@ -212,14 +249,20 @@ async def build_async(
             missing.append(s)
 
     if not missing:
-        logger.info("build_async：%d 只命中缓存，0 只回源补拉", len(syms))
-        return build(symbols, start, end)
+        logger.info("prefetch_async：%d 只命中缓存，0 只回源补拉", len(syms))
+        return {"total": len(syms), "covered": len(syms), "coverage": 1.0,
+                "missing": 0, "stale_checked": 0}
 
     try:
         bars = await client.fetch_bars(missing, start, end)
     except Exception as e:  # 网络/上游故障不阻塞构建，缺失标的全 NaN 降级
-        logger.warning("build_async 补拉失败（%d 只标的按全 NaN 降级）：%s", len(missing), e)
-        return build(symbols, start, end)
+        logger.warning("prefetch_async 补拉失败（%d 只标的按未覆盖计）：%s", len(missing), e)
+        covered = len(syms) - len(missing) - stale_checked
+        return {
+            "total": len(syms), "covered": covered,
+            "coverage": covered / len(syms),
+            "missing": len(missing), "stale_checked": stale_checked,
+        }
 
     # 按 symbol 分桶后逐标的 merge 落缓存（bars_to_frame 空列表返回空 schema 表）
     by_symbol: dict[str, list[dict]] = {s: [] for s in missing}
@@ -239,7 +282,30 @@ async def build_async(
 
     failed = len(missing) - filled
     logger.info(
-        "build_async：%d 只命中缓存，%d 只水位跳过，%d 只回源补拉（%d 只补拉无数据/失败）",
+        "prefetch_async：%d 只命中缓存，%d 只水位跳过，%d 只回源补拉（%d 只补拉无数据/失败）",
         len(syms) - len(missing) - stale_checked, stale_checked, len(missing), failed,
     )
-    return build(symbols, start, end)
+    covered = len(syms) - stale_checked - failed
+    return {
+        "total": len(syms), "covered": covered,
+        "coverage": covered / len(syms),
+        "missing": len(missing), "stale_checked": stale_checked,
+    }
+
+
+async def build_async(
+    symbols: list[str],
+    start: date,
+    end: date,
+    dtype: np.dtype | type | None = None,
+) -> MarketMatrix:
+    """异步构建市场矩阵：prefetch_async 补拉落缓存 + 同步 build 建矩阵。
+
+    仍在用的调用方：app/jobs.py 每日信号 job 暖缓存、runner.py 分钟面板
+    暖缓存 / run_backtest_async 同进程回测（消费返回的矩阵）、api_screen
+    暖缓存（返回值丢弃，仅为补拉落盘）。回测/优化系路由已改用
+    prefetch_async + worker 子进程内 build()（内存优化方向 B，主进程不再
+    物化大矩阵）。
+    """
+    await prefetch_async(symbols, start, end)
+    return build(symbols, start, end, dtype=dtype)

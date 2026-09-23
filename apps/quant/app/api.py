@@ -44,9 +44,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="tradeck quant", version="0.2.0")
 
-# 预拉覆盖率前置门槛：build_async 内部降级不抛错（数据源整体挂掉时返回
-# 全 NaN 矩阵），登记回测任务前在主进程侧检查非全 NaN 列占比，低于阈值
-# 直接 503，避免 worker 白跑分钟级回测产出 stats 全零的「合法」骨架结果。
+# 预拉覆盖率前置门槛：prefetch_async 内部降级不抛错（数据源整体挂掉时
+# 覆盖率为 0），登记回测任务前在主进程侧检查覆盖率，低于阈值直接 503，
+# 避免 worker 白跑分钟级回测产出 stats 全零的「合法」骨架结果。
 # 0.5 的取舍：新股/停牌/尾部空洞造成的部分列缺失是常态，不能拦；
 # 数据源整体故障时缺失比例接近 1，0.5 足以识别且不误伤正常部分缺失。
 _MIN_MATRIX_COVERAGE = 0.5
@@ -56,23 +56,13 @@ _MIN_MATRIX_COVERAGE = 0.5
 _USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
-def _matrix_coverage(matrix) -> float:
-    """矩阵数据覆盖率：非全 NaN 列（标的）占比，供预拉失败前置判定。
+def _check_prefetch_coverage_or_503(prefetch: dict, symbols: list[str]) -> None:
+    """预拉覆盖率前置门槛：低于 _MIN_MATRIX_COVERAGE 直接 503，不登记任务。
 
-    以 close 列为口径（OHLCV 同源同缺，close 足以代表）；
-    空矩阵（无标的/无交易日）视为 0 覆盖。
+    prefetch 为 prefetch_async 返回的覆盖率摘要（内存优化方向 B：主进程
+    只补拉落盘 + 统计覆盖率，不再为检查而物化整张大矩阵）。
     """
-    import numpy as np
-
-    if matrix.close.size == 0 or not matrix.symbols:
-        return 0.0
-    has_data = (~np.isnan(matrix.close)).any(axis=0)
-    return float(has_data.sum()) / len(matrix.symbols)
-
-
-def _check_matrix_coverage_or_503(matrix, symbols: list[str]) -> None:
-    """预拉覆盖率前置门槛：低于 _MIN_MATRIX_COVERAGE 直接 503，不登记任务。"""
-    coverage = _matrix_coverage(matrix)
+    coverage = float(prefetch.get("coverage", 0.0))
     if coverage < _MIN_MATRIX_COVERAGE:
         logger.warning(
             "预拉覆盖率不足（%.1f%% < %.0f%%，%d 只标的），拒绝登记任务",
@@ -279,14 +269,16 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     )
     end = req.end or date.today()
     # 冷启动修复：worker 子进程只读本地缓存不做网络 IO（既有纪律），
-    # 日K 缺失标的必须在这里（主进程）经 build_async 补拉落盘，
+    # 日K 缺失标的必须在这里（主进程）经 prefetch_async 补拉落盘，
     # 否则缓存目录为空时子进程回测全员全 NaN 零成交。
-    from app.matrix import build_async
-    matrix = await build_async(symbols, req.start, end)
-    # 预拉失败前置（缺陷 3 修复）：build_async 内部 catch 一切只记日志，
-    # 数据源整体挂掉时返回全 NaN 矩阵——此处检查覆盖率，过低直接 503，
+    # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化在 worker 子进程内
+    # build() 完成（numpy 物化不再阻塞事件循环，OOM 也只杀子进程）。
+    from app.matrix import prefetch_async
+    prefetch = await prefetch_async(symbols, req.start, end)
+    # 预拉失败前置（缺陷 3 修复）：prefetch_async 内部 catch 一切只记日志，
+    # 数据源整体挂掉时覆盖率为 0——此处检查覆盖率，过低直接 503，
     # 不登记任务，避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
-    _check_matrix_coverage_or_503(matrix, symbols)
+    _check_prefetch_coverage_or_503(prefetch, symbols)
     # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
     # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
     await _warm_factor_cache(symbols)
@@ -391,12 +383,13 @@ async def api_backtest_run(req: BacktestRequest,
         )
     # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
     # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
-    from app.matrix import build_async
-    matrix = await build_async(symbols, req.start, end)
-    # 预拉失败前置（缺陷 3 修复）：build_async 内部 catch 一切只记日志，
-    # 数据源整体挂掉时返回全 NaN 矩阵——登记任务前检查覆盖率，过低直接 503，
+    # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化下沉到 worker 子进程。
+    from app.matrix import prefetch_async
+    prefetch = await prefetch_async(symbols, req.start, end)
+    # 预拉失败前置（缺陷 3 修复）：prefetch_async 内部 catch 一切只记日志，
+    # 数据源整体挂掉时覆盖率为 0——登记任务前检查覆盖率，过低直接 503，
     # 避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
-    _check_matrix_coverage_or_503(matrix, symbols)
+    _check_prefetch_coverage_or_503(prefetch, symbols)
     # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
     # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
     # 失败降级不阻塞登记（缺因子标的按原始价跑并在结果标注 unadjusted）。
@@ -1072,10 +1065,11 @@ async def _run_optimize_route(
     except ValueError as e:  # grid 非法/组合爆炸/分钟频策略等 → 422
         raise HTTPException(status_code=422, detail=str(e))
     # 冷启动修复：worker 子进程与进程内串行都只读本地日K 缓存，
-    # 缺失标的必须在这里（主进程）经 build_async 补拉落盘，
+    # 缺失标的必须在这里（主进程）经 prefetch_async 补拉落盘，
     # 否则缓存目录为空时全部组合零成交；补拉失败降级不阻塞（runner 层照常跑）。
-    from app.matrix import build_async
-    await build_async(symbols, req.start, req.end)
+    # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化在 worker 子进程内完成。
+    from app.matrix import prefetch_async
+    await prefetch_async(symbols, req.start, req.end)
     # 复权因子预拉：优化系路由同样走 worker 子进程（只读本地因子缓存），
     # 缺失因子需在主进程落盘，否则全市场优化大面积无复权。
     await _warm_factor_cache(symbols)

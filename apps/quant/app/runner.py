@@ -387,8 +387,10 @@ def run_backtest(
     """跑一个策略在一组标的上的回测，返回统计 + 元信息。
 
     数据来自本地 Parquet 缓存（缺数标的在矩阵层降级为全 NaN 列）；
-    matrix 参数可传入主进程经 matrix.build_async 预建的矩阵（含按需回源补拉），
-    传入后跳过内部 build 直读缓存——调用方不预建时本函数行为与旧版完全一致。
+    matrix 参数可传入预建的矩阵（跳过内部 build 直读缓存）——调用方不预建时
+    本函数行为与旧版完全一致（同步 build 读本地缓存物化，worker 子进程
+    路径即走此分支：主进程 prefetch_async 只补拉落盘，矩阵物化在子进程内
+    完成，内存峰值不进主进程）。
     benchmark / names 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
     names 缺省 None 时撮合按无名称（非 ST）分档，保持历史行为。
     minute_bars：{symbol: 分钟K DataFrame}（阶段 H1，由 run_backtest_async 预拉），
