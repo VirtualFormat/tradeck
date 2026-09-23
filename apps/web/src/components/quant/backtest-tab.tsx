@@ -25,6 +25,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
+import { UNIVERSE_OPTIONS, UNIVERSE_PLACEHOLDER, type UniverseValue } from "./optimize-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -133,36 +134,18 @@ function rowKeyActivate(
   }
 }
 
-/** 标的池 universe 选项（标的输入为空时生效，自定义标的时置灰） */
-const UNIVERSE_OPTIONS = [
-  { value: "hs300", label: "沪深300 成分（默认）" },
-  { value: "csi500", label: "中证500 成分" },
-  { value: "tracked", label: "tracked 100 只" },
-  { value: "cn", label: "A 股全市场" },
-  { value: "all", label: "全部（A 股全市场 + tracked 美港）" },
-] as const;
-type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
-
 /**
  * 从 localStorage 恢复时允许的记忆档位（仅轻档位）。
  * cn/all 为全市场重档位，历史上被记住后恢复会导致全市场回测把 quant 容器打 OOM；
- * 故恢复时只接受轻档位，旧记忆若为 cn/all 则回退默认 hs300；
+ * 故恢复时只接受轻档位（含 custom 自选标的），旧记忆若为 cn/all 则回退默认 hs300；
  * 不影响用户在页面上本次会话手动选择 cn/all（下拉框选项不变）。
  */
 const RESTORABLE_UNIVERSES: readonly UniverseValue[] = [
   "hs300",
   "csi500",
   "tracked",
+  "custom",
 ];
-
-/** 各 universe 档位下标的输入框的占位提示（本地维护，含 hs300/csi500） */
-const BT_UNIVERSE_PLACEHOLDER: Record<UniverseValue, string> = {
-  hs300: "留空 = 沪深300 成分（可逗号分隔自定义）",
-  csi500: "留空 = 中证500 成分（可逗号分隔自定义）",
-  tracked: "留空 = tracked 100 只（可逗号分隔自定义）",
-  cn: "留空 = A 股全市场（可逗号分隔自定义）",
-  all: "留空 = A 股全市场 + tracked 美港（可逗号分隔自定义）",
-};
 
 /** 回测配置 localStorage 记忆（key 固定，页面加载时恢复、回测成功后写入） */
 const BT_CONFIG_KEY = "quant-backtest-config";
@@ -327,7 +310,8 @@ export function BacktestTab({
 
   const strategy = strategies.find((s) => s.id === strategyId) ?? null;
   const symbols = parseSymbols(symbolsInput);
-  const hasCustomSymbols = symbols.length > 0;
+  // 标的池=自选标的时 payload 传 symbols 不传 universe（显式优先语义与后端互斥校验一致）
+  const isCustomPool = universe === "custom";
 
   // 策略 id 属父组件受控状态，挂载后从记忆恢复一次（父组件会校验并回退）。
   // 须等策略列表加载完再恢复：列表未到位时 onStrategyChange 会以 null 策略重置参数表单
@@ -358,9 +342,9 @@ export function BacktestTab({
     setTaskActive(false);
     const payload = {
       strategy_id: strategyId,
-      // 留空 = 按 universe 选股池回测；自定义标的时 universe 不生效
-      symbols: hasCustomSymbols ? symbols : null,
-      universe: hasCustomSymbols ? undefined : universe,
+      // 标的池=自选标的时传 symbols（universe 不生效）；预设档位传 universe
+      symbols: isCustomPool && symbols.length > 0 ? symbols : null,
+      universe: isCustomPool ? undefined : universe,
       start: startDate,
       end: endDate || undefined,
       params: buildParamsPayload(strategy, paramValues),
@@ -572,63 +556,38 @@ export function BacktestTab({
             disabled={loading}
           />
           <div className="space-y-1.5">
-            <Label htmlFor="quant-bt-symbols">标的（逗号分隔，可选）</Label>
-            <Input
-              id="quant-bt-symbols"
-              placeholder={BT_UNIVERSE_PLACEHOLDER[universe]}
-              value={symbolsInput}
-              onValueChange={(v) => setSymbolsInput(v)}
+            <Label htmlFor="quant-bt-universe">标的池</Label>
+            <Select
+              value={universe}
+              onValueChange={(v: string | null) =>
+                setUniverse((v as UniverseValue) ?? "hs300")
+              }
               disabled={loading}
-            />
+            >
+              <SelectTrigger id="quant-bt-universe" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {UNIVERSE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="quant-bt-universe">选股池</Label>
-            {hasCustomSymbols ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={<span className="block cursor-not-allowed" />}
-                >
-                  <Select value={universe} disabled>
-                    <SelectTrigger
-                      id="quant-bt-universe"
-                      className="w-full pointer-events-none"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {UNIVERSE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TooltipTrigger>
-                <TooltipContent>
-                  自定义标的时 universe 不生效
-                </TooltipContent>
-              </Tooltip>
-            ) : (
-              <Select
-                value={universe}
-                onValueChange={(v: string | null) =>
-                  setUniverse((v as UniverseValue) ?? "tracked")
-                }
+          {universe === "custom" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="quant-bt-symbols">标的（逗号分隔）</Label>
+              <Input
+                id="quant-bt-symbols"
+                placeholder={UNIVERSE_PLACEHOLDER.custom}
+                value={symbolsInput}
+                onValueChange={(v) => setSymbolsInput(v)}
                 disabled={loading}
-              >
-                <SelectTrigger id="quant-bt-universe" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {UNIVERSE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
+              />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="quant-bt-start">开始日期</Label>

@@ -23,27 +23,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 import type { ParamGridRange, StrategyDef } from "./types";
 
-/** 标的池 universe 选项（与回测页签一致） */
+/** 标的池 universe 选项（全部量化页签共享：回测/选股/优化/步进）。
+ *  custom 为「自选标的」——选中时展开标的输入框，payload 传 symbols 不传 universe。
+ *  cn/all 为全市场重档位，回测页签的 localStorage 记忆恢复会过滤（见 backtest-tab）。 */
 export const UNIVERSE_OPTIONS = [
-  { value: "tracked", label: "tracked 100 只（默认）" },
+  { value: "hs300", label: "沪深300 成分" },
+  { value: "csi500", label: "中证500 成分" },
+  { value: "tracked", label: "tracked 100 只" },
   { value: "cn", label: "A 股全市场" },
   { value: "all", label: "全部（A 股全市场 + tracked 美港）" },
+  { value: "custom", label: "自选标的" },
 ] as const;
 export type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 
 /** 标的输入框 placeholder 跟随选股池档位（留空时实际生效的池子） */
 export const UNIVERSE_PLACEHOLDER: Record<UniverseValue, string> = {
+  hs300: "留空 = 沪深300 成分（可逗号分隔自定义）",
+  csi500: "留空 = 中证500 成分（可逗号分隔自定义）",
   tracked: "留空 = tracked 100 只（可逗号分隔自定义）",
   cn: "留空 = A 股全市场（可逗号分隔自定义）",
   all: "留空 = A 股全市场 + tracked 美港（可逗号分隔自定义）",
+  custom: "逗号分隔，如 600519.SH, 000001.SZ",
 };
 
 /** Date → YYYY-MM-DD */
@@ -128,67 +131,43 @@ export function OptimizeConfigFields({
     setGridField,
     disabled,
   } = state;
-  const hasCustomSymbols = symbolsInput.trim().length > 0;
   const params = gridParams(strategy);
 
   return (
     <>
       <div className="space-y-1.5">
-        <Label htmlFor="quant-opt-symbols">标的（逗号分隔，可选）</Label>
-        <Input
-          id="quant-opt-symbols"
-          placeholder={UNIVERSE_PLACEHOLDER[universe]}
-          value={symbolsInput}
-          onValueChange={(v) => setSymbolsInput(v)}
+        <Label htmlFor="quant-opt-universe">标的池</Label>
+        <Select
+          value={universe}
+          onValueChange={(v: string | null) =>
+            setUniverse((v as UniverseValue) ?? "hs300")
+          }
           disabled={disabled}
-        />
+        >
+          <SelectTrigger id="quant-opt-universe" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {UNIVERSE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="quant-opt-universe">选股池</Label>
-        {hasCustomSymbols ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={<span className="block cursor-not-allowed" />}
-            >
-              <Select value={universe} disabled>
-                <SelectTrigger
-                  id="quant-opt-universe"
-                  className="w-full pointer-events-none"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {UNIVERSE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </TooltipTrigger>
-            <TooltipContent>自定义标的时 universe 不生效</TooltipContent>
-          </Tooltip>
-        ) : (
-          <Select
-            value={universe}
-            onValueChange={(v: string | null) =>
-              setUniverse((v as UniverseValue) ?? "tracked")
-            }
+      {universe === "custom" && (
+        <div className="space-y-1.5">
+          <Label htmlFor="quant-opt-symbols">标的（逗号分隔）</Label>
+          <Input
+            id="quant-opt-symbols"
+            placeholder={UNIVERSE_PLACEHOLDER.custom}
+            value={symbolsInput}
+            onValueChange={(v) => setSymbolsInput(v)}
             disabled={disabled}
-          >
-            <SelectTrigger id="quant-opt-universe" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {UNIVERSE_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      </div>
+          />
+        </div>
+      )}
       <OptDateRange
         startDate={startDate}
         setStartDate={setStartDate}

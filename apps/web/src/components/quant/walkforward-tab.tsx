@@ -80,7 +80,7 @@ export function WalkforwardTab({
   onStrategyChange,
 }: WalkforwardTabProps) {
   const [symbolsInput, setSymbolsInput] = useState("");
-  const [universe, setUniverse] = useState<UniverseValue>("tracked");
+  const [universe, setUniverse] = useState<UniverseValue>("hs300");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [trainDays, setTrainDays] = useState("180");
@@ -94,7 +94,8 @@ export function WalkforwardTab({
 
   const strategy = strategies.find((s) => s.id === strategyId) ?? null;
   const symbols = parseSymbols(symbolsInput);
-  const hasCustomSymbols = symbols.length > 0;
+  // 标的池=自选标的时 payload 传 symbols 不传 universe（显式优先语义与后端互斥校验一致）
+  const isCustomPool = universe === "custom";
 
   /** 切策略：参数网格重置为新策略 schema 默认 min/max/step */
   function handleStrategyChange(id: string) {
@@ -132,8 +133,8 @@ export function WalkforwardTab({
     }
     const payload = {
       strategy_id: strategyId,
-      symbols: hasCustomSymbols ? symbols : null,
-      universe: hasCustomSymbols ? undefined : universe,
+      symbols: isCustomPool && symbols.length > 0 ? symbols : null,
+      universe: isCustomPool ? undefined : universe,
       start: startDate,
       end: endDate || undefined,
       train_days: Number(trainDays) || undefined,

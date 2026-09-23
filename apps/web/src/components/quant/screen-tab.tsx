@@ -7,7 +7,6 @@ import { useState } from "react";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react";
 
 import { EmptyState } from "@/components/empty-state";
-import { UNIVERSE_PLACEHOLDER } from "./optimize-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,27 +34,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 import { StrategyParamsForm, StrategyPicker } from "./strategy-picker";
+import { UNIVERSE_OPTIONS, UNIVERSE_PLACEHOLDER, type UniverseValue } from "./optimize-config";
 import {
   buildParamsPayload,
   parseSymbols,
   type ParamValues,
   type StrategyDef,
 } from "./types";
-
-/** 标的池 universe 选项（标的输入为空时生效，自定义标的时置灰） */
-const UNIVERSE_OPTIONS = [
-  { value: "tracked", label: "tracked 100 只（默认）" },
-  { value: "cn", label: "A 股全市场" },
-  { value: "all", label: "全部（A 股全市场 + tracked 美港）" },
-] as const;
-type UniverseValue = (typeof UNIVERSE_OPTIONS)[number]["value"];
 
 interface ScreenRow {
   symbol: string;
@@ -98,14 +85,15 @@ export function ScreenTab({
   onParamValuesChange,
 }: ScreenTabProps) {
   const [symbolsInput, setSymbolsInput] = useState("");
-  const [universe, setUniverse] = useState<UniverseValue>("tracked");
+  const [universe, setUniverse] = useState<UniverseValue>("hs300");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScreenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const strategy = strategies.find((s) => s.id === strategyId) ?? null;
   const symbols = parseSymbols(symbolsInput);
-  const hasCustomSymbols = symbols.length > 0;
+  // 标的池=自选标的时 payload 传 symbols 不传 universe（显式优先语义与后端互斥校验一致）
+  const isCustomPool = universe === "custom";
 
   async function runScreen() {
     if (!strategyId || loading) return;
@@ -117,9 +105,9 @@ export function ScreenTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           strategy_id: strategyId,
-          // 留空 = 按 universe 选股池扫描；自定义标的时 universe 不生效
-          symbols: hasCustomSymbols ? symbols : null,
-          universe: hasCustomSymbols ? undefined : universe,
+          // 标的池=自选标的时传 symbols（universe 不生效）；预设档位传 universe
+          symbols: isCustomPool && symbols.length > 0 ? symbols : null,
+          universe: isCustomPool ? undefined : universe,
           params: buildParamsPayload(strategy, paramValues),
         }),
       });
@@ -158,65 +146,38 @@ export function ScreenTab({
             disabled={loading}
           />
           <div className="space-y-1.5">
-            <Label htmlFor="quant-sc-symbols">
-              标的（逗号分隔，可选）
-            </Label>
-            <Input
-              id="quant-sc-symbols"
-              placeholder={UNIVERSE_PLACEHOLDER[universe]}
-              value={symbolsInput}
-              onValueChange={(v) => setSymbolsInput(v)}
+            <Label htmlFor="quant-sc-universe">标的池</Label>
+            <Select
+              value={universe}
+              onValueChange={(v: string | null) =>
+                setUniverse((v as UniverseValue) ?? "hs300")
+              }
               disabled={loading}
-            />
+            >
+              <SelectTrigger id="quant-sc-universe" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {UNIVERSE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="quant-sc-universe">选股池</Label>
-            {hasCustomSymbols ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={<span className="block cursor-not-allowed" />}
-                >
-                  <Select value={universe} disabled>
-                    <SelectTrigger
-                      id="quant-sc-universe"
-                      className="w-full pointer-events-none"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {UNIVERSE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TooltipTrigger>
-                <TooltipContent>
-                  自定义标的时 universe 不生效
-                </TooltipContent>
-              </Tooltip>
-            ) : (
-              <Select
-                value={universe}
-                onValueChange={(v: string | null) =>
-                  setUniverse((v as UniverseValue) ?? "tracked")
-                }
+          {universe === "custom" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="quant-sc-symbols">标的（逗号分隔）</Label>
+              <Input
+                id="quant-sc-symbols"
+                placeholder={UNIVERSE_PLACEHOLDER.custom}
+                value={symbolsInput}
+                onValueChange={(v) => setSymbolsInput(v)}
                 disabled={loading}
-              >
-                <SelectTrigger id="quant-sc-universe" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {UNIVERSE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
+              />
+            </div>
+          )}
           <Button
             className="w-full"
             onClick={runScreen}
