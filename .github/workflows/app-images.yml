@@ -65,6 +65,11 @@ jobs:
           # 同 openbb-images.yml：push-by-digest 需关 attestation
           provenance: false
           sbom: false
+          # 跨 run 复用 Docker 层缓存（lockfile 不变时 pnpm install / pip install
+          # / next build 直接命中，全量构建从 ~20min 降到 ~2min）。
+          # scope 按 镜像+架构 隔离，避免不同镜像/架构的缓存互相污染。
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.arch.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.arch.suffix }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
