@@ -61,3 +61,38 @@ docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
 
 log "当前服务状态"
 docker compose -f "${COMPOSE_FILE}" ps
+
+# ── 健康检查（失败 exit 1，供 CI/CD 判定部署成败）────────────────
+# web/quant 查宿主机映射端口的 /health；api 无宿主机端口（仅容器网络可达），
+# 且 compose 已配 curl healthcheck，直接看 compose 状态。
+
+wait_http() {
+  local name="$1" url="$2" attempt
+  for attempt in $(seq 1 12); do
+    if curl -fsS --max-time 5 "${url}" >/dev/null 2>&1; then
+      log "${name} 健康检查通过：${url}"
+      return 0
+    fi
+    sleep 5
+  done
+  die "${name} 健康检查超时（60s）：${url}"
+}
+
+wait_healthy_container() {
+  local name="$1" service="$2" attempt
+  for attempt in $(seq 1 12); do
+    if [[ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose -f "${COMPOSE_FILE}" ps -q "${service}")" 2>/dev/null)" == "healthy" ]]; then
+      log "${name} 容器健康（compose healthcheck）"
+      return 0
+    fi
+    sleep 5
+  done
+  die "${name} 容器 60s 内未转为 healthy"
+}
+
+log "健康检查"
+wait_http "web" "http://127.0.0.1:3000"
+wait_http "quant" "http://127.0.0.1:8083/health"
+wait_healthy_container "api" "api"
+
+log "部署完成，全部服务健康"

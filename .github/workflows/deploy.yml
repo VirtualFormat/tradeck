@@ -1,0 +1,48 @@
+name: Deploy to VPS
+
+# tradeck CD：CI（app-images.yml）构建推送镜像成功后，SSH 到 VPS 执行
+# deploy/deploy-cn.sh（pull + up -d + 健康检查）。
+#
+# 触发方式：
+#   ① CI 成功自动触发（workflow_run）
+#   ② 手动 workflow_dispatch（可跳过 CI 直接重跑部署，如 .env 变更后）
+#
+# 所需 secrets（均放在 GitHub Environment `production` 下）：
+#   DEPLOY_HOST     VPS 地址（IP 或域名）
+#   DEPLOY_USER     SSH 用户（建议专用低权限用户，需 docker 组）
+#   DEPLOY_PORT     SSH 端口（默认 22）
+#   DEPLOY_SSH_KEY  CD 专用 ed25519 私钥（对应公钥已加入 VPS authorized_keys）
+#   DEPLOY_PATH     VPS 上 tradeck 部署目录（如 /data/apps/tradeck）
+#
+# 安全约定：
+#   - VPS 部署目录为纯部署目录（无 git），本 workflow 只经 SSH 执行脚本，
+#     不下发任何文件；compose/.env 的更新仍走人工或单独 rsync 流程。
+#   - .env 在 VPS 本地维护，CI 绝不触碰。
+#   - 部署失败不自动回滚：保现场标红，人工排查（容器场景自动回滚风险更高）。
+
+on:
+  workflow_run:
+    workflows: ["Build App Images"]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    # CI 失败/被取消时不部署；手动 dispatch 时 github.event.workflow_run 为空，直接放行
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # 排障时完整输出 deploy-cn.sh 日志（含 docker compose ps）
+          script: |
+            set -Eeuo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            bash deploy/deploy-cn.sh
