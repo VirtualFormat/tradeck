@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-*/
 venv/
 
 # build output
@@ -36,8 +37,17 @@ pnpm-debug.log*
 # vite / test cache
 .vite/
 coverage/
+tmp/
+.tasks/
 
 # cloudflare / wrangler
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+# 本地 AI agent 技能配置（个人环境，非项目代码）
+.agents/
+skills-lock.json
+
+# 采集产物（分钟K 冷层 Parquet，本地运行时生成，不入库）
+apps/data-collector/data-lake/

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 def _parse_date(s: str | None) -> date_type | None:
@@ -31,7 +34,8 @@ async def get_movers(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT rank, symbol, name, price, percent_change, volume
+            SELECT rank, symbol, name, price, percent_change, volume, amount,
+                   snapshot_date, updated_at
             FROM movers_cache
             WHERE type = $1 AND market = $2
               AND snapshot_date = COALESCE(
@@ -53,9 +57,16 @@ async def get_movers(
             "name": r["name"],
             "price": float(r["price"]) if r["price"] else None,
             "change": None,
-            "percent_change": float(r["percent_change"]) if r["percent_change"] else None,
+            "percent_change": (
+                float(r["percent_change"]) if r["percent_change"] else None
+            ),
             "volume": r["volume"],
+            "amount": float(r["amount"]) if r["amount"] else None,
             "exchange": None,
+            "snapshot_date": (
+                r["snapshot_date"].isoformat() if r["snapshot_date"] else None
+            ),
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]
@@ -72,6 +83,7 @@ async def get_movers_turnover(
         rows = await conn.fetch(
             """
             SELECT q.symbol, q.name, q.last_price, q.change_percent, q.volume,
+                   q.updated_at,
                    (q.volume * q.last_price / p.market_cap) AS turnover
             FROM quote_snapshots q
             JOIN equity_profiles p ON p.symbol = q.symbol
@@ -92,6 +104,7 @@ async def get_movers_turnover(
             "percent_change": float(r["change_percent"]) if r["change_percent"] else None,
             "volume": r["volume"],
             "turnover": float(r["turnover"]) if r["turnover"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows
     ]

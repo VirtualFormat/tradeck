@@ -1,10 +1,13 @@
 """GET /api/macro — 从 macro_indicators 读"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 @router.get("/api/macro")
@@ -33,7 +36,7 @@ async def get_macro(
         return [
             {
                 "date": r["date"].isoformat() if r["date"] else None,
-                "value": float(r["value"]) if r["value"] else None,
+                "value": float(r["value"]) if r["value"] is not None else None,
                 "country": None,
             }
             for r in rows
@@ -53,7 +56,7 @@ async def get_macro(
         {
             "name": r["name"],
             "date": r["date"].isoformat() if r["date"] else None,
-            "value": float(r["value"]) if r["value"] else None,
+            "value": float(r["value"]) if r["value"] is not None else None,
         }
         for r in rows
     ]

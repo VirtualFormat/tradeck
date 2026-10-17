@@ -26,6 +26,20 @@ export async function YieldCurvePanel() {
   const y2 = curve.find((p) => p.tenor === "2Y")?.latest;
   const spreadBp =
     y10 != null && y2 != null ? Math.round((y10 - y2) * 100) : null;
+  const curveDates = Array.from(
+    new Set(
+      curve
+        .map((point) => point.latest_date?.slice(0, 10))
+        .filter((date): date is string => Boolean(date))
+    )
+  );
+  const curveDate =
+    curveDates.length === 1
+      ? curveDates[0]
+      : curveDates.length > 1
+        ? "日期不一致"
+        : "—";
+  const spreadDate = spread.at(-1)?.date?.slice(0, 10) ?? "—";
 
   return (
     <Card
@@ -34,9 +48,14 @@ export async function YieldCurvePanel() {
     >
       <CardHeader>
         <div className="flex items-center gap-2">
-          <CardTitle className="text-base font-medium text-fg-dim">
-            美债收益率曲线
-          </CardTitle>
+          <div className="min-w-0">
+            <CardTitle className="text-base font-medium text-fg-dim">
+              美债收益率曲线
+            </CardTitle>
+            <div className="text-[11px] text-muted-foreground">
+              Federal Reserve · 截至 {curveDate}
+            </div>
+          </div>
           {spreadBp != null &&
             (spreadBp < 0 ? (
               <Badge
@@ -63,7 +82,9 @@ export async function YieldCurvePanel() {
             <YieldCurveChart data={curve} />
             <Separator />
             <div>
-              <div className="mb-2 text-xs text-muted-foreground">10Y-2Y 利差走势（近一年，bp）</div>
+              <div className="mb-2 text-xs text-muted-foreground">
+                10Y-2Y 利差走势（近一年，bp） · Federal Reserve · 截至 {spreadDate}
+              </div>
               <YieldSpreadChart data={spread} />
             </div>
           </>

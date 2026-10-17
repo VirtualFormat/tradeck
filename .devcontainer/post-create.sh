@@ -1,6 +1,7 @@
 #!/bin/bash
 # devcontainer 创建后的初始化脚本
-# 安装所有开发依赖（Node + Python + OpenBB + 前端依赖）
+# 安装所有开发依赖（Node + Python/backend + quant requirements + 前端依赖）
+# 行情数据层（OpenBB/collector 等）在 tradb 仓库，不在此安装
 set -e
 
 echo "=== 1. 安装 Node 24 + pnpm 9 ==="
@@ -10,12 +11,10 @@ corepack enable && corepack prepare pnpm@9.15.0 --activate
 node --version && pnpm --version
 
 echo ""
-echo "=== 2. 安装 Python 依赖（OpenBB + akshare）==="
-pip install --no-cache-dir openbb akshare
-# 安装 openbb-akshare-provider（本地包）
-pip install --no-cache-dir -e /workspace/packages/openbb-akshare-provider
-# 重建 OpenBB 静态资产（注册 akshare provider）
-openbb-build
+echo "=== 2. 安装 Python 依赖（backend + quant）==="
+pip install --no-cache-dir \
+  -r /workspace/apps/backend/requirements.txt \
+  -r /workspace/apps/quant/requirements.txt
 
 echo ""
 echo "=== 3. 安装前端依赖 ==="
@@ -23,6 +22,5 @@ cd /workspace/apps/web && pnpm install --no-frozen-lockfile
 
 echo ""
 echo "=== 4. 验证 ==="
-echo "OpenBB API: http://openbb:6900"
-echo "Swagger UI: http://openbb:6900/docs"
+echo "行情数据（prod tradb，经 SSH tunnel）: http://host.docker.internal:8080/docs"
 echo "前端开发: cd /workspace/apps/web && pnpm dev"

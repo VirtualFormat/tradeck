@@ -1,105 +1,154 @@
-# tradeck 项目 1 — 市场资讯看板
-# 架构：PostgreSQL + FastAPI backend + OpenBB 数据源 + Next.js 前端
+# tradeck 项目 1 — 市场资讯看板（prod）
+# 架构：Next.js 前端（web）+ 量化引擎（quant）；数据层由 tradb 独立 compose 接管
+# （postgres/clickhouse/openbb/collector/data-api 均已迁出本仓库，勿在本文件复活）。
+# web/quant 经 tradb_default 外部网络访问 tradb data-api/collector，
+# 部署手册与切换记录见 docs/TRADB-DEPLOY.md / plans/TASKS-TRADB-DEPLOY.md。
 #
 # 使用：
-#   cp .env.example .env  # 填 API key（可选，免费源不需要）
-#   docker compose up -d --build
-#   前端：http://localhost:3000
-#   backend API：http://localhost:8080/docs
-#   OpenBB API：http://localhost:6900/docs
+#   cp .env.example .env  # 填 TRADB_* / token
+#   docker compose up -d
+#   前端：http://localhost:3000（仅绑回环，对外经宿主机 nginx 反代）
 
 services:
-  # ── 数据存储 ──────────────────────────────────────
-  postgres:
+  # ── tradeck 应用层 API（auth）：auth-db + api ───────────────────
+  # 职责分离：auth-db / api 只承载 tradeck 用户域（注册/登录/session），
+  # 行情数据仍全部走 tradb（tradb_net 外部网络），本 compose 不复活任何行情数据服务。
+  # auth-db/api 只在 default 网络，不接 tradb_net，与 tradb 行情库物理分离。
+  auth-db:
     image: postgres:16-alpine
-    container_name: tradeck-postgres
+    container_name: tradeck-auth-db
+    mem_limit: 256m
     environment:
-      POSTGRES_DB: tradeck
       POSTGRES_USER: tradeck
-      POSTGRES_PASSWORD: tradeck_dev
+      # prod 必改强密码（.env 的 AUTH_DB_PASSWORD）；dev 默认值仅供本地
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-tradeck_dev}
+      POSTGRES_DB: tradeck_auth
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./apps/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
+      # bind mount 到数据盘（默认 /data/apps/tradeck/postgres/data；对齐 tradb 的
+      # TRADB_PG_DATA 模式，命名卷会落在 docker 数据目录、根盘有写满风险）。
+      # 从命名卷迁移：先 docker run --rm -v tradeck_auth-db-data:/from -v <本目录>:/to
+      # postgres:16-alpine cp -a /from/. /to/，再 up（见 TRADB-DEPLOY.md 同类操作）。
+      - ${TRADECK_PG_DATA:-/data/apps/tradeck/postgres/data}:/var/lib/postgresql/data
+      # 不映射宿主机端口：仅 api 服务经容器网络访问。
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tradeck"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "pg_isready -U tradeck -d tradeck_auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
-  # ── 数据源代理 ────────────────────────────────────
-  openbb:
-    image: ghcr.io/virtualformat/tradeck-openbb:latest
-    # 断网/无 registry 兜底：注释上面的 image、启用下面的 build 本地构建
-    # build:
-    #   context: .
-    #   dockerfile: ./docker/openbb/Dockerfile
-    container_name: tradeck-openbb
-    ports:
-      - "6900:6900"
-    volumes:
-      - openbb-config:/root/.openbb_platform
+  api:
+    # tradeck 应用层总 API（当前为用户域 auth 入口 app.auth_main；apps/backend 构建）。
+    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-api:latest
+    container_name: tradeck-api
+    command: uvicorn app.auth_main:app --host 0.0.0.0 --port 8080 --workers 1
+    mem_limit: 512m
     environment:
-      - FMP_API_KEY=${FMP_API_KEY:-}
-      - FRED_API_KEY=${FRED_API_KEY:-}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
-      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
-      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
-      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
-      - OPENBB_USER_SETTINGS_DIR=/root/.openbb_platform
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6900/openapi.json", "-o", "/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ── 数据管道 + API 服务 ──────────────────────────
-  backend:
-    build: ./apps/backend
-    container_name: tradeck-backend
-    environment:
-      DATABASE_URL: postgresql://tradeck:tradeck_dev@postgres:5432/tradeck
-      OPENBB_API_URL: http://openbb:6900
-      # 海外节点（韩国瘦 OpenBB）：为空则海外源回落国内 openbb
-      OPENBB_OVERSEAS_API_URL: ${OPENBB_OVERSEAS_API_URL:-}
-      OPENBB_OVERSEAS_TOKEN: ${OPENBB_OVERSEAS_TOKEN:-}
-      # TickFlow 日K 源：为空则用免费档 TickFlow.free()
-      TICKFLOW_API_KEY: ${TICKFLOW_API_KEY:-}
+      # 密码与 auth-db 的 POSTGRES_PASSWORD 保持一致（同一 AUTH_DB_PASSWORD）
+      AUTH_DATABASE_URL: postgresql://tradeck:${AUTH_DB_PASSWORD:-tradeck_dev}@auth-db:5432/tradeck_auth
+      # 非空 = 邀请制注册（prod 内测期必填）；空 = 开放注册
+      AUTH_INVITE_CODE: ${AUTH_INVITE_CODE:-}
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
+      # 消费方令牌：与 web 注入的 X-Service-Token（TRADB_SERVICE_TOKEN）同一把。
+      # SERVICE_TOKENS 是 JSON 格式 {"<token>": "<consumer>"}（解析见 _service_auth.py），
+      # 不能直接用裸 token，故由 .env 的 AUTH_SERVICE_TOKENS 拼装为
+      # {"<TRADB_SERVICE_TOKEN 同值>": "web-bff"}；留空 = 不启用鉴权（仅容器网络可达，可接受）。
+      SERVICE_TOKENS: ${AUTH_SERVICE_TOKENS:-}
     depends_on:
-      postgres:
+      auth-db:
         condition: service_healthy
-      openbb:
-        condition: service_healthy
+    # 探活供 web depends_on service_healthy 消费（镜像自带 curl）；
+    # 注意 /health 不查库，auth-db 运行期故障只能靠 api 服务日志排查（已知取舍）。
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # 不映射宿主机端口：web 经容器网络（default）访问。
+    restart: unless-stopped
+
+  # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
+  # 默认随全栈启动（HTTP 服务，web 经 Next 代理消费 8083）。
+  quant:
+    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-quant:latest
+    container_name: tradeck-quant
+    # 全市场矩阵（~5500 只全历史）峰值内存会顶到 1g 被 OOM 杀（2026-09-22 事故），放宽到 2g
+    mem_limit: 2g
+    environment:
+      # 量化引擎只过 data-api（/api/bars 等批量接口），绝不直连 DB
+      # tradb 独立部署：quant 与 tradb 同处 tradb_default 外部网络（见底部 networks），
+      # 经 tradb 容器别名访问（tradb data-api 仅绑 127.0.0.1 回环，同网络容器直连容器端口，
+      # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
+      BACKEND_API_URL: ${TRADB_API_URL:-http://tradb-data-api:8080}
+      # 消费方令牌：与 data-api 的 SERVICE_TOKENS 匹配；留空内网放行
+      SERVICE_TOKEN: ${QUANT_SERVICE_TOKEN:-}
+      # Parquet 缓存目录（行情/因子缓存 + enriched 矩阵 + 报告/候选库）
+      QUANT_CACHE_DIR: /data/cache
+      # AI 策略生成（可选）：全部留空即关闭
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+    volumes:
+      - ./quant/cache:/data/cache
     ports:
-      - "8080:8080"
+      - "8083:8083"  # HTTP 服务（web 经 Next 代理消费）
+    # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
+    networks:
+      - default
+      - tradb_net
+    # quant 无 depends_on：经 tradb_net 访问 tradb data-api，不依赖本仓库任何数据层服务。
     restart: unless-stopped
 
   # ── 前端 ──────────────────────────────────────────
   web:
-    build:
-      context: ./apps/web
-      dockerfile: Dockerfile
+    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-web:latest
     container_name: tradeck-web
+    mem_limit: 512m
     ports:
-      - "3000:3000"
+      # 仅绑 localhost：对外由宿主机 nginx（host 网络 80/443，CF 橙云回源）
+      # 反代到 127.0.0.1:3000，web 不直接暴露公网。
+      - "127.0.0.1:3000:3000"
     environment:
-      # 改为从 backend 读（backend 从 DB 读，<50ms）
-      - BACKEND_API_URL=http://backend:8080
-      # OpenBB API 保留给阶段 1 暂未迁移的组件（movers/macro/commodities/treasury）
-      - OPENBB_API_URL=http://openbb:6900
+      # tradb 数据服务地址：web 与 tradb 同处 tradb_default 外部网络（见底部 networks），
+      # 经 tradb 容器别名访问（tradb data-api 仅绑 127.0.0.1 回环，同网络容器直连容器端口，
+      # 不经过宿主机回环，规避 loopback 仅监听本机导致的 host-gateway 访问失败）。
+      - BACKEND_API_URL=${TRADB_API_URL:-http://tradb-data-api:8080}
+      # tradeck 自建 auth 服务（session 校验/登录/注册转发目标；容器网络服务名直达）
+      - AUTH_API_URL=http://api:8080
+      # standalone server.js 默认绑 $HOSTNAME，多网络容器下容器 ID 可能解析到
+      # 非默认网络的 IP，导致宿主机 docker-proxy 端口映射 reset（2026-09-12 实测）。
+      - HOSTNAME=0.0.0.0
+      # 手动同步/任务状态转发目标（tradb collector 是唯一写者，持有 scheduler/registry；
+      # data-api 不暴露 /api/system/jobs，web 必须直连 collector）
+      - COLLECTOR_API_URL=${TRADB_COLLECTOR_URL:-http://tradb-collector:8080}
+      # 消费方鉴权令牌：与 tradb 侧 SERVICE_TOKENS 中 web 的 token 对应；留空内网放行
+      - TRADB_SERVICE_TOKEN=${TRADB_SERVICE_TOKEN:-}
+      - TRADB_SERVICE_NAME=web-bff
+      # quant 量化引擎 HTTP 服务（/api/quant/* 代理目标；容器网络服务名直达）
+      - QUANT_API_URL=http://quant:8083
       - NODE_ENV=production
+    # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
+    networks:
+      - default
+      - tradb_net
     depends_on:
-      backend:
+      # web 经 tradb_net 访问 tradb，不依赖任何本仓库数据层服务。
+      quant:
         condition: service_started
-      openbb:
+      # api 起不来不阻塞行情页面，但登录链路需要它，故等其健康
+      api:
         condition: service_healthy
     restart: unless-stopped
-    command: ["pnpm", "start", "-H", "0.0.0.0"]
 
-volumes:
-  openbb-config:
-  web-node-modules:
-  postgres-data:
+networks:
+  # tradb 独立 compose（/data/apps/tradb）创建的默认网络，tradeck web/quant 接入后
+  # 与 tradb data-api/collector 同网络直接通信。external：由 tradb 侧 compose 管理生命周期。
+  tradb_net:
+    name: tradb_default
+    external: true
+
+# auth-db 已改 bind mount（TRADECK_PG_DATA），无命名卷；保留空 volumes 占位以便
+# 后续新增命名卷时不破坏 YAML 结构。
+volumes: {}

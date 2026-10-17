@@ -1,0 +1,215 @@
+name: Build App Images
+
+# 构建并发布 tradeck 应用镜像到 GHCR（org: virtualformat）：
+#   web / api（tradeck 应用层总 API，当前为用户域 auth 入口）/ quant
+# 数据管道 collector 与 openbb 镜像在 tradb 仓库的 CI 构建。
+# 正式服只 docker compose pull && up，不在服务器拉源码构建。
+# 同步推送一份到腾讯云 TCR 个人版（secrets 配置见 README/部署文档）：
+#   TCR_REGISTRY / TCR_NAMESPACE / TCR_USERNAME / TCR_PASSWORD
+#
+# 多架构（linux/amd64 + linux/arm64）均由 GitHub 原生 runner 构建（零 QEMU）：
+#   amd64 -> ubuntu-24.04，arm64 -> ubuntu-24.04-arm（public repo 免费）。
+# 每架构 push-by-digest，再由 merge job 用 imagetools 合成 manifest list。
+#
+# tag 策略：v* tag -> 语义版本 + latest；push develop -> latest（主部署分支）。
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["develop"]
+    paths:
+      - "apps/web/**"
+      - "apps/backend/**"
+      - "apps/quant/**"
+      - ".github/workflows/app-images.yml"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: virtualformat
+
+jobs:
+  build:
+    runs-on: ${{ matrix.arch.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: tradeck-web, dockerfile: apps/web/Dockerfile, context: apps/web, target: prod }
+          - { name: tradeck-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
+          - { name: tradeck-quant, dockerfile: apps/quant/Dockerfile, context: apps/quant, target: "" }
+        arch:
+          - { platform: linux/amd64, runner: ubuntu-24.04, suffix: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, suffix: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          target: ${{ matrix.image.target }}
+          platforms: ${{ matrix.arch.platform }}
+          # 同 openbb-images.yml：push-by-digest 需关 attestation
+          provenance: false
+          sbom: false
+          # 跨 run 复用 Docker 层缓存（lockfile 不变时 pnpm install / pip install
+          # / next build 直接命中，全量构建从 ~20min 降到 ~2min）。
+          # scope 按 镜像+架构 隔离，避免不同镜像/架构的缓存互相污染。
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.arch.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.arch.suffix }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image.name }}
+        run: |
+          mkdir -p "/tmp/digests/${IMAGE}"
+          touch "/tmp/digests/${IMAGE}/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch.suffix }}-${{ matrix.image.name }}
+          path: /tmp/digests/${{ matrix.image.name }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tradeck-web, tradeck-api, tradeck-quant]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*-${{ matrix.image }}
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_REF}@sha256:%s " *)
+
+      - name: Inspect
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"
+
+  # 把 GHCR 的 amd64 镜像同步到腾讯云 TCR 个人版（不重 build，纯镜像搬家）。
+  # TCR 个人版免费额度 10 个仓库 / 500GB，够本仓库 3 个镜像用。
+  # 只同步 linux/amd64 单架构：prod VPS 为 x86，无需 arm64。
+  # 用「本地 pull + 本地 push」而非 imagetools 跨 registry 复制：
+  # imagetools 的 server-side 复制让 TCR 主动去 GHCR 拉 blob，
+  # 该方向（TCR 发起、GHCR 响应）的 HTTP/2 连接会被网关断流（PROTOCOL_ERROR）；
+  # 本地拉推所有连接均由 runner 发起，避开此问题。
+  sync-tcr:
+    needs: merge
+    runs-on: ubuntu-24.04
+    # TCR_* secrets 放在 GitHub Environment `production` 下，
+    # 不声明 environment 的 job 读不到环境级 secrets（会解析为空导致 login 失败）。
+    environment: production
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tradeck-web, tradeck-api, tradeck-quant]
+    steps:
+      # 只取 amd64 的 digest（artifact 名后缀架构名在末尾，见 build job 注释）
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-amd64-${{ matrix.image }}
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.TCR_REGISTRY }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
+
+      # 本地拉取 amd64 镜像，再逐 tag 推送（等价于 docker tag + push，不重新编译）。
+      - name: Pull amd64 image from GHCR
+        working-directory: /tmp/digests
+        env:
+          SRC: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          # /tmp/digests 下只有一个文件：amd64 镜像 digest（不含 sha256: 前缀）
+          digest=$(ls)
+          echo "pulling amd64 digest: ${digest}"
+          docker pull "${SRC}@sha256:${digest}"
+          # 存到环境文件供下一步使用
+          echo "AMD64_DIGEST=${digest}" >> "$GITHUB_ENV"
+
+      - name: Push to TCR
+        working-directory: /tmp/digests
+        env:
+          SRC: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          DST: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          for tag in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            # tag 形如 ccr.ccs.tencentyun.com/tradeck/tradeck-web:1.2.3，取冒号后
+            short="${tag##*:}"
+            echo "tag & push ${DST}:${short}"
+            docker tag "${SRC}@sha256:${AMD64_DIGEST}" "${DST}:${short}"
+            docker push "${DST}:${short}"
+          done

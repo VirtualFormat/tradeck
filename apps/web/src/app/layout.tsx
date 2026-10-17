@@ -2,9 +2,12 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Roboto_Slab, Public_Sans } from "next/font/google";
 import "./globals.css";
 import { AppSidebar } from "@/components/app-sidebar";
+import { NavUser } from "@/components/nav-user";
 import { SiteHeader } from "@/components/site-header";
+import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { getSession } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const publicSansHeading = Public_Sans({subsets:['latin'],variable:'--font-heading'});
@@ -26,46 +29,68 @@ export const metadata: Metadata = {
   description: "全球股票行情 + 资讯 Dashboard",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const user = await getSession();
   return (
     <html
       lang="zh-CN"
+      suppressHydrationWarning
       className={cn(
         "dark h-full antialiased",
         geistSans.variable,
         geistMono.variable,
-        "font-serif",
         robotoSlab.variable,
         publicSansHeading.variable,
       )}
     >
       <body className="min-h-full">
-        <TooltipProvider>
-          <SidebarProvider
-            style={
-              {
-                "--sidebar-width": "calc(var(--spacing) * 72)",
-                "--header-height": "calc(var(--spacing) * 12)",
-              } as React.CSSProperties
-            }
-          >
-            <AppSidebar variant="inset" />
-            <SidebarInset>
-              <SiteHeader />
-              <div className="flex flex-1 flex-col">
-                <div className="@container/main flex flex-1 flex-col gap-2">
-                  <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-                    {children}
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          forcedTheme="dark"
+          enableSystem={false}
+          disableTransitionOnChange
+        >
+          <TooltipProvider>
+            {/* 未登录（/login 等公开页）不渲染侧边栏与顶栏，只给纯内容画布；
+                登录后才进入带 AppSidebar/SiteHeader 的应用壳。 */}
+            {user ? (
+              <SidebarProvider
+                style={
+                  {
+                    "--sidebar-width": "14.5rem",
+                    "--header-height": "calc(var(--spacing) * 12)",
+                  } as React.CSSProperties
+                }
+              >
+                <AppSidebar variant="inset">
+                  <NavUser
+                    user={{
+                      name: user.display_name ?? user.email,
+                      email: user.email,
+                    }}
+                  />
+                </AppSidebar>
+                <SidebarInset>
+                  <SiteHeader />
+                  <div className="flex flex-1 flex-col">
+                    <div className="@container/main flex flex-1 flex-col gap-2">
+                      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                        {children}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            </SidebarInset>
-          </SidebarProvider>
-        </TooltipProvider>
+                </SidebarInset>
+              </SidebarProvider>
+            ) : (
+              children
+            )}
+          </TooltipProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -5,7 +5,14 @@
  */
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 
@@ -18,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { TradingViewChart, type KlinePoint } from "@/components/tradingview-chart";
+import { cn } from "@/lib/utils";
 
 interface QuoteInfo {
   symbol: string;
@@ -117,7 +125,7 @@ export function StockPreviewDialog({
                 </span>
                 <span className={up ? "text-up" : "text-down"}>
                   {pct != null
-                    ? `${up ? "+" : ""}${pct.toFixed(2)}%`
+                    ? `${pct > 0 ? "+" : ""}${(pct * 100).toFixed(2)}%`
                     : "—"}
                 </span>
                 <span className="text-muted-foreground">
@@ -145,26 +153,56 @@ export function StockPreviewTrigger({
   symbol,
   name,
   children,
+  renderTrigger,
 }: {
   symbol: string;
   name?: string | null;
-  children: React.ReactNode;
+  children?: ReactNode;
+  renderTrigger?: (props: {
+    role: "button";
+    tabIndex: number;
+    "aria-haspopup": "dialog";
+    onClick: MouseEventHandler<HTMLElement>;
+    onKeyDown: KeyboardEventHandler<HTMLElement>;
+  }) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const handleOpen = useCallback(() => setOpen(true), []);
+  const handleClick: MouseEventHandler<HTMLElement> = useCallback(
+    () => handleOpen(),
+    [handleOpen]
+  );
+  const handleKeyDown: KeyboardEventHandler<HTMLElement> = useCallback(
+    (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleOpen();
+      }
+    },
+    [handleOpen]
+  );
+  const triggerProps = {
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-haspopup": "dialog" as const,
+    onClick: handleClick,
+    onKeyDown: handleKeyDown,
+  };
+
   return (
     <>
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={handleOpen}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") handleOpen();
-        }}
-        className="cursor-pointer"
-      >
-        {children}
-      </div>
+      {renderTrigger ? (
+        renderTrigger(triggerProps)
+      ) : (
+        <div
+          {...triggerProps}
+          className={cn(
+            "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          )}
+        >
+          {children}
+        </div>
+      )}
       <StockPreviewDialog
         symbol={symbol}
         name={name}

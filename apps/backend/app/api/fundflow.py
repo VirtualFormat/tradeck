@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 def _parse_date(s: str | None) -> date_type | None:
@@ -32,7 +35,8 @@ async def get_fund_flow(
         rows = await conn.fetch(
             f"""
             SELECT symbol, name, price, change_percent, turnover_rate,
-                   amount_in, amount_out, net_amount, amount_total, updated_at
+                   amount_in, amount_out, net_amount, amount_total,
+                   snapshot_date, updated_at
             FROM fund_flow
             WHERE net_amount IS NOT NULL
               AND snapshot_date = COALESCE($2::date, (SELECT max(snapshot_date) FROM fund_flow))
@@ -54,6 +58,7 @@ async def get_fund_flow(
             "amount_out": r["amount_out"],
             "net_amount": r["net_amount"],
             "amount_total": r["amount_total"],
+            "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows

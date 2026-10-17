@@ -1,0 +1,660 @@
+"""撮合引擎 — 信号矩阵 → 成交记录 → 逐日净值（防未来函数是铁规矩）。
+
+口径（参照 tick-stock-panel MatcherConfig 精简实现，三市场参数化）：
+- 信号当日收盘产生，open_t+1 成交（默认）：信号右移 1 日、用次日 open 成交。
+  close_t 口径为「研究用理想价」，报告中须标注。
+- 成本：佣金双边 + 印花税仅卖出（CN/HK）+ 滑点双边（bps）。
+- 约束开关（默认全开）：CN T+1（当日买不可卖）、CN 涨跌停不可成交、整手 100 股（仅 CN）。
+- 仓位：等权分配（max_positions 上限内逐信号开仓）。
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Callable
+
+import numpy as np
+
+from app.engine.limits import limit_pct
+from app.engine.minute_fill import resolve_minute_fill_with_mode
+from app.engine.minute_trigger import resolve_minute_exit_trigger
+from app.matrix import MarketMatrix
+
+logger = logging.getLogger(__name__)
+
+# 分钟K 加载回调签名：(symbol, date) → 当日分钟K float64 2D 数组
+# （列序 [open, high, low, close, volume, amount]），缺失返回 None。
+# 由 runner 注入（runner 经 data/client_minute 拉触发日分钟K），
+# matcher 自身不做 IO，保持纯计算。
+MinuteLoader = Callable[[str, date], "np.ndarray | None"]
+
+
+@dataclass
+class CostModel:
+    """分市场成本模型（小数口径；滑点为基点 bps）。"""
+    commission_pct: float = 0.00025   # 佣金双边
+    min_commission: float = 0.0       # 单笔最低佣金（CN 5 元）
+    stamp_tax_pct: float = 0.0        # 印花税（仅卖出）
+    slippage_bps: float = 10.0        # 滑点双边（bps = 万分之一）
+
+    def buy_cost(self, value: float) -> float:
+        c = max(value * self.commission_pct, self.min_commission if value > 0 else 0.0)
+        return c + value * self.slippage_bps / 10000.0
+
+    def sell_cost(self, value: float) -> float:
+        c = max(value * self.commission_pct, self.min_commission if value > 0 else 0.0)
+        return c + value * self.stamp_tax_pct + value * self.slippage_bps / 10000.0
+
+
+# 三市场默认成本（docs/QUANT-BACKTEST.md 口径）
+COST_CN = CostModel(commission_pct=0.00025, min_commission=5.0, stamp_tax_pct=0.001, slippage_bps=100)
+COST_US = CostModel(commission_pct=0.0, min_commission=0.0, stamp_tax_pct=0.0, slippage_bps=50)
+COST_HK = CostModel(commission_pct=0.0003, min_commission=0.0, stamp_tax_pct=0.001, slippage_bps=100)
+
+
+def _cost_of(symbol: str, commission_pct: float | None = None) -> CostModel:
+    """分市场成本模型；显式给出的成本项覆盖默认，未给出的沿用分市场默认。"""
+    if symbol.endswith((".SH", ".SS", ".SZ", ".BJ")):
+        base = COST_CN
+    elif symbol.endswith(".HK"):
+        base = COST_HK
+    else:
+        base = COST_US
+    return base
+
+
+def _cost_of_with_overrides(
+    symbol: str,
+    commission_pct: float | None = None,
+    stamp_tax_pct: float | None = None,
+    slippage_bps: float | None = None,
+) -> CostModel:
+    """分市场成本模型 + 可选覆盖（None 的项沿用分市场默认）。"""
+    base = _cost_of(symbol)
+    if commission_pct is None and stamp_tax_pct is None and slippage_bps is None:
+        return base
+    return CostModel(
+        commission_pct=commission_pct if commission_pct is not None else base.commission_pct,
+        min_commission=base.min_commission,
+        stamp_tax_pct=stamp_tax_pct if stamp_tax_pct is not None else base.stamp_tax_pct,
+        slippage_bps=slippage_bps if slippage_bps is not None else base.slippage_bps,
+    )
+
+
+def _is_cn(symbol: str) -> bool:
+    return symbol.endswith((".SH", ".SS", ".SZ", ".BJ"))
+
+
+# 风控类退出原因：触发后对该 symbol 置「冷却标记」，状态型 entry 信号须先出现
+# False（复位）再出现 True（沿）才允许重新开仓，防止止损/止盈平仓后次日被
+# 持续为 True 的状态型信号立即重新开仓（纯沿触发的 signal_fired 拦不住）。
+# signal/max_hold/end 退出不冷却：signal 退出后信号通常已复位，max_hold 是策略主动离场。
+_RISK_EXIT_REASONS = frozenset(
+    {"stop_loss", "trailing_stop", "trailing_take_profit", "take_profit"}
+)
+
+
+@dataclass
+class MatcherConfig:
+    """撮合配置。"""
+    entry_fill: str = "open_t+1"   # open_t+1（默认，防未来函数）/ close_t（研究口径）
+    # exit_fill 额外支持 "signal_next_minute"（阶段 H1 分钟触发卖出）：
+    # 卖出信号当日用分钟K 盘中确认（分钟收盘下穿触发线 → 下一分钟开盘成交）；
+    # 分钟数据缺失 / 未盘中确认时自动降级 open_t+1（次日开盘）。
+    exit_fill: str = "open_t+1"
+    # 分钟精确成交（阶段 H1）：信号成交日用当日分钟K 优化成交价
+    # （有参考线→穿越价，无参考线→VWAP，分钟数据缺失自动降级日K 口径）。
+    # 默认 False：与既有日K 口径行为完全一致。
+    minute_fill: bool = False
+    initial_capital: float = 1_000_000.0
+    max_positions: int = 10          # 最大同时持仓数
+    commission_pct: float | None = None  # 佣金率覆盖（小数），None=用分市场默认
+    stamp_tax_pct: float | None = None   # 印花税率覆盖（小数），None=用分市场默认
+    slippage_bps: float | None = None    # 滑点覆盖（bps），None=用分市场默认
+    t1: bool = True                  # CN T+1：当日买不可卖
+    price_limit: bool = True         # CN 涨跌停不可成交
+    lot_size: bool = True            # CN 整手 100 股
+    stop_loss_pct: float | None = None    # 止损（如 -0.08），None 关闭
+    take_profit_pct: float | None = None  # 止盈，None 关闭
+    # 移动止损：相对持仓期峰值价（含当日 high）回撤超过该比例即离场（如 0.05 表示
+    # 从峰值回落 5% 触发）；None 关闭。语义对齐参照 tick-stock-panel MatcherConfig。
+    trailing_stop_pct: float | None = None
+    # 移动止盈（回撤止盈）：峰值收益先达到 activate_pct 才激活（如 0.10 = 峰值浮盈
+    # ≥10% 激活），激活后从峰值回撤超过 drawdown_pct 触发离场；两者须同时设置，None 关闭。
+    trailing_take_profit_activate_pct: float | None = None
+    trailing_take_profit_drawdown_pct: float | None = None
+    max_hold_days: int | None = None      # 最长持有交易日数，None 不限
+
+
+@dataclass
+class Trade:
+    symbol: str
+    entry_date: date
+    exit_date: date
+    entry_price: float   # 成交价（与信号矩阵同口径，复权价）
+    exit_price: float
+    shares: float
+    pnl: float           # 净盈亏（已扣双边成本）
+    ret: float           # 收益率（净）
+    exit_reason: str     # signal / stop_loss / take_profit / trailing_stop /
+                         # trailing_take_profit / max_hold / end
+    # 分钟成交标注（阶段 H1）：entry_fill_mode / exit_fill_mode ∈
+    # minute_ref（穿越价）/ minute_vwap / minute_close（有参考线未穿越的信号确认价）
+    # / minute_trigger（盘中确认下一分钟开盘）/ daily（日K 口径或分钟降级）。
+    entry_fill_mode: str = "daily"
+    exit_fill_mode: str = "daily"
+
+
+@dataclass
+class SimResult:
+    trades: list[Trade] = field(default_factory=list)
+    equity_dates: list[date] = field(default_factory=list)
+    equity: list[float] = field(default_factory=list)   # 逐日组合净值（含现金）
+    final_value: float = 0.0
+    unadjusted: list[str] = field(default_factory=list)  # 无复权降级标的（报告标注用）
+    # 分钟成交覆盖统计（阶段 H1）：used = 实际走了分钟口径的笔数，
+    # fallback = 开了分钟口径但分钟数据缺失/无效而降级日K 的笔数。
+    # 分钟口径计数（阶段 H1）：entry/exit 分开统计（review P1 修复——合并计数会让
+    # 「exit_fill=signal_next_minute 且 minute_fill=False」时误显示开仓走了分钟口径）
+    minute_entry_used: int = 0
+    minute_entry_fallback: int = 0
+    minute_exit_used: int = 0
+    minute_exit_fallback: int = 0
+    # 兼容字段（旧消费方）：entry+exit 合并口径
+    minute_fill_used: int = 0
+    minute_fill_fallback: int = 0
+    # 执行期约束计数器（M2）：解释「为什么这个信号没成交」。
+    # key 口径（同一信号日同分支最多 +1，跨日重试每次触发各 +1）：
+    # - blocked_buy_limit：买入信号成交日遇 CN 涨停（一字板判定）放弃开仓。
+    # - blocked_sell_limit：卖出被 CN 跌停拦截的总次数——合并两个分支：
+    #   ① 常规/风控/挂单 pending_exit 卖出当日跌停 continue（挂单保留次日重试，
+    #      每个跌停日 +1）；② signal_next_minute 的 signal 卖出在 minute_exit_price
+    #      内部被跌停拦截（当日不成交、置 pending_exit 挂单）。
+    # - skipped_max_positions：候选开仓标的超出剩余名额被放弃
+    #   （满仓含 slots<=0 整日跳过，按当日「已产生信号且未持仓、非冷却」标的数计）。
+    #   满仓整日跳过分支的口径选择：只数有信号的标的——涨停/停牌等不可成交
+    #   标的不计 blocked_buy_limit 也不计 skipped_max_positions，与 slots>0
+    #   分支「不可成交拦截先于名额拦截」的顺序一致（两分支不重复计数）。
+    # - skipped_no_cash：现金不足 alloc<=0 放弃开仓；因开仓循环 alloc<=0 即 break，
+    #   后续候选同因现金不足，合并 +1 记一次（按「批」口径，非逐标的）。
+    # - skipped_cooldown：风控冷却标记拦下的「已产生买入信号」标的数
+    #   （无信号的冷却标的正常，不计）。
+    execution_stats: dict[str, int] = field(default_factory=dict)
+
+
+def _cn_limit_prices(
+    prev_close: float, symbol: str, trade_date: date, name: str = ""
+) -> tuple[float, float]:
+    """CN 涨跌停价（板块/日期/ST 分档见 engine.limits.limit_pct）。"""
+    pct = limit_pct(symbol, trade_date, name)
+    return prev_close * (1 - pct), prev_close * (1 + pct)
+
+
+def simulate(
+    matrix: MarketMatrix,
+    entries: dict[str, np.ndarray],
+    exits: dict[str, np.ndarray],
+    config: MatcherConfig,
+    adjusted_flags: dict[str, bool] | None = None,
+    names: dict[str, str] | None = None,
+    entry_refs: dict[str, np.ndarray] | None = None,
+    exit_refs: dict[str, np.ndarray] | None = None,
+    minute_loader: MinuteLoader | None = None,
+    raw_close: np.ndarray | None = None,
+    progress_cb=None,
+    progress_every: int = 1,
+) -> SimResult:
+    """组合撮合模拟：现金统一池，逐日先卖后买，等权分配。
+
+    entries/exits：{symbol: bool 数组}，长度 = len(matrix.dates)，与日期轴对齐
+    （信号在收盘后产生）。open_t+1 口径下用「昨日信号 + 今日 open」成交。
+    entry_refs/exit_refs：{symbol: float 数组}，信号触发参考价（如 MA5 值），
+    仅 config.minute_fill=True 时使用；缺省/NaN 时按无参考线（VWAP）口径。
+    minute_loader：(symbol, date) → 当日分钟K float64 2D 数组或 None；
+    仅分钟口径（minute_fill 或 exit_fill="signal_next_minute"）启用时按需调用，
+    返回 None 自动降级日K 口径并计入 fallback 统计。
+    raw_close：原始价 close 矩阵（与 matrix.close 同形），仅供涨跌停判定使用
+    ——matrix 为前复权价时，复权矩阵在除权日前后被整体比例缩放，涨跌停价必须
+    基于真实市价（原始价）判定，否则跨除权日后一字涨停漏判/非一字误拦。
+    None 时回退用 matrix.close（向后兼容；调用方若传的本就是原始矩阵则无损）。
+    names：symbol → 证券简称（键用 symbol 原样查找）。缺省 None 或缺失标的时
+    按无名称降级——即一律按非 ST 分档（宁少拦 ST 不臆造），与历史行为兼容。
+    progress_cb：可选逐日进度回调，每 progress_every 天回调一次
+    {"day": i+1, "total": n, "date": "YYYY-MM-DD"}（末日必回调，口径与
+    minute_replay 的逐日回调一致）。None 时热循环零开销（不做任何事）。
+    """
+    names = names or {}
+    entry_refs = entry_refs or {}
+    exit_refs = exit_refs or {}
+    dates = matrix.dates
+    n = len(dates)
+    symbols = matrix.symbols
+    close = matrix.close
+    openp = matrix.open
+    # 峰值跟踪用当日 high；矩阵暂无 high 字段时降级 close（与参照 max_high 口径最接近）
+    high = getattr(matrix, "high", None)
+    sym_idx = {s: j for j, s in enumerate(symbols)}
+    cash = config.initial_capital
+    positions: dict[str, dict] = {}
+    trades: list[Trade] = []
+    # 状态型信号重触发防护：symbol → True 表示风控退出后处于冷却中，
+    # entry 信号须先复位（False）再触发（沿）才允许重新开仓。
+    cooldown: dict[str, bool] = {}
+    equity_dates: list[date] = []
+    equity: list[float] = []
+    # entry/exit 分开计数（review P1 修复计数混淆）
+    minute_entry_used = 0
+    minute_entry_fallback = 0
+    minute_exit_used = 0
+    minute_exit_fallback = 0
+    # 执行期约束计数器（key 口径见 SimResult.execution_stats 注释）
+    execution_stats: dict[str, int] = {}
+
+    def bump(key: str, by: int = 1) -> None:
+        execution_stats[key] = execution_stats.get(key, 0) + by
+
+    # 分钟口径开关：signal_next_minute 依赖分钟数据确认触发，无 loader 时整体降级
+    minute_trigger_mode = (
+        config.exit_fill == "signal_next_minute" and minute_loader is not None
+    )
+    minute_fill_on = config.minute_fill and minute_loader is not None
+    _minute_cache: dict[tuple[str, date], np.ndarray | None] = {}
+    # 缺陷 2：分钟K 为原始价（client_minute 数据），而 matrix/entry_refs/exit_refs
+    # 为复权口径，直接比较跨除权日会系统性偏离。raw_close 提供时按交易日逐日
+    # 计算复权比例 scale = 复权收盘 / 原始收盘，把分钟K 帧乘以 scale 换算到
+    # 复权口径后再做穿越判定与定价（除权日 scale 突变，换算必须按日进行）。
+    _scale_cache: dict[tuple[str, int], float] = {}
+    _minute_scale_warned = False
+
+    def minute_arr_of(sym: str, i: int) -> np.ndarray | None:
+        """(symbol, 当日) 的分钟K（带会话内缓存；loader 异常按无数据降级）。
+
+        缺陷 2 口径换算：返回前已按当日复权比例乘到复权口径（见上注释）。
+        """
+        key = (sym, dates[i])
+        if key not in _minute_cache:
+            try:
+                _minute_cache[key] = minute_loader(sym, dates[i])
+            except Exception:  # 数据通路故障不阻塞回测，按分钟缺失降级
+                _minute_cache[key] = None
+        arr = _minute_cache[key]
+        if arr is None:
+            return None
+        scale = _adjusted_scale_of(sym, i)
+        return arr * scale if scale != 1.0 else arr
+
+    def _adjusted_scale_of(sym: str, i: int) -> float:
+        """(symbol, 当日) 复权比例 scale = 复权收盘 / 原始收盘（缓存到会话内）。"""
+        nonlocal _minute_scale_warned
+        if raw_close is None:
+            # 未传 raw_close：无法换算，保持现状（原始价口径直接比较），
+            # 记 warning 一次避免刷屏。
+            if not _minute_scale_warned:
+                _minute_scale_warned = True
+                logger.warning(
+                    "分钟口径未提供 raw_close，分钟K（原始价）与参考线（复权价）"
+                    "直接比较，跨除权日判定可能失真"
+                )
+            return 1.0
+        key = (sym, i)
+        if key not in _scale_cache:
+            j = sym_idx.get(sym)
+            scale = 1.0
+            if j is not None:
+                rc, ac = raw_close[i, j], close[i, j]
+                # 原始收盘非零且两侧均为有效价时才换算，否则按 1.0 降级
+                if np.isfinite(rc) and rc > 0 and np.isfinite(ac) and ac > 0:
+                    scale = ac / rc
+            _scale_cache[key] = scale
+        return _scale_cache[key]
+
+    def ref_of(refs: dict[str, np.ndarray], sym: str, i: int) -> float | None:
+        """信号参考价（无效值按 None = 无参考线处理）。"""
+        # 缺陷 3：sig_i < 0（open_t+1 口径下成交日 i=0 时信号日 -1）按 None
+        # 处理——负数下标是 Python 负索引，会读到参考线数组最后一天，构成
+        # 隐蔽未来函数；此时走 VWAP 分支。
+        if i < 0:
+            return None
+        arr = refs.get(sym)
+        if arr is None:
+            return None
+        v = float(arr[i])
+        return v if np.isfinite(v) and v > 0 else None
+
+    def minute_entry_price(i: int, j: int, sym: str, daily_price: float) -> tuple[float, str]:
+        """开仓分钟精确成交：有参考线→穿越价，无参考线→VWAP；缺失降级日K。"""
+        nonlocal minute_entry_used, minute_entry_fallback
+        if not minute_fill_on:
+            return daily_price, "daily"
+        marr = minute_arr_of(sym, i)
+        if marr is None or len(marr) == 0:
+            minute_entry_fallback += 1
+            return daily_price, "daily"
+        # 参考价取信号日（open_t+1 口径为昨日，close_t 口径为当日）
+        sig_i = i - 1 if config.entry_fill == "open_t+1" else i
+        ref = ref_of(entry_refs, sym, sig_i)
+        # 缺陷 4：模式标注由 minute_fill 返回分支带出，消除调用侧二次推导
+        precise, mode = resolve_minute_fill_with_mode(marr, ref, "buy")
+        if precise is None:
+            minute_entry_fallback += 1
+            return daily_price, "daily"
+        minute_entry_used += 1
+        return precise, mode or "daily"
+
+    def minute_exit_price(
+        i: int, j: int, sym: str, daily_price: float, reason: str,
+    ) -> tuple[float, str, bool]:
+        """平仓分钟口径：返回 (价格, 模式, 是否当日无法成交)。
+
+        signal_next_minute（仅 reason=="signal" 的卖出信号生效）：
+        分钟收盘确认下穿触发线 → 下一分钟开盘成交；当日未确认/数据缺失 →
+        当日不可成交（won't fill），由调用方置 pending_exit 挂单、次日开盘价强制退出
+        （对齐参照 pending_exit 语义：signal 已确认要卖，盘中未触发不无限重评估，
+        避免退出时序系统性后移）。
+        minute_fill（其余退出路径；signal_next_minute 的 signal 卖出已由上面接管）：
+        触发日分钟K 优化成交价，缺失降级日K。
+        """
+        nonlocal minute_exit_used, minute_exit_fallback
+        sig_i = i - 1 if config.exit_fill == "open_t+1" else i
+        if minute_trigger_mode and reason == "signal":
+            if blocked_by_limit(i, j, "sell"):
+                # 当日跌停不可卖出：不成交，置 pending_exit 挂单次日重试
+                # （与「当日未盘中确认」同语义，由调用方统一置位）。
+                bump("blocked_sell_limit")
+                return daily_price, "daily", True
+            marr = minute_arr_of(sym, i)
+            if marr is None or len(marr) == 0:
+                minute_exit_fallback += 1
+                return daily_price, "daily", False  # 降级 open_t+1（本日开盘价）
+            ref = ref_of(exit_refs, sym, sig_i)
+            trig = resolve_minute_exit_trigger(marr, ref)
+            if trig is not None:
+                minute_exit_used += 1
+                return trig, "minute_trigger", False
+            # 当日未盘中确认 → 当日不成交，置 pending_exit 挂单（次日开盘价强制退出）
+            return daily_price, "daily", True
+        if minute_fill_on:
+            marr = minute_arr_of(sym, i)
+            if marr is None or len(marr) == 0:
+                minute_exit_fallback += 1
+                return daily_price, "daily", False
+            ref = ref_of(exit_refs, sym, sig_i)
+            # 缺陷 4：模式标注由 minute_fill 返回分支带出
+            precise, mode = resolve_minute_fill_with_mode(marr, ref, "sell")
+            if precise is None:
+                minute_exit_fallback += 1
+                return daily_price, "daily", False
+            minute_exit_used += 1
+            return precise, mode or "daily", False
+        return daily_price, "daily", False
+
+    def entry_price_of(i: int, j: int) -> float:
+        return openp[i, j] if config.entry_fill == "open_t+1" else close[i, j]
+
+    def exit_price_of(i: int, j: int) -> float:
+        return openp[i, j] if config.exit_fill == "open_t+1" else close[i, j]
+
+    def signal_fired(sig: np.ndarray | None, i: int, fill: str) -> bool:
+        if sig is None:
+            return False
+        return (i > 0 and sig[i - 1]) if fill == "open_t+1" else sig[i]
+
+    def blocked_by_limit(i: int, j: int, side: str) -> bool:
+        """CN 涨跌停不可成交：buy 遇涨停不开仓，sell 遇跌停不平仓。"""
+        if not config.price_limit or not _is_cn(symbols[j]) or i == 0:
+            return False
+        # 涨跌停基准必须取原始价（真实市价）：matrix 传入前复权价时，
+        # 除权日前后整体被静态比例缩放，复权 close 算出的涨跌停价会失真。
+        lim_close = raw_close if raw_close is not None else close
+        pc, c = lim_close[i - 1, j], lim_close[i, j]
+        if np.isnan(pc) or np.isnan(c):
+            return False
+        lo, hi = _cn_limit_prices(pc, symbols[j], dates[i], names.get(symbols[j], ""))
+        # 一字板判定：收盘价顶死涨/跌停（日K 只能保守判，精确口径需盘中价）
+        return c >= hi - 1e-9 if side == "buy" else c <= lo + 1e-9
+
+    for i in range(n):
+        # 冷却复位：entry 信号出现 False 视为信号复位（此后信号再转 True
+        # 即构成新的 False→True 沿，允许重新开仓）。取信号源当日值（右移口径
+        # 与 signal_fired 一致：open_t+1 成交日 i 生效的是 i-1 的信号）。
+        if cooldown:
+            sig_i = i - 1 if config.entry_fill == "open_t+1" else i
+            for sym in list(cooldown):
+                sig = entries.get(sym)
+                if sig is not None and sig_i >= 0 and not sig[sig_i]:
+                    del cooldown[sym]
+        # 平仓（先卖后买，释放现金）
+        for sym in list(positions):
+            j = sym_idx[sym]
+            pos = positions[sym]
+            c = close[i, j]
+            if np.isnan(c):
+                continue  # 停牌：不可操作，继续持有
+            reason = None
+            # pending_exit 挂单（参照语义）：signal_next_minute 昨日 signal 已确认要卖但
+            # 盘中未触发，今日以开盘价强制退出（优先级最高，先于风控/signal 重评估）。
+            if pos.get("pending_exit"):
+                reason = pos.get("pending_exit_reason") or "signal"
+                # 直接以今日开盘成交（走下方成交段，跳过分钟触发重评估）
+                if config.t1 and _is_cn(sym) and pos["entry_idx"] == i:
+                    continue
+                if blocked_by_limit(i, j, "sell"):
+                    bump("blocked_sell_limit")
+                    continue  # 跌停无法成交，挂单保留到明日
+                # 强平恒用当日开盘价（不看 exit_fill——signal_next_minute 口径下
+                # exit_price_of 会返回收盘价，与「次日开盘价强制退出」语义不符）。
+                px = openp[i, j]
+                if np.isnan(px):
+                    continue
+                value = pos["shares"] * px
+                cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
+                cash += value - cost
+                pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
+                trades.append(Trade(
+                    symbol=sym, entry_date=pos["entry_date"], exit_date=dates[i],
+                    entry_price=pos["entry_price"], exit_price=px, shares=pos["shares"],
+                    pnl=pnl, ret=pnl / (pos["entry_price"] * pos["shares"]),
+                    exit_reason=reason,
+                ))
+                del positions[sym]
+                if reason in _RISK_EXIT_REASONS:
+                    cooldown[sym] = True
+                continue
+            ret_now = c / pos["entry_price"] - 1.0
+            # 峰值跟踪：持仓期最高价（日K 口径用当日 high，缺失降级 close；
+            # 参照 tick-stock-panel 用 max_high，同口径）
+            h = high[i, j] if high is not None else np.nan
+            if not np.isnan(h):
+                pos["peak"] = max(pos["peak"], h)
+            elif not np.isnan(c):
+                pos["peak"] = max(pos["peak"], c)
+            peak = pos["peak"]
+            # 风控线（止损/移动止损/移动止盈）同日多条成立时取最紧（触发价最高者），
+            # 与参照 _risk_exit 的 max(risk_lines) 口径一致。
+            risk_lines: list[tuple[float, str]] = []
+            if config.stop_loss_pct is not None:
+                # 固定止损线（沿用旧语义：stop_loss_pct 为负值，如 -0.08）
+                sl_line = pos["entry_price"] * (1 + config.stop_loss_pct)
+                if ret_now <= config.stop_loss_pct:
+                    risk_lines.append((sl_line, "stop_loss"))
+            if config.trailing_stop_pct is not None and peak > 0:
+                ts_line = peak * (1 - abs(config.trailing_stop_pct))
+                if c <= ts_line:
+                    risk_lines.append((ts_line, "trailing_stop"))
+            if (config.trailing_take_profit_activate_pct is not None
+                    and config.trailing_take_profit_drawdown_pct is not None
+                    and peak > pos["entry_price"] > 0):
+                peak_ret = peak / pos["entry_price"] - 1.0
+                if peak_ret >= abs(config.trailing_take_profit_activate_pct):
+                    tp_line = peak * (1 - abs(config.trailing_take_profit_drawdown_pct))
+                    if c <= tp_line:
+                        risk_lines.append((tp_line, "trailing_take_profit"))
+            # 退出优先级（高→低，对齐参照 tick-stock-panel engine.py TradeRecord 注释：
+            # 风控(止损/移动止损/移动止盈) > signal(卖点) > max_hold(到期) > end；
+            # 参照另有 pending_exit 历史挂单最高，本引擎无挂单概念故无此项。
+            # 注意：旧实现是 signal 优先于固定止损，与参照相反，本次按参照重排——
+            # 风控是保护性离场，必须先于策略主动卖点。
+            if risk_lines:
+                reason = max(risk_lines, key=lambda x: x[0])[1]
+            elif signal_fired(exits.get(sym), i, config.exit_fill):
+                reason = "signal"
+            elif config.take_profit_pct is not None and ret_now >= config.take_profit_pct:
+                reason = "take_profit"
+            elif config.max_hold_days is not None and i - pos["entry_idx"] >= config.max_hold_days:
+                reason = "max_hold"
+            if reason is None:
+                continue
+            # T+1：当日买入不可当日卖出（防御；open_t+1 口径下 entry_idx==i 不会出现）
+            if config.t1 and _is_cn(sym) and pos["entry_idx"] == i:
+                continue
+            # 跌停拦截：minute_trigger 的 signal 卖出由 minute_exit_price 分支内部检查
+            # （跌停不成交 → 置 pending_exit 次日开盘强平）；其余退出路径维持原语义
+            # ——当日跳过、次日重新评估退出条件。
+            if not (minute_trigger_mode and reason == "signal") and blocked_by_limit(i, j, "sell"):
+                bump("blocked_sell_limit")
+                continue
+            px, exit_mode, no_fill = minute_exit_price(i, j, sym, exit_price_of(i, j), reason)
+            if no_fill:
+                # signal_next_minute 当日未盘中确认：置 pending_exit 挂单，
+                # 次日开盘价强制退出（对齐参照 pending_exit 语义，不无限重评估）。
+                pos["pending_exit"] = True
+                pos["pending_exit_reason"] = reason
+                continue
+            if np.isnan(px):
+                continue
+            value = pos["shares"] * px
+            cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
+            cash += value - cost
+            pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
+            trades.append(Trade(
+                symbol=sym, entry_date=pos["entry_date"], exit_date=dates[i],
+                entry_price=pos["entry_price"], exit_price=px, shares=pos["shares"],
+                pnl=pnl, ret=pnl / (pos["entry_price"] * pos["shares"]),
+                exit_reason=reason,
+                entry_fill_mode=pos["entry_fill_mode"], exit_fill_mode=exit_mode,
+            ))
+            del positions[sym]
+            if reason in _RISK_EXIT_REASONS:
+                cooldown[sym] = True
+
+        # 开仓（等权：可用资金 / 剩余名额）
+        slots = config.max_positions - len(positions)
+        # 满仓（含无剩余名额）整日跳过候选循环：补计「当日已产生买入信号、
+        # 未持仓、非冷却」的标的数（涨停/停牌不可成交等过滤进不了内层循环，
+        # 与 slots>0 口径下不可成交先于名额拦截的顺序一致，不重复计数）。
+        if slots <= 0 and entries:
+            sig_i = i - 1 if config.entry_fill == "open_t+1" else i
+            n_full_skip = sum(
+                1
+                for sym in symbols
+                if sym not in positions
+                and not cooldown.get(sym)
+                and (sig := entries.get(sym)) is not None
+                and sig_i >= 0
+                and sig[sig_i]
+            )
+            if n_full_skip:
+                bump("skipped_max_positions", n_full_skip)
+        if slots > 0:
+            candidates = []
+            for j, sym in enumerate(symbols):
+                if sym in positions:
+                    continue
+                if cooldown.get(sym):
+                    # 只计「已产生买入信号」的冷却标的（无信号的冷却属正常）
+                    if signal_fired(entries.get(sym), i, config.entry_fill):
+                        bump("skipped_cooldown")
+                    continue  # 风控退出冷却中：等信号复位后再沿触发
+                if not signal_fired(entries.get(sym), i, config.entry_fill):
+                    continue
+                if np.isnan(entry_price_of(i, j)) or np.isnan(close[i, j]):
+                    continue
+                if blocked_by_limit(i, j, "buy"):
+                    bump("blocked_buy_limit")
+                    continue
+                # 分钟精确成交价（minute_fill 开启时；缺失自动降级日K 口径）
+                px, entry_mode = minute_entry_price(i, j, sym, entry_price_of(i, j))
+                if np.isnan(px):
+                    continue
+                candidates.append((j, px, entry_mode))
+            # 候选超出剩余名额：排序稳定（symbols 顺序），超出部分按满仓放弃计
+            if len(candidates) > slots:
+                bump("skipped_max_positions", len(candidates) - slots)
+                candidates = candidates[:slots]
+            if candidates:
+                budget = cash / min(slots, len(candidates))
+                for j, px, entry_mode in candidates:
+                    sym = symbols[j]
+                    # 预算含交易成本：按 (1 + 买入成本率) 预留 + 微小余量（防浮点边界满仓开不了仓）。
+                    # P1-3 修复：cost_rate 用 budget 量级估算而非 buy_cost(1.0)——
+                    # CN min_commission=5 元在 1 元名义值下 cost_rate=501%，
+                    # 小本金（initial_capital<1000）会被压到 alloc<=0 永远开不了仓。
+                    cost_rate = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).buy_cost(max(budget, 1.0)) / max(budget, 1.0)
+                    alloc = min(budget, cash / (1.0 + cost_rate + 1e-9))
+                    if alloc <= 0:
+                        # 现金耗尽：后续候选同因现金不足（budget 均摊），
+                        # 合并记一次（按「批」口径）后跳出开仓循环。
+                        bump("skipped_no_cash")
+                        break
+                    shares = alloc / px
+                    if config.lot_size and _is_cn(sym):
+                        shares = np.floor(shares / 100) * 100
+                        if shares <= 0:
+                            continue
+                    value = shares * px
+                    cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).buy_cost(value)
+                    if value + cost > cash:
+                        continue
+                    cash -= value + cost
+                    positions[sym] = {
+                        "shares": shares, "entry_price": px,
+                        "entry_date": dates[i], "entry_idx": i, "entry_cost": cost,
+                        "peak": px,  # 移动止损/移动止盈的峰值跟踪（含当日 high 更新）
+                        "entry_fill_mode": entry_mode,
+                    }
+
+        # 逐日净值（停牌按成本价估值，保守）
+        pv = cash
+        for sym, pos in positions.items():
+            c = close[i, sym_idx[sym]]
+            pv += pos["shares"] * (c if not np.isnan(c) else pos["entry_price"])
+        equity_dates.append(dates[i])
+        equity.append(pv)
+        # 逐日进度回调（任务化回测 API 的进度条数据源；末日保证回调一次）
+        if progress_cb is not None and ((i + 1) % progress_every == 0 or i + 1 == n):
+            progress_cb({"day": i + 1, "total": n, "date": dates[i].isoformat()})
+
+    # 期末强平（末日收盘价，计卖出成本；停牌到底按成本记，报告可见）
+    last = n - 1
+    for sym in list(positions):
+        j = sym_idx[sym]
+        pos = positions[sym]
+        px = close[last, j]
+        if np.isnan(px):
+            px = pos["entry_price"]
+        value = pos["shares"] * px
+        cost = _cost_of_with_overrides(sym, config.commission_pct, config.stamp_tax_pct, config.slippage_bps).sell_cost(value)
+        pnl = (px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"] - cost
+        trades.append(Trade(
+            symbol=sym, entry_date=pos["entry_date"], exit_date=dates[last],
+            entry_price=pos["entry_price"], exit_price=px, shares=pos["shares"],
+            pnl=pnl, ret=pnl / (pos["entry_price"] * pos["shares"]),
+            exit_reason="end",
+            # 分钟成交标注在期末强平路径同样带出（缺陷 4 配套：否则开仓/平仓
+            # 走了分钟口径的样本在最常见的 end 退出下模式被静默重置为 daily）
+            entry_fill_mode=pos["entry_fill_mode"],
+        ))
+
+    result = SimResult(
+        trades=trades, equity_dates=equity_dates, equity=equity,
+        final_value=equity[-1] if equity else config.initial_capital,
+        minute_entry_used=minute_entry_used, minute_entry_fallback=minute_entry_fallback,
+        minute_exit_used=minute_exit_used, minute_exit_fallback=minute_exit_fallback,
+        minute_fill_used=minute_entry_used + minute_exit_used,
+        minute_fill_fallback=minute_entry_fallback + minute_exit_fallback,
+        execution_stats=execution_stats,
+    )
+    if adjusted_flags is not None:
+        result.unadjusted = sorted(s for s, ok in adjusted_flags.items() if not ok)
+    return result

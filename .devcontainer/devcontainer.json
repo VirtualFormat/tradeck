@@ -27,8 +27,5 @@
       "cn\\(([^)]*)\\)"
     ]
   },
-  "remoteEnv": {
-    "OPENBB_API_URL": "http://openbb:6900"
-  },
   "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

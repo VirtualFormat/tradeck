@@ -5,6 +5,10 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
+import { serviceAuthHeaders } from "@/lib/service-auth";
+import { assertSession } from "@/app/api/_guard";
+
+// 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
@@ -18,7 +22,29 @@ const VALID_TYPES = [
   "aggressive_small_caps",
 ];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeMover(item: Record<string, unknown>) {
+  return {
+    symbol: typeof item.symbol === "string" ? item.symbol : "",
+    name: typeof item.name === "string" ? item.name : null,
+    price: nullableNumber(item.price),
+    change: nullableNumber(item.change),
+    change_percent: nullableNumber(item.percent_change),
+    volume: nullableNumber(item.volume),
+    exchange: typeof item.exchange === "string" ? item.exchange : null,
+  };
+}
+
 export async function GET(request: NextRequest) {
+  const guard = await assertSession();
+  if (guard) return guard;
   const type = request.nextUrl.searchParams.get("type") ?? "gainers";
 
   if (!VALID_TYPES.includes(type)) {
@@ -32,15 +58,23 @@ export async function GET(request: NextRequest) {
     const res = await fetch(
       `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=20`,
       {
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", ...serviceAuthHeaders() },
         cache: "no-store",
       }
     );
     if (!res.ok) {
       return NextResponse.json([]);
     }
-    const data = await res.json();
-    return NextResponse.json(data);
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) {
+      return NextResponse.json([]);
+    }
+    return NextResponse.json(
+      data
+        .filter(isRecord)
+        .map(normalizeMover)
+        .filter((item) => item.symbol)
+    );
   } catch (err) {
     console.error(`Screener ${type} failed:`, err);
     return NextResponse.json([]);

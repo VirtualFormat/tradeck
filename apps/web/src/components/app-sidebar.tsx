@@ -3,8 +3,8 @@
 import * as React from "react"
 import Link from "next/link"
 
-import { NavMain } from "@/components/nav-main"
-import { NavUser } from "@/components/nav-user"
+import { NavMain, type NavItem } from "@/components/nav-main"
+import { ThemeToggle } from "@/components/theme-toggle"
 import {
   Sidebar,
   SidebarContent,
@@ -23,24 +23,51 @@ import {
   FlagIcon,
   BankIcon,
   CityIcon,
-  GlobeIcon,
+  DatabaseIcon,
+  SparkleIcon,
+  ChartLineUpIcon,
+  PlayIcon,
+  FunnelIcon,
+  RobotIcon,
+  MagnifyingGlassIcon,
+  FunctionIcon,
+  SlidersHorizontal,
+  Path,
 } from "@phosphor-icons/react"
 
-const navMain = [
-  { title: "看板", url: "/", icon: <SquaresFourIcon /> },
+const navMain: NavItem[] = [
+  {
+    title: "总看板",
+    url: "/",
+    icon: <SquaresFourIcon />,
+    items: [
+      { title: "A股", url: "/markets/cn", icon: <FlagIcon /> },
+      { title: "美股", url: "/markets/us", icon: <BankIcon /> },
+      { title: "港股", url: "/markets/hk", icon: <CityIcon /> },
+    ],
+  },
   { title: "自选 / 筛选", url: "/screener", icon: <StarIcon /> },
+  {
+    title: "量化工作台",
+    url: "/quant",
+    icon: <ChartLineUpIcon />,
+    items: [
+      { title: "策略回测", url: "/quant?tab=backtest", icon: <PlayIcon /> },
+      { title: "参数优化", url: "/quant?tab=optimize", icon: <SlidersHorizontal /> },
+      { title: "步进优化", url: "/quant?tab=walkforward", icon: <Path /> },
+      { title: "选股扫描", url: "/quant?tab=screen", icon: <FunnelIcon /> },
+      { title: "AI 策略生成", url: "/quant?tab=ai", icon: <RobotIcon /> },
+      { title: "因子挖掘", url: "/quant?tab=mining", icon: <MagnifyingGlassIcon /> },
+      { title: "因子编辑器", url: "/quant?tab=factors", icon: <FunctionIcon /> },
+    ],
+  },
+  { title: "AI 分析", url: "/ai-analysis", icon: <SparkleIcon /> },
   { title: "新闻流", url: "/news", icon: <NewspaperIcon /> },
-  { title: "全球宏观", url: "/global", icon: <GlobeIcon /> },
-  { title: "宏观数据", url: "/macro", icon: <ChartBarIcon /> },
+  { title: "宏观", url: "/macro", icon: <ChartBarIcon /> },
+  { title: "数据中心", url: "/data", icon: <DatabaseIcon /> },
 ]
 
-const markets = [
-  { title: "A股", url: "/markets/cn", icon: <FlagIcon /> },
-  { title: "美股", url: "/markets/us", icon: <BankIcon /> },
-  { title: "港股", url: "/markets/hk", icon: <CityIcon /> },
-]
-
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({ children, ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -58,12 +85,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={navMain} />
-        <NavMain items={markets} label="市场" />
       </SidebarContent>
       <SidebarFooter>
-        <NavUser
-          user={{ name: "tradeck", email: "v0.1", avatar: "/avatars/shadcn.jpg" }}
-        />
+        <ThemeToggle />
+        {children}
       </SidebarFooter>
     </Sidebar>
   )

@@ -6,15 +6,6 @@
 import { getIndexHistorical } from "@/lib/openbb";
 import { CommodityCard } from "@/components/commodity-card";
 
-interface CommodityQuote {
-  symbol: string;
-  name: string;
-  price: number | null;
-  changePct: number | null;
-  unit: string;
-  hist: { date: string; value: number }[];
-}
-
 const COMMODITIES = [
   { symbol: "GC=F", name: "黄金", unit: "USD/oz" },
   { symbol: "CL=F", name: "原油", unit: "USD/bbl" },

@@ -1,0 +1,442 @@
+"""回测 worker 池 — spawn 子进程隔离重计算（多用户骨架 G4，docs/QUANT-BACKTEST.md v2 §0）。
+
+设计（参照 tick-stock-panel backend/app/backtest/worker.py 的消息协议与取消语义，轻量化）：
+- mp.get_context("spawn")：子进程独立解释器，崩溃/超时 terminate 后主进程不受影响。
+- 消息协议：父进程 Queue 收 {"type": "progress"/"result"/"error", ...}；
+  子进程把终态消息入队后 close+join_thread 冲刷管道，再 os._exit(0) 跳过解释器收尾。
+- 父进程循环收消息；子进程意外退出后兜底排空队列一次（读线程可能还没把管道尾部
+  搬进本地缓冲）；拿到终态消息但子进程收尾慢则 terminate 后继续处理，不丢已送达结果。
+- 池大小 = QUANT_WORKER_POOL_SIZE（默认 1 = 串行）；asyncio.Semaphore 控制同时在跑的
+  子进程数，回测同步计算用 asyncio.to_thread 推到线程，不阻塞事件循环。
+- 主动取消（任务化回测 API）：任务化入口（api POST /api/backtest/run）传入
+  CancelToken；取消语义为父进程 terminate 子进程并抛 BacktestCancelledError
+  （spawn 子进程是独立解释器，进程内 cancel_event 协作式取消无法跨进程传递，
+  故不做「优雅中断保留部分结果」——与参照 tick-stock-panel 的 cancel_event 不同，
+  这里取消即整次回测作废）。子进程本身仍支持 cancel_event（走 run_backtest_async
+  → minute_replay 的逐日检查），但任务化路径未启用：跨进程传 Event 需 Manager/
+  共享对象，复杂度不抵收益（terminate 已满足停止语义）。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import multiprocessing as mp
+import os
+import queue
+import threading
+import traceback
+from contextlib import suppress
+from dataclasses import asdict
+from datetime import date
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+class BacktestWorkerError(RuntimeError):
+    """worker 子进程失败（异常/崩溃/超时未出结果）时抛出，调用方转成结构化错误响应。"""
+
+
+class BacktestCancelledError(RuntimeError):
+    """任务化回测被显式取消（父进程已 terminate 子进程）；区别于子进程自身失败。"""
+
+
+class CancelToken:
+    """跨线程取消令牌：任务注册表（事件循环线程）置位，worker 线程轮询消费。
+
+    threading.Event 语义的最小封装（set/is_set），名字对齐「取消」领域语义。
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
+# 子进程收尾超时：拿到终态消息后最多等 10s，否则 terminate（对齐参照口径）
+_JOIN_TIMEOUT_SECONDS = 10.0
+
+# 全局池（模块级单例；与「backend 单进程」纪律一致，quant 服务内唯一）
+_pool: "WorkerPool | None" = None
+
+
+def _encode_config(config) -> dict[str, Any]:
+    """MatcherConfig → 可跨进程序列化的 dict。"""
+    if config is None:
+        return {}
+    return asdict(config)
+
+
+def _decode_config(payload: dict[str, Any]):
+    from app.engine import MatcherConfig
+
+    return MatcherConfig(**payload)
+
+
+def _load_minute_cache(
+    symbols: list[str], start: date, end: date
+) -> dict[str, Any] | None:
+    """子进程内读分钟K 本地缓存（纯文件读，不补拉网络）。
+
+    返回 {symbol: DataFrame}；全空返回 None（matcher 降级日K 口径）。
+
+    设计取舍（Wave 2 review P2-8 收口）：主进程（api.py 预拉）已把分钟K 落盘，
+    这里再逐 symbol 读盘 concat 一遍——看似重复，实为刻意：
+    - spawn 子进程与主进程是独立解释器，内存不共享；分钟K 要进子进程只能
+      随 task dict pickle 过管道。分钟帧体量无界（分钟行数 ≈ 日K ×240，
+      universe=all 全市场预拉在主进程 async 组装时就会 OOM，根本轮不到
+      pickle），且多 worker 并发时同一份大数据要 pickle N 次。
+    - parquet 磁盘缓存即「跨进程序列化介质」：主进程预拉只补缺口（命中时
+      零网络），本函数是纯本地 parquet 读 + concat，既是快速路径也是唯一
+      可行的传输通道。同步版 run_backtest_async 的内存帧透传只在同进程
+      成立，跨进程不可照搬。
+    结论：保持「主进程预拉落缓存 + 子进程读缓存」，不向 task dict 塞分钟帧。
+    """
+    from app.data.client_minute import load_minute
+
+    out: dict[str, Any] = {}
+    for symbol in symbols:
+        frames = [
+            df
+            for year in range(start.year, end.year + 1)
+            if not (df := load_minute(symbol, year)).is_empty()
+        ]
+        if frames:
+            import polars as pl
+
+            out[symbol] = pl.concat(frames).sort("datetime")
+    return out or None
+
+
+def make_backtest_task(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config=None,
+    user_id: str | None = None,
+    names: dict[str, str] | None = None,
+    sim_mode: str = "position",
+) -> dict[str, Any]:
+    """打包一次回测任务（可经 Queue 传给 spawn 子进程）。
+
+    sim_mode："position"（默认，组合模拟）/ "full"（全量模拟，候选独立执行，
+    子进程内分流到 runner.run_backtest_full）。
+    """
+    return {
+        "kind": "backtest",
+        "symbols": list(symbols),
+        "strategy_id": strategy_id,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "params": params,
+        "config": _encode_config(config),
+        "user_id": user_id,
+        "names": names,
+        "sim_mode": sim_mode,
+    }
+
+
+def _progress_every_for_range(start: date, end: date) -> int:
+    """按区间长度取进度节流档位：目标 ≤100 条跨进程 Queue 消息。
+
+    以自然日估算（含周末，偏保守）；matcher 末日必回调，前端进度条
+    总能见到 100%。
+    """
+    days = max((end - start).days + 1, 1)
+    return max(1, days // 100)
+
+
+def _worker_entry(task: dict[str, Any], event_queue) -> None:
+    """子进程入口：跑回测，把 progress/result/error 消息入队。"""
+    try:
+        from app.runner import run_backtest, run_backtest_full, user_strategy_dirs
+        from app.strategy import StrategyRegistry
+
+        if task["kind"] != "backtest":
+            raise ValueError(f"不支持的 worker 任务类型：{task['kind']}")
+        progress_enabled = bool(task.get("progress_enabled"))
+        # 全量模拟（候选独立执行）：分流到 run_backtest_full（不走 matcher.simulate；
+        # 分钟K 预拉/装配对该模式无意义，跳过 minute 缓存读取）
+        full_mode = task.get("sim_mode") == "full"
+
+        def _forward_progress(payload: dict) -> None:
+            """子进程内逐日进度 → 跨进程 Queue（父进程桥接到任务注册表）。"""
+            event_queue.put({"type": "progress", "payload": payload})
+
+        reg = StrategyRegistry(user_strategy_dirs(task.get("user_id")))
+        config = _decode_config(task.get("config") or {})
+        # 分钟口径（minute_fill / signal_next_minute）：子进程内从本地分钟缓存读
+        # （load_minute 纯文件读，spawn 安全）；缓存缺失则 matcher 无 loader 降级日K。
+        # 注意：子进程不补拉网络数据（避免子进程做 IO / 与主进程缓存写竞争），
+        # 分钟K 需调用方预拉（HTTP API 入口）或读历史缓存。
+        # 日K 同理（冷启动修复纪律）：子进程只调同步 run_backtest/run_backtest_full
+        # 读本地 Parquet 缓存，回源补拉只发生在主进程（api_backtest/api_backtest_run/
+        # run_optimize 等 async 入口经 matrix.build_async 暖缓存后派发本 worker）。
+        minute_bars = None
+        if not full_mode and (
+            config.minute_fill or config.exit_fill == "signal_next_minute"
+        ):
+            minute_bars = _load_minute_cache(
+                task["symbols"],
+                date.fromisoformat(task["start"]),
+                date.fromisoformat(task["end"]),
+            )
+        if full_mode:
+            result = run_backtest_full(
+                task["symbols"], task["strategy_id"],
+                date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
+                params=task.get("params"),
+                config=config,
+                registry=reg,
+                benchmark=task.get("benchmark"),
+                names=task.get("names"),
+                progress_cb=_forward_progress if progress_enabled else None,
+            )
+        else:
+            result = run_backtest(
+                task["symbols"], task["strategy_id"],
+                date.fromisoformat(task["start"]), date.fromisoformat(task["end"]),
+                params=task.get("params"),
+                config=config,
+                registry=reg,
+                benchmark=task.get("benchmark"),
+                names=task.get("names"),
+                minute_bars=minute_bars,
+                progress_cb=_forward_progress if progress_enabled else None,
+                # 进度节流（P2）：按区间交易日数取档（≤100 条 Queue 消息），
+                # 长区间不再逐日 put；末日消息由 matcher 保证必发
+                progress_every=_progress_every_for_range(
+                    date.fromisoformat(task["start"]), date.fromisoformat(task["end"])
+                ),
+            )
+        result.setdefault("worker", {})["pid"] = os.getpid()
+        event_queue.put({"type": "result", "payload": result})
+    except BaseException as exc:  # noqa: BLE001 — 子进程内任何异常都要结构化回传
+        event_queue.put({
+            "type": "error",
+            "message": str(exc) or type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        })
+    finally:
+        # 终态消息入队后显式冲刷管道（put 只是入队，写管道的是后台 feeder 线程），
+        # 然后立即退出，跳过解释器 teardown（GC / 线程 join），避免撞上父进程退出预算。
+        with suppress(Exception):
+            event_queue.close()
+            event_queue.join_thread()
+        os._exit(0)
+
+
+class WorkerPool:
+    """spawn 子进程池：Semaphore 限并发，任务逐个在独立子进程内执行。"""
+
+    def __init__(self, size: int = 1) -> None:
+        self._size = max(1, int(size))
+        # Semaphore 按事件循环惰性重建：池是模块级单例，但 asyncio.Semaphore 会绑定
+        # 首个 acquire 它的 loop。CLI 的 run_backtest_offloaded 每次 asyncio.run() 新建
+        # 循环，复用旧 Semaphore 会抛 "bound to a different event loop"（持锁态下必现）。
+        # 记录绑定 loop，跨 loop 调用时重建，HTTP 服务单循环下零开销。
+        self._sem: asyncio.Semaphore | None = None
+        self._sem_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    def _semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._sem is None or self._sem_loop is not loop:
+            self._sem = asyncio.Semaphore(self._size)
+            self._sem_loop = loop
+        return self._sem
+
+    async def run(
+        self,
+        task: dict[str, Any],
+        progress_cb=None,
+        cancel_token: CancelToken | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """占用一个池位，在 spawn 子进程内跑任务并返回结果。
+
+        子进程失败（异常/无结果退出）抛 BacktestWorkerError；timeout 触发时
+        terminate 子进程并抛 asyncio.TimeoutError。cancel_token 置位时 terminate
+        子进程并抛 BacktestCancelledError。主进程绝不因子进程崩溃而崩。
+
+        线程桥接纪律（2026-09-13 定位的真实死结）：不能用 asyncio.to_thread /
+        run_in_executor——spawn 子进程的 multiprocessing 与 asyncio executor 线程
+        组合会在 Python 3.11/3.12 复现挂死（Queue 终态消息永远收不到；最小复现
+        与对照实验见当次调试记录）。改手动 threading.Thread + loop.call_soon_
+        threadsafe 桥接 Future：同语义、已验证可用。
+        """
+        async with self._semaphore():
+            coro = self._run_in_thread(task, progress_cb, cancel_token)
+            if timeout is None:
+                return await coro
+            return await asyncio.wait_for(coro, timeout)
+
+    def _run_in_thread(
+        self,
+        task: dict[str, Any],
+        progress_cb,
+        cancel_token: CancelToken | None,
+    ) -> "asyncio.Future":
+        """手动线程跑 _run_sync，结果经 call_soon_threadsafe 桥回当前 loop。
+
+        替代 asyncio.to_thread（见 run() docstring 的死结说明）。线程是隔离壳，
+        并发上限仍由 run() 里的 Semaphore 维持。
+        """
+        import threading
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def _target() -> None:
+            try:
+                result = self._run_sync(task, progress_cb, cancel_token)
+            except BaseException as e:  # noqa: BLE001 — 线程内异常桥回 loop
+                loop.call_soon_threadsafe(
+                    lambda: None if future.done() else future.set_exception(e)
+                )
+            else:
+                loop.call_soon_threadsafe(
+                    lambda: None if future.done() else future.set_result(result)
+                )
+
+        threading.Thread(target=_target, daemon=True).start()
+        return future
+
+    def _run_sync(
+        self,
+        task: dict[str, Any],
+        progress_cb,
+        cancel_token: CancelToken | None = None,
+    ) -> dict[str, Any]:
+        """同步执行一个任务（在线程内调用；spawn + 队列收消息）。"""
+        context = mp.get_context("spawn")
+        events = context.Queue()
+        process = context.Process(target=_worker_entry, args=(task, events), daemon=False)
+        try:
+            process.start()
+        except BaseException:
+            events.close()
+            events.join_thread()
+            raise
+
+        result: dict[str, Any] | None = None
+        failure: dict[str, Any] | None = None
+        try:
+            while result is None and failure is None:
+                # 主动取消：terminate 子进程（跨进程无法传协作式 cancel_event，
+                # 取消即整次回测作废，语义见模块 docstring），干净清理后抛取消异常
+                if cancel_token is not None and cancel_token.is_set():
+                    process.terminate()
+                    process.join(timeout=5.0)
+                    raise BacktestCancelledError("回测任务已被取消")
+                try:
+                    message = events.get(timeout=0.1)
+                except queue.Empty:
+                    if not process.is_alive():
+                        break
+                    continue
+                mtype = message.get("type")
+                if mtype == "progress":
+                    if progress_cb is not None:
+                        progress_cb(message.get("payload", {}))
+                elif mtype == "result":
+                    result = message["payload"]
+                elif mtype == "error":
+                    failure = message
+
+            # 兜底排空：子进程退出后，队列读线程可能还没把管道尾部搬进本地缓冲
+            if result is None and failure is None:
+                for _ in range(2):
+                    try:
+                        message = events.get(timeout=1.0)
+                    except queue.Empty:
+                        break
+                    mtype = message.get("type")
+                    if mtype == "result":
+                        result = message["payload"]
+                    elif mtype == "error":
+                        failure = message
+
+            process.join(timeout=_JOIN_TIMEOUT_SECONDS)
+            terminated = process.is_alive()
+            if terminated:
+                # 终态消息已送达但子进程收尾慢：强制结束，不丢已送达的结果/错误
+                process.terminate()
+                process.join(timeout=5.0)
+                logger.warning(
+                    "worker 已送达终态消息但 %ds 内未退出，已强制结束（exitcode=%s）",
+                    _JOIN_TIMEOUT_SECONDS, process.exitcode,
+                )
+            if failure is not None:
+                raise BacktestWorkerError(
+                    f"回测 worker 失败：{failure.get('message', '未知错误')}\n"
+                    f"{failure.get('traceback', '')}".rstrip()
+                )
+            if result is None:
+                raise BacktestWorkerError(
+                    f"回测 worker 未返回结果即退出（exitcode={process.exitcode}）"
+                )
+            # 结果已成功送达时，exitcode 只在自然退出（0）时有意义；走了 terminate 分支
+            # 的负 exitcode（-SIGTERM）会误导——结果明明正常。此时记录 None。
+            result.setdefault("worker", {})["exitcode"] = (
+                None if terminated else process.exitcode
+            )
+            return result
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
+            events.close()
+            events.join_thread()
+
+
+def get_pool() -> WorkerPool:
+    """全局池单例（大小取 QUANT_WORKER_POOL_SIZE，首次调用时创建）。"""
+    global _pool
+    if _pool is None:
+        from app.config import settings
+
+        _pool = WorkerPool(settings.QUANT_WORKER_POOL_SIZE)
+        logger.info("回测 worker 池初始化：size=%d", _pool.size)
+    return _pool
+
+
+async def run_backtest_in_worker(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config=None,
+    user_id: str | None = None,
+    benchmark: dict | None = None,
+    names: dict[str, str] | None = None,
+    sim_mode: str = "position",
+    progress_cb=None,
+    cancel_token: CancelToken | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """在 worker 子进程内跑回测（含基准/名称透传，避免子进程再拉一次 data-api）。
+
+    progress_cb：逐日进度回调（跨进程桥接：子进程逐日 progress 消息经 Queue
+    回父进程后调它）；为 None 时子进程不发 progress 消息（零开销，兼容旧调用）。
+    cancel_token：任务化取消（父进程 terminate 子进程语义，见模块 docstring）。
+    """
+    task = make_backtest_task(
+        symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
+        names=names, sim_mode=sim_mode,
+    )
+    task["benchmark"] = benchmark
+    task["progress_enabled"] = progress_cb is not None
+    return await get_pool().run(
+        task, progress_cb=progress_cb, cancel_token=cancel_token, timeout=timeout,
+    )

@@ -6,13 +6,16 @@
  */
 import Link from "next/link";
 import { getAggregatedNews, getEquityQuotes } from "@/lib/openbb";
+import { serviceAuthHeaders } from "@/lib/service-auth";
 import { StockPreviewTrigger } from "@/components/stock-preview-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
+import { fmtDataDate, fmtDataTime } from "@/lib/format";
 import {
   Card,
   CardAction,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -26,6 +29,10 @@ interface ScreenerItem {
   volume: number | null;
   /** 换手率（成交额/市值，仅换手榜有） */
   turnover?: number | null;
+  /** 榜单快照日期（movers_cache.snapshot_date，日频） */
+  snapshot_date?: string | null;
+  /** 报价更新时间（换手榜来自 quote_snapshots.updated_at，盘中分钟级） */
+  updated_at?: string | null;
 }
 
 // A 股热门列表（按市值选；沪市用 .SH）
@@ -59,6 +66,7 @@ async function fetchScreener(
         change: q.change,
         percent_change: q.change_percent,
         volume: q.volume,
+        updated_at: q.updated_at,
       }));
       const sorted = [...items].sort((a, b) => {
         const pa = a.percent_change ?? -999;
@@ -70,13 +78,14 @@ async function fetchScreener(
       return sorted.slice(0, 10);
     }
 
-    // 美股/全球用 backend /api/movers（从 DB 读，支持 date 快照回看）
+    // 美股/全球用 backend /api/movers（从 DB 读，支持 date 快照回看）；
+    // 默认兜底仅供本地开发，生产由环境变量注入 tradb data-api 回环地址。
     const BACKEND_API_URL =
       process.env.BACKEND_API_URL ?? "http://localhost:8080";
     const dateQuery = date ? `&date=${date}` : "";
     const res = await fetch(
       `${BACKEND_API_URL}/api/movers?type=${type}&market=US&limit=10${dateQuery}`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json", ...serviceAuthHeaders() } }
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -89,12 +98,13 @@ async function fetchScreener(
 /** 换手榜（backend 计算：成交额/市值，缺市值的标的不计） */
 async function fetchTurnover(market: string): Promise<ScreenerItem[]> {
   try {
+    // 默认兜底仅供本地开发；生产由环境变量注入 tradb data-api 回环地址。
     const BACKEND_API_URL =
       process.env.BACKEND_API_URL ?? "http://localhost:8080";
     const m = market === "cn" ? "CN" : market === "hk" ? "HK" : "US";
     const res = await fetch(
       `${BACKEND_API_URL}/api/movers/turnover?market=${m}&limit=10`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json", ...serviceAuthHeaders() } }
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -123,6 +133,15 @@ function fmtVolume(v: number | null | undefined): string {
   if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
   if (v >= 1e3) return `${(v / 1e3).toFixed(2)}K`;
   return v.toLocaleString("en-US");
+}
+
+/** 从榜单首行推导时间标注：日频榜用 snapshot_date（日期），盘中榜用 updated_at（时分） */
+function deriveTimeLabel(items: ScreenerItem[]): string | null {
+  const first = items[0];
+  if (!first) return null;
+  const dateLabel = fmtDataDate(first.snapshot_date);
+  if (dateLabel) return dateLabel;
+  return fmtDataTime(first.updated_at);
 }
 
 function StockRow({
@@ -179,12 +198,17 @@ function ScreenerColumn({
   href,
   colorClass,
   metric,
+  timeLabel,
+  marketBadge,
 }: {
   title: string;
   items: ScreenerItem[];
   href: string;
   colorClass: string;
   metric?: "amount" | "turnover";
+  timeLabel?: string | null;
+  /** 数据来源市场标注（如「美股」，如实标注非 cn/hk 分支的美股榜） */
+  marketBadge?: string;
 }) {
   return (
     <Card
@@ -192,9 +216,21 @@ function ScreenerColumn({
       className="@container/card bg-linear-to-t from-primary/5 to-card shadow-xs dark:bg-card"
     >
       <CardHeader>
-        <CardTitle className={`text-base font-medium ${colorClass}`}>
+        <CardTitle
+          className={`flex items-center gap-2 text-base font-medium ${colorClass}`}
+        >
           {title}
+          {marketBadge ? (
+            <Badge variant="secondary" className="shrink-0 text-[10px]">
+              {marketBadge}
+            </Badge>
+          ) : null}
         </CardTitle>
+        {timeLabel && (
+          <CardDescription className="text-xs text-muted-foreground">
+            {timeLabel}
+          </CardDescription>
+        )}
         <CardAction>
           <Link href={href} className="text-xs text-muted-foreground hover:text-fg">
             更多 →
@@ -228,6 +264,9 @@ export async function MoversBoard({
     fetchTurnover(market),
   ]);
 
+  // 非 cn/hk 分支四榜数据实为美股（backend market=US），如实标注来源
+  const usBadge = market !== "cn" && market !== "hk" ? "美股" : undefined;
+
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <ScreenerColumn
@@ -235,12 +274,16 @@ export async function MoversBoard({
         items={gainers.slice(0, 8)}
         href="/screener"
         colorClass="text-up"
+        timeLabel={deriveTimeLabel(gainers)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="跌幅榜 Top 8"
         items={losers.slice(0, 8)}
         href="/screener"
         colorClass="text-down"
+        timeLabel={deriveTimeLabel(losers)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="活跃榜 Top 8（成交额）"
@@ -248,6 +291,8 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-accent"
         metric="amount"
+        timeLabel={deriveTimeLabel(active)}
+        marketBadge={usBadge}
       />
       <ScreenerColumn
         title="换手榜 Top 8"
@@ -255,6 +300,8 @@ export async function MoversBoard({
         href="/screener"
         colorClass="text-warn"
         metric="turnover"
+        timeLabel={deriveTimeLabel(turnover)}
+        marketBadge={usBadge}
       />
     </div>
   );
@@ -272,6 +319,8 @@ export async function TopNews({ market = "global" }: { market?: string }) {
   const symbols = NEWS_SYMBOLS[market] ?? NEWS_SYMBOLS.global;
   const articles = await getAggregatedNews(symbols, 1);
   const top4 = articles.slice(0, 4);
+  // 最新一条资讯的发布时间（盘中分钟级，显时分）
+  const newsTime = fmtDataTime(top4[0]?.date);
 
   return (
     <Card
@@ -282,6 +331,11 @@ export async function TopNews({ market = "global" }: { market?: string }) {
         <CardTitle className="text-base font-medium text-fg-dim">
           热门资讯
         </CardTitle>
+        {newsTime && (
+          <CardDescription className="text-xs text-muted-foreground">
+            {newsTime}
+          </CardDescription>
+        )}
         <CardAction>
           <Link href="/news" className="text-xs text-muted-foreground hover:text-fg">
             更多 →

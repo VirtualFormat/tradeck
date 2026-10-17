@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 # ── 跨资产总览的标的定义（按 category 固定顺序输出）──
 # (symbol, 名称, category, 来源表)
@@ -111,6 +114,7 @@ async def get_cross_assets():
                 "symbol": symbol,
                 "name": name,
                 "category": category,
+                "latest_date": latest_date.isoformat(),
                 "close": close,
                 "chg_1d": _pct(close, prev),
                 "chg_1w": _pct(close, _ref_close(series, latest_date - timedelta(days=_CHG_WINDOWS["chg_1w"]))),
@@ -222,6 +226,7 @@ async def get_yield_curve():
         {
             "tenor": label,
             "months": months,
+            "latest_date": today.isoformat(),
             "latest": _val(latest, col),
             "ago_1m": _val(ago_1m, col),
             "ago_1y": _val(ago_1y, col),

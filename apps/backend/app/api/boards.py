@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
 def _parse_date(s: str | None) -> date_type | None:
@@ -23,19 +26,25 @@ def _parse_date(s: str | None) -> date_type | None:
 async def get_board_heat(
     type: str = Query("industry"),
     limit: int = Query(80),
+    order: str = Query("change"),
     date: str | None = Query(None),
 ):
-    """板块行情热度。type: concept / industry；date: YYYY-MM-DD（默认最近快照日）"""
+    """板块行情热度。order: change 按涨幅 / market_cap 按市值。"""
+    order_sql = (
+        "market_cap DESC NULLS LAST"
+        if order.lower() == "market_cap"
+        else "change_percent DESC NULLS LAST"
+    )
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT name, code, change_percent, market_cap, turnover_rate,
-                   leader_stock, leader_change
+                   leader_stock, leader_change, snapshot_date
             FROM board_heat
             WHERE board_type = $1
               AND snapshot_date = COALESCE($3::date, (SELECT max(snapshot_date) FROM board_heat WHERE board_type = $1))
-            ORDER BY change_percent DESC NULLS LAST
+            ORDER BY {order_sql}
             LIMIT $2
             """,
             type,
@@ -52,6 +61,9 @@ async def get_board_heat(
             "turnover_rate": float(r["turnover_rate"]) if r["turnover_rate"] else None,
             "leader_stock": r["leader_stock"],
             "leader_change": float(r["leader_change"]) if r["leader_change"] else None,
+            "snapshot_date": r["snapshot_date"].isoformat() if r["snapshot_date"] else None,
+            "source": "ths" if (r["code"] or "").startswith("THS:") else "eastmoney",
+            "size_basis": "turnover" if (r["code"] or "").startswith("THS:") else "market_cap",
         }
         for r in rows
     ]

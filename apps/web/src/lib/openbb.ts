@@ -1,31 +1,17 @@
 /**
  * API 客户端
- * - 阶段 1 已迁移到 backend（quotes/historical/indices）：< 50ms
- * - 阶段 2 待迁移（movers/news/macro/commodities/treasury/profile/metrics/income）：直连 OpenBB
+ * - 全部走 backend（从 DB 读，< 50ms），管道迁移已完成
+ * - 失败降级返回空数组，页面永远可渲染
  */
 
-// Backend API（从 DB 读，< 50ms）
+import { serviceAuthHeaders } from "@/lib/service-auth";
+
+// Backend API（从 DB 读，< 50ms）；默认兜底仅供本地开发，
+// 生产由环境变量 BACKEND_API_URL 注入 tradb data-api 回环地址。
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://localhost:8080";
 
-// OpenBB API（阶段 1 暂保留给未迁移的组件）
-const OPENBB_API_URL =
-  process.env.OPENBB_API_URL ?? "http://localhost:6900";
-
-export { OPENBB_API_URL };
-
 const BACKEND = BACKEND_API_URL;
-const OPENBB_BASE = `${OPENBB_API_URL}/api/v1`;
-
-/** 按数据类型的缓存时间（秒）— 仅用于 OpenBB 调用 */
-const CACHE = {
-  quote: 30,
-  historical: 300,
-  discovery: 300,
-  profile: 3600,
-  fundamental: 3600,
-  macro: 3600,
-} as const;
 
 export interface EquityQuote {
   symbol: string;
@@ -40,6 +26,12 @@ export interface EquityQuote {
   low: number | null;
   prev_close: number | null;
   exchange: string | null;
+  /** Provider 行情对应时间；缺失时不得用于新鲜度或提醒判断。 */
+  data_as_of: string | null;
+  /** 本次写入 quote_snapshots 的抓取时间，不代表行情时间。 */
+  fetched_at: string | null;
+  /** @deprecated 仅兼容未迁移的旧组件；新代码使用 data_as_of。 */
+  updated_at?: string | null;
 }
 
 export interface HistoricalPrice {
@@ -51,18 +43,13 @@ export interface HistoricalPrice {
   volume: number;
 }
 
-export interface OpenBBResponse<T> {
-  results: T[];
-  warnings?: { message: string }[];
-}
-
 // ─── Backend API（从 DB 读，< 50ms） ──────────────────────
 
 async function backendFetch<T>(path: string): Promise<T> {
   const url = `${BACKEND}${path}`;
   try {
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...serviceAuthHeaders() },
     });
     if (!res.ok) {
       console.warn(`backend ${path} failed: ${res.status}`);
@@ -77,62 +64,64 @@ async function backendFetch<T>(path: string): Promise<T> {
   }
 }
 
-// ─── OpenBB API（阶段 1 暂保留，阶段 2 迁移） ──────────────
+// ─── 已迁移到 backend 的 API ─────────────────────────────
 
-const memCache = new Map<string, { data: unknown; ts: number }>();
-
-export async function fetchJSON<T>(
-  path: string,
-  init?: RequestInit,
-  revalidate: number = CACHE.quote
-): Promise<T> {
-  const url = `${OPENBB_BASE}${path}`;
-  const cached = memCache.get(url);
-  if (cached && Date.now() - cached.ts < revalidate * 1000) {
-    return cached.data as T;
-  }
-  try {
-    const res = (await Promise.race([
-      fetch(url, {
-        ...init,
-        cache: "no-store",
-        headers: { Accept: "application/json", ...init?.headers },
-      }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-    ])) as Response | null;
-
-    if (!res) {
-      console.warn(`OpenBB ${path} timeout (5s), returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    if (!res.ok) {
-      throw new Error(`OpenBB API ${path} failed: ${res.status}`);
-    }
-    const text = await res.text();
-    let data: T;
-    if (!text) {
-      data = { results: [] } as unknown as T;
-    } else {
-      try {
-        data = JSON.parse(text) as T;
-      } catch {
-        data = { results: [] } as unknown as T;
-      }
-    }
-    memCache.set(url, { data, ts: Date.now() });
-    return data;
-  } catch (err) {
-    if (err instanceof Error && (err.message.includes("ECONNRESET") || err.message.includes("fetch failed"))) {
-      console.warn(`OpenBB ${path} reset, returning empty`);
-      if (cached) return cached.data as T;
-      return { results: [] } as unknown as T;
-    }
-    throw err;
-  }
+export interface BoardHeatItem {
+  name: string;
+  code?: string | null;
+  change_percent: number | null;
+  market_cap: number | null;
+  turnover_rate: number | null;
+  leader_stock: string | null;
+  leader_change: number | null;
+  snapshot_date?: string | null;
+  source?: "eastmoney" | "ths" | null;
+  size_basis?: "market_cap" | "turnover" | null;
 }
 
-// ─── 已迁移到 backend 的 API ─────────────────────────────
+export interface FundFlowItem {
+  symbol: string;
+  name: string | null;
+  price: number | null;
+  change_percent: number | null;
+  turnover_rate: number | null;
+  net_amount: number | null;
+  snapshot_date?: string | null;
+  /** 榜单更新时间（fund_flow.updated_at，5 分钟级即时榜） */
+  updated_at?: string | null;
+}
+
+/** 板块热力日快照（仅 A 股，默认返回最近快照日）。 */
+export async function fetchBoardHeat(
+  type: "industry" | "concept" = "industry",
+  date?: string,
+  limit: number = 80,
+  order: "change" | "market_cap" = "change"
+): Promise<BoardHeatItem[]> {
+  const params = new URLSearchParams({
+    type,
+    limit: String(limit),
+    order,
+  });
+  if (date) params.set("date", date);
+  return backendFetch<BoardHeatItem[]>(
+    `/api/boards/heat?${params.toString()}`
+  );
+}
+
+/** 个股主力资金日快照（仅 A 股，默认返回最近快照日）。 */
+export async function fetchFundFlow(
+  direction: "in" | "out",
+  date?: string,
+  limit: number = 10
+): Promise<FundFlowItem[]> {
+  const params = new URLSearchParams({
+    direction,
+    limit: String(limit),
+  });
+  if (date) params.set("date", date);
+  return backendFetch<FundFlowItem[]>(`/api/fundflow?${params.toString()}`);
+}
 
 export async function getEquityQuote(
   symbol: string
@@ -149,6 +138,204 @@ export async function getEquityQuotes(
   return backendFetch<EquityQuote[]>(
     `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`
   );
+}
+
+// ─── 首页异动榜（RSC 预取，Client 仅切换已传入数据） ─────────
+
+export type MoversMarket = "cn" | "us" | "hk";
+export type MoversType = "gainers" | "losers" | "active" | "turnover";
+
+export interface MoversItem {
+  symbol: string;
+  name: string | null;
+  price: number | null;
+  change: number | null;
+  percent_change: number | null;
+  volume: number | null;
+  /** 成交额近似值：最新价 × 成交量，仅活跃榜展示 */
+  amount: number | null;
+  /** 估算换手小数（成交额近似值 / 总市值），仅换手榜返回 */
+  turnover: number | null;
+  /** movers_cache 日快照日期；港股跟踪标的报价没有此字段 */
+  snapshot_date: string | null;
+  /** quote_snapshots 更新时间；当前报价/换手榜使用 */
+  updated_at: string | null;
+}
+
+export type MoversPrimaryData = Record<
+  Exclude<MoversType, "turnover">,
+  MoversItem[]
+>;
+
+// 港股异动榜暂时只覆盖这些跟踪标的；CN/US 已走 movers_cache 全市场榜。
+const DASHBOARD_HK_SYMBOLS = [
+  "00700.HK",
+  "09988.HK",
+  "00005.HK",
+  "01299.HK",
+  "00883.HK",
+  "00939.HK",
+  "00388.HK",
+  "02318.HK",
+  "00941.HK",
+  "01810.HK",
+  "03690.HK",
+  "09618.HK",
+];
+
+function quoteToMoversItem(quote: EquityQuote): MoversItem {
+  const amount =
+    quote.last_price != null && quote.volume != null
+      ? quote.last_price * quote.volume
+      : null;
+
+  return {
+    symbol: quote.symbol,
+    name: quote.name,
+    price: quote.last_price,
+    change: quote.change,
+    percent_change: quote.change_percent,
+    volume: quote.volume,
+    amount,
+    turnover: null,
+    snapshot_date: null,
+    updated_at: quote.data_as_of ?? null,
+  };
+}
+
+function normalizeMoversItem(item: Partial<MoversItem>): MoversItem {
+  const amount =
+    item.amount ??
+    (item.price != null && item.volume != null
+      ? item.price * item.volume
+      : null);
+
+  return {
+    symbol: item.symbol ?? "",
+    name: item.name ?? null,
+    price: item.price ?? null,
+    change: item.change ?? null,
+    percent_change: item.percent_change ?? null,
+    volume: item.volume ?? null,
+    amount,
+    turnover: item.turnover ?? null,
+    snapshot_date: item.snapshot_date ?? null,
+    updated_at: item.updated_at ?? null,
+  };
+}
+
+function compareNullable(
+  a: number | null,
+  b: number | null,
+  direction: "asc" | "desc"
+): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return direction === "asc" ? a - b : b - a;
+}
+
+/**
+ * 首页涨幅/跌幅/活跃榜。
+ * - CN/US：movers_cache 全市场榜，支持 date 日快照。
+ * - HK：使用跟踪标的当前报价，date 不适用。
+ */
+export async function fetchMovers(
+  type: Exclude<MoversType, "turnover">,
+  market: MoversMarket,
+  date?: string,
+  limit: number = 6
+): Promise<MoversItem[]> {
+  if (market === "hk") {
+    const quotes = await getEquityQuotes(DASHBOARD_HK_SYMBOLS);
+    const items = quotes.map(quoteToMoversItem);
+
+    items.sort((a, b) => {
+      if (type === "gainers") {
+        return compareNullable(a.percent_change, b.percent_change, "desc");
+      }
+      if (type === "losers") {
+        return compareNullable(a.percent_change, b.percent_change, "asc");
+      }
+      return compareNullable(a.amount, b.amount, "desc");
+    });
+
+    return items.slice(0, limit);
+  }
+
+  const dateQuery = date ? `&date=${encodeURIComponent(date)}` : "";
+  const data = await backendFetch<Partial<MoversItem>[]>(
+    `/api/movers?type=${type}&market=${market.toUpperCase()}&limit=${limit}${dateQuery}`
+  );
+  if (!Array.isArray(data)) return [];
+  return data
+    .map(normalizeMoversItem)
+    .filter((item) => item.symbol)
+    .slice(0, limit);
+}
+
+/** 首页三类主榜一次取齐；港股仅发起一次批量报价请求。 */
+export async function fetchMoversPrimaryData(
+  market: MoversMarket,
+  date?: string,
+  limit: number = 6
+): Promise<MoversPrimaryData> {
+  if (market !== "hk") {
+    const [gainers, losers, active] = await Promise.all([
+      fetchMovers("gainers", market, date, limit),
+      fetchMovers("losers", market, date, limit),
+      fetchMovers("active", market, date, limit),
+    ]);
+    return { gainers, losers, active };
+  }
+
+  const items = (await getEquityQuotes(DASHBOARD_HK_SYMBOLS)).map(
+    quoteToMoversItem
+  );
+  const sorted = (
+    field: "percent_change" | "amount",
+    direction: "asc" | "desc"
+  ) =>
+    [...items]
+      .sort((a, b) => compareNullable(a[field], b[field], direction))
+      .slice(0, limit);
+
+  return {
+    gainers: sorted("percent_change", "desc"),
+    losers: sorted("percent_change", "asc"),
+    active: sorted("amount", "desc"),
+  };
+}
+
+/**
+ * 首页换手榜。该接口使用当前 quote_snapshots + equity_profiles，
+ * 不支持历史 date；调用方必须标注“当前”。
+ */
+export async function fetchMoversTurnover(
+  market: MoversMarket,
+  limit: number = 6
+): Promise<MoversItem[]> {
+  const backendMarket = market.toUpperCase();
+  // quote_snapshots 仅是报价覆盖集，不是全市场；港股多取一些后再按
+  // 跟踪集合过滤，避免逐标的 profile 请求拖慢默认涨幅榜。
+  const requestLimit = market === "hk" ? 100 : limit;
+  const data = await backendFetch<Partial<MoversItem>[]>(
+    `/api/movers/turnover?market=${backendMarket}&limit=${requestLimit}`
+  );
+  if (!Array.isArray(data)) return [];
+  const normalized = data
+    .map(normalizeMoversItem)
+    .filter((item) => item.symbol);
+
+  if (market === "hk") {
+    const tracked = new Set(DASHBOARD_HK_SYMBOLS);
+    return normalized
+      .filter((item) => tracked.has(item.symbol))
+      .slice(0, limit);
+  }
+
+  return normalized
+    .slice(0, limit);
 }
 
 export async function getEquityHistorical(
@@ -208,21 +395,7 @@ export async function fetchTechnicals(
   );
 }
 
-// ─── 阶段 2 待迁移（暂保留直连 OpenBB） ────────────────────
-
-function pickProvider(symbol: string): string {
-  const sym = symbol.toUpperCase();
-  // .SH（沪，新标准）/.SS（沪，指数仍用）/.SZ/.BJ
-  if (
-    sym.endsWith(".SH") ||
-    sym.endsWith(".SS") ||
-    sym.endsWith(".SZ") ||
-    sym.endsWith(".BJ")
-  ) {
-    return "akshare";
-  }
-  return "yfinance";
-}
+// ─── 公司信息 / 基本面（backend DB） ─────────────────────
 
 export interface EquityProfile {
   symbol: string;
@@ -283,10 +456,12 @@ export async function getFundamentalMetrics(
 
 export async function getIncomeStatements(
   symbol: string,
-  provider: string = "sec",
-  period: string = "annual",
+  _provider: string = "sec",
+  _period: string = "annual",
   limit: number = 3
 ): Promise<IncomeStatement[]> {
+  void _provider;
+  void _period;
   return backendFetch<IncomeStatement[]>(
     `/api/fundamentals/income?symbol=${encodeURIComponent(symbol)}&limit=${limit}`
   );
@@ -420,9 +595,10 @@ export interface RateSeries {
 }
 
 export async function getCPI(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=CPI&limit=${limit}`
   );
@@ -430,27 +606,30 @@ export async function getCPI(
 }
 
 export async function getUnemployment(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 12
 ): Promise<MacroSeries[]> {
+  void _provider;
   return backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=Unemployment&limit=${limit}`
   );
 }
 
 export async function getGDPNominal(
-  provider: string = "oecd",
+  _provider: string = "oecd",
   limit: number = 20
 ): Promise<MacroSeries[]> {
+  void _provider;
   return backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=GDP_Nominal&limit=${limit}`
   );
 }
 
 export async function getEFFR(
-  provider: string = "federal_reserve",
+  _provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=EFFR&limit=${limit}`
   );
@@ -458,9 +637,10 @@ export async function getEFFR(
 }
 
 export async function getSOFR(
-  provider: string = "federal_reserve",
+  _provider: string = "federal_reserve",
   limit: number = 12
 ): Promise<RateSeries[]> {
+  void _provider;
   const data = await backendFetch<{date: string; value: number}[]>(
     `/api/macro?name=SOFR&limit=${limit}`
   );
@@ -572,13 +752,47 @@ export async function fetchMarketBreadth(
   return backendFetch<MarketBreadth[]>(`/api/breadth?days=${days}`);
 }
 
-// ─── 全球宏观（/global 页） ───────────────────────────────
+/** 三市对比总览行（CN/US/HK 市场宽度最新快照，up_ratio 后端算好） */
+export interface MarketSummary {
+  market: string;
+  date: string | null;
+  /** 数据源原始标识：CN 通常为 legu，US/HK 为 daily_kline */
+  source: string | null;
+  /** 当前宽度快照写入数据库的时间（ISO 8601） */
+  fetched_at: string | null;
+  up: number;
+  down: number;
+  flat: number;
+  /** 涨跌停：仅 CN 非 null（legu 口径）；US/HK 为 null（日K 自算无此项） */
+  limit_up: number | null;
+  limit_down: number | null;
+  total: number;
+  /** 实际参与宽度计算的标的数；等于 up + down + flat */
+  coverage_count: number;
+  /** US/HK 的最低有效覆盖门槛；CN 无门槛时为 null */
+  coverage_min: number | null;
+  /** 当前快照是否达到覆盖门槛 */
+  coverage_sufficient: boolean;
+  /** 上涨占比 = up / (up + down)，平盘不计入分母；分母为 0 时 null */
+  up_ratio: number | null;
+}
+
+/** 三市对比总览（CN/US/HK 各取最新一行；date 传入则查历史快照） */
+export async function fetchMarketSummary(
+  date?: string
+): Promise<MarketSummary[]> {
+  const dateQuery = date ? `?date=${encodeURIComponent(date)}` : "";
+  return backendFetch<MarketSummary[]>(`/api/market-summary${dateQuery}`);
+}
+
+// ─── 宏观市场结构（/macro?view=structure） ─────────────────
 
 /** 跨资产总览行（股指/商品/汇率/波动率/债券） */
 export interface CrossAssetItem {
   symbol: string;
   name: string;
   category: "equity_index" | "commodity" | "fx" | "volatility" | "bond";
+  latest_date?: string | null;
   close: number | null;
   chg_1d: number | null;
   chg_1w: number | null;
@@ -592,6 +806,7 @@ export interface CrossAssetItem {
 export interface YieldCurvePoint {
   tenor: string;
   months: number;
+  latest_date?: string | null;
   latest: number | null;
   ago_1m: number | null;
   ago_1y: number | null;
@@ -638,4 +853,96 @@ export async function fetchMarketInternals(
   days: number = 180
 ): Promise<MarketInternal[]> {
   return backendFetch<MarketInternal[]>(`/api/market-internals?days=${days}`);
+}
+
+// ─── 系统任务进度（/api/system/jobs） ─────────────────────
+
+export interface JobProgress {
+  job: string;
+  label: string;
+  trigger: "schedule" | "startup" | "manual";
+  status: "running" | "done" | "empty" | "partial" | "error";
+  processed: number;
+  total: number;
+  percent: number;
+  note: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface DataJob {
+  id: string;
+  label: string;
+  description: string;
+  source: string;
+  schedule: string;
+  tables: string[];
+  allow_manual: boolean;
+  status:
+    | "idle"
+    | "running"
+    | "done"
+    | "partial"
+    | "empty"
+    | "stale"
+    | "error";
+  last_run: JobProgress | null;
+  next_run_at: string | null;
+  data_health: DataHealth;
+}
+
+export type DataHealthStatus =
+  | "fresh"
+  | "partial"
+  | "empty"
+  | "stale"
+  | "unknown";
+
+export interface DataHealthTable {
+  name: string;
+  status: DataHealthStatus;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  note: string | null;
+}
+
+export interface DataHealth {
+  status: DataHealthStatus;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  note: string | null;
+  tables: DataHealthTable[];
+}
+
+export interface DataTableStat {
+  name: string;
+  row_count: number;
+  total_bytes: number;
+  latest_data_date: string | null;
+  latest_data_at: string | null;
+  freshness: DataHealthStatus;
+  freshness_note: string | null;
+}
+
+export interface DailyMarketStat {
+  market: "CN" | "HK" | "US";
+  row_count: number;
+  latest_date: string | null;
+}
+
+export interface DataSystemSnapshot {
+  jobs: DataJob[];
+  tables: DataTableStat[];
+  daily_markets: DailyMarketStat[];
+  summary: {
+    job_count: number;
+    running_count: number;
+    error_count: number;
+    empty_count: number;
+    partial_count: number;
+    stale_count: number;
+    table_count: number;
+    total_rows: number;
+    total_bytes: number;
+  };
 }

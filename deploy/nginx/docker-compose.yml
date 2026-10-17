@@ -1,0 +1,11 @@
+# nginx：宿主机反代（CF 橙云回源终止 SSL → 本机 tradeck-web）
+# host 网络直绑 80/443；容器化便于随 docker compose 管理、重启自恢复。
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: tradeck-nginx
+    network_mode: host
+    volumes:
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+    restart: unless-stopped

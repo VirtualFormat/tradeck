@@ -1,18 +1,46 @@
-"""GET /api/fundamentals — 从 fundamental_metrics + income_statements 读"""
+"""GET /api/fundamentals — 从 fundamental_metrics + income_statements 读；无数据时经 collector 按需回源"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
+
+from app.api._ensure import ensure, valid_symbol
+from app.api._service_auth import read_access
 from app.db import get_pool
 
-router = APIRouter()
+# 全文件读接口统一挂 read_access（配置 SERVICE_TOKENS 后强制 X-Service-Token）
+router = APIRouter(dependencies=[Depends(read_access)])
 
 
-@router.get("/api/fundamentals/metrics")
-async def get_metrics(symbol: str = Query(...)):
-    """获取基本面指标。"""
-    pool = await get_pool()
+def _parse_as_of(as_of: str | None) -> date | None:
+    """解析 as_of 查询参数（YYYY-MM-DD）；格式非法时返回 None，优雅降级为最新值。"""
+    if not as_of:
+        return None
+    try:
+        return date.fromisoformat(as_of)
+    except ValueError:
+        return None
+
+
+async def _fetch_metrics_row(pool, symbol: str, as_of: date | None = None):
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+        if as_of is not None:
+            # as-of 近似口径：fundamental_metrics 为覆盖式最新值（PK symbol，单行），
+            # 只能用 updated_at 判断「该时点前是否已写入过」；无法精确还原历史值。
+            return await conn.fetchrow(
+                """
+                SELECT symbol, market_cap, pe_ratio, forward_pe, peg_ratio,
+                    enterprise_to_ebitda, earnings_growth, revenue_growth,
+                    dividend_yield, beta, profit_margins, return_on_equity,
+                    debt_to_equity
+                FROM fundamental_metrics
+                WHERE symbol = $1 AND updated_at::date <= $2
+                """,
+                symbol,
+                as_of,
+            )
+        return await conn.fetchrow(
             """
             SELECT symbol, market_cap, pe_ratio, forward_pe, peg_ratio,
                 enterprise_to_ebitda, earnings_growth, revenue_growth,
@@ -21,8 +49,32 @@ async def get_metrics(symbol: str = Query(...)):
             FROM fundamental_metrics
             WHERE symbol = $1
             """,
-            symbol.upper(),
+            symbol,
         )
+
+
+@router.get("/api/fundamentals/metrics")
+async def get_metrics(
+    symbol: str = Query(...),
+    as_of: str | None = Query(None),
+):
+    """获取基本面指标。DB 无数据时经 collector 按需回源（首访 2-5s，此后读库）。
+
+    as_of（YYYY-MM-DD）为近似口径：fundamental_metrics 是覆盖式最新值表
+    （PK symbol，updated_at 每次覆盖），只能回答「updated_at <= as_of 时
+    返回当前行，否则返回 null」，无法精确还原历史时点数据；精确的
+    point-in-time 需阶段四快照化。as_of 格式非法时优雅降级为最新值；
+    as_of 路径不触发按需回源（回源拿到的是「现在」的值，对历史时点无意义）。
+    注意：income/balance/cash 为年度/季度报表，按 fiscal_year/fiscal_date
+    天然有序，as_of 语义不同，本阶段不提供 as_of 参数。
+    """
+    sym = symbol.upper()
+    as_of_date = _parse_as_of(as_of)
+    pool = await get_pool()
+    row = await _fetch_metrics_row(pool, sym, as_of_date)
+    if not row and as_of_date is None and valid_symbol(sym):
+        await ensure("metrics", [sym])
+        row = await _fetch_metrics_row(pool, sym)
 
     if not row:
         return None
@@ -42,18 +94,14 @@ async def get_metrics(symbol: str = Query(...)):
         "return_on_equity": float(row["return_on_equity"]) if row["return_on_equity"] else None,
         "debt_to_equity": float(row["debt_to_equity"]) if row["debt_to_equity"] else None,
         "current_ratio": None,
+        # 覆盖式最新值表，as_of 为 updated_at 近似的 point-in-time
+        "as_of_exact": False,
     }
 
 
-@router.get("/api/fundamentals/income")
-async def get_income(
-    symbol: str = Query(...),
-    limit: int = Query(3),
-):
-    """获取利润表。"""
-    pool = await get_pool()
+async def _fetch_income_rows(pool, symbol: str, limit: int):
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        return await conn.fetch(
             """
             SELECT symbol, fiscal_year, total_revenue, net_income, gross_profit, operating_income
             FROM income_statements
@@ -61,9 +109,23 @@ async def get_income(
             ORDER BY fiscal_year DESC
             LIMIT $2
             """,
-            symbol.upper(),
+            symbol,
             limit,
         )
+
+
+@router.get("/api/fundamentals/income")
+async def get_income(
+    symbol: str = Query(...),
+    limit: int = Query(3),
+):
+    """获取利润表。DB 无数据时经 collector 按需回源（SEC 源，仅美股）。"""
+    sym = symbol.upper()
+    pool = await get_pool()
+    rows = await _fetch_income_rows(pool, sym, limit)
+    if not rows and valid_symbol(sym):
+        await ensure("income", [sym])
+        rows = await _fetch_income_rows(pool, sym, limit)
 
     return [
         {
@@ -79,16 +141,10 @@ async def get_income(
     ]
 
 
-@router.get("/api/fundamentals/balance")
-async def get_balance(
-    symbol: str = Query(...),
-    period: str | None = Query(None),
-):
-    """获取资产负债表（年报+季报）。返回扁平数组，按 fiscal_date 倒序。"""
-    pool = await get_pool()
+async def _fetch_balance_rows(pool, symbol: str, period: str | None):
     async with pool.acquire() as conn:
         if period:
-            rows = await conn.fetch(
+            return await conn.fetch(
                 """
                 SELECT symbol, period, fiscal_date, total_assets, total_liabilities,
                     total_equity, total_current_assets, total_current_liabilities,
@@ -98,22 +154,35 @@ async def get_balance(
                 WHERE symbol = $1 AND period = $2
                 ORDER BY fiscal_date DESC
                 """,
-                symbol.upper(),
+                symbol,
                 period,
             )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT symbol, period, fiscal_date, total_assets, total_liabilities,
-                    total_equity, total_current_assets, total_current_liabilities,
-                    cash_and_equivalents, inventories, accounts_receivable,
-                    total_debt, retained_earnings
-                FROM balance_sheets
-                WHERE symbol = $1
-                ORDER BY fiscal_date DESC
-                """,
-                symbol.upper(),
-            )
+        return await conn.fetch(
+            """
+            SELECT symbol, period, fiscal_date, total_assets, total_liabilities,
+                total_equity, total_current_assets, total_current_liabilities,
+                cash_and_equivalents, inventories, accounts_receivable,
+                total_debt, retained_earnings
+            FROM balance_sheets
+            WHERE symbol = $1
+            ORDER BY fiscal_date DESC
+            """,
+            symbol,
+        )
+
+
+@router.get("/api/fundamentals/balance")
+async def get_balance(
+    symbol: str = Query(...),
+    period: str | None = Query(None),
+):
+    """获取资产负债表（年报+季报）。DB 无数据时经 collector 按需回源。"""
+    sym = symbol.upper()
+    pool = await get_pool()
+    rows = await _fetch_balance_rows(pool, sym, period)
+    if not rows and valid_symbol(sym):
+        await ensure("balance", [sym])
+        rows = await _fetch_balance_rows(pool, sym, period)
 
     def _f(v):
         return float(v) if v is not None else None
@@ -138,16 +207,10 @@ async def get_balance(
     ]
 
 
-@router.get("/api/fundamentals/cash")
-async def get_cash_flow(
-    symbol: str = Query(...),
-    period: str | None = Query(None),
-):
-    """获取现金流量表（年报+季报）。返回扁平数组，按 fiscal_date 倒序。"""
-    pool = await get_pool()
+async def _fetch_cash_rows(pool, symbol: str, period: str | None):
     async with pool.acquire() as conn:
         if period:
-            rows = await conn.fetch(
+            return await conn.fetch(
                 """
                 SELECT symbol, period, fiscal_date, operating_cash_flow,
                     investing_cash_flow, financing_cash_flow, capital_expenditure,
@@ -157,22 +220,35 @@ async def get_cash_flow(
                 WHERE symbol = $1 AND period = $2
                 ORDER BY fiscal_date DESC
                 """,
-                symbol.upper(),
+                symbol,
                 period,
             )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT symbol, period, fiscal_date, operating_cash_flow,
-                    investing_cash_flow, financing_cash_flow, capital_expenditure,
-                    free_cash_flow, net_income, depreciation_amortization,
-                    share_repurchase, dividends_paid
-                FROM cash_flow_statements
-                WHERE symbol = $1
-                ORDER BY fiscal_date DESC
-                """,
-                symbol.upper(),
-            )
+        return await conn.fetch(
+            """
+            SELECT symbol, period, fiscal_date, operating_cash_flow,
+                investing_cash_flow, financing_cash_flow, capital_expenditure,
+                free_cash_flow, net_income, depreciation_amortization,
+                share_repurchase, dividends_paid
+            FROM cash_flow_statements
+            WHERE symbol = $1
+            ORDER BY fiscal_date DESC
+            """,
+            symbol,
+        )
+
+
+@router.get("/api/fundamentals/cash")
+async def get_cash_flow(
+    symbol: str = Query(...),
+    period: str | None = Query(None),
+):
+    """获取现金流量表（年报+季报）。DB 无数据时经 collector 按需回源。"""
+    sym = symbol.upper()
+    pool = await get_pool()
+    rows = await _fetch_cash_rows(pool, sym, period)
+    if not rows and valid_symbol(sym):
+        await ensure("cash", [sym])
+        rows = await _fetch_cash_rows(pool, sym, period)
 
     def _f(v):
         return float(v) if v is not None else None

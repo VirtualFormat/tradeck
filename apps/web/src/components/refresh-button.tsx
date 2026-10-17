@@ -9,25 +9,37 @@ import { useRouter } from "next/navigation";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 export function RefreshButton() {
   const router = useRouter();
   const [spinning, setSpinning] = useState(false);
 
   return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      title="刷新数据"
-      onClick={() => {
-        setSpinning(true);
-        router.refresh();
-        setTimeout(() => setSpinning(false), 800);
-      }}
-    >
-      <ArrowClockwiseIcon
-        className={`size-4 transition-transform ${spinning ? "animate-spin" : ""}`}
-      />
-    </Button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="刷新数据"
+            onClick={() => {
+              setSpinning(true);
+              router.refresh();
+              setTimeout(() => setSpinning(false), 800);
+            }}
+          />
+        }
+      >
+        <ArrowClockwiseIcon
+          className={`size-4 transition-transform ${spinning ? "animate-spin" : ""}`}
+        />
+      </TooltipTrigger>
+      <TooltipContent>刷新数据</TooltipContent>
+    </Tooltip>
   );
 }

@@ -1,0 +1,303 @@
+"""Walk-forward 滚动优化（阶段 I3）—— 训练窗优化 + 样本外验证。
+
+每折在训练区间用参数网格优化（engine/optimizer.optimize）选出最优参数，再在紧邻的
+测试区间用该参数做样本外（OOS）回测，滚动前移。核心产出是 OOS 拼接净值 + 每折
+IS-vs-OOS 退化 —— 样本内漂亮、样本外崩溃即过拟合信号，单次样本内回测看不到。
+
+对齐 tick-stock-panel 参照实现（Fold / generate_folds / aggregate_oos），轻量化：
+不做共享矩阵预热，单组/单折异常隔离（skip 不混入聚合，避免伪装成有效折）。
+"""
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from typing import Any
+
+from app.engine.optimizer import (
+    OptimizeConfig, RunBacktestFn, default_direction, optimize,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Fold:
+    """一折的窗口切分：训练窗 [train_start, train_end]，测试窗 [test_start, test_end]。"""
+    index: int
+    train_start: date
+    train_end: date
+    test_start: date
+    test_end: date
+
+
+def generate_folds(
+    start: date,
+    end: date,
+    train_days: int,
+    test_days: int,
+    step_days: int,
+) -> list[Fold]:
+    """滚动窗口 fold 切分：训练窗口固定长度，测试窗口紧接其后，按 step 前移。
+
+    测试区间超出 end 即停止。数据区间放不下一折则抛错。
+
+    purge 口径声明（review 缺陷 3 锁定）：本切分**无 purge 隔离带（purge=0）**——
+    训练窗末与测试窗首仅按日历日后移 1 天隔断同日重叠，不留 horizon 长度的
+    embargo 缓冲。这是有意选择：窗口按日历天数对齐参照 tick-stock-panel，
+    与 mining 模块「purge_bars >= horizon」的交易日 embargo 铁律口径不同，
+    两者不可混用比较。若未来要与 mining 对齐，需另加 purge_bars 参数并按
+    交易日轴切分（当前 Fold 只有日历日期，不改行为仅声明）。
+    """
+    if train_days <= 0 or test_days <= 0 or step_days <= 0:
+        raise ValueError("train_days / test_days / step_days 必须为正")
+
+    folds: list[Fold] = []
+    i = 0
+    train_start = start
+    while True:
+        train_end = train_start + timedelta(days=train_days)
+        # 测试区间从训练末日的次日开始：回测区间是闭区间，若 test_start==train_end 则
+        # 该日 K 线同时进训练优化与 OOS 首日，构成前视泄漏。后移一天隔断。
+        test_start = train_end + timedelta(days=1)
+        test_end = test_start + timedelta(days=test_days)
+        if test_end > end:
+            break
+        folds.append(Fold(i, train_start, train_end, test_start, test_end))
+        i += 1
+        train_start = train_start + timedelta(days=step_days)
+
+    if not folds:
+        raise ValueError(
+            f"数据区间不足以切出至少一折（需 train+test={train_days + test_days}天，"
+            f"实有 {(end - start).days}天）"
+        )
+    return folds
+
+
+def _norm(v: float, direction: str) -> float:
+    """把目标值归一到「越大越好」空间，以便跨目标一致地算退化（min 类目标取负）。"""
+    return -v if direction == "min" else v
+
+
+def aggregate_oos(fold_records: list[dict], objective: str, direction: str = "max") -> dict:
+    """从**有效折**（IS 与 OOS 都成功）聚合：复利净值 / IS-OOS 退化 / 一致性 / 参数稳定性。
+
+    调用方只传有效折（best_params 非空且 OOS 未 error），故此处每折 is_score/oos_objective
+    均有值，无需兜底 —— 无效折被伪装成 0 收益混入曾是参照实现 H1/H2 的根因。
+
+    - compounded_oos_return: 各折 OOS 总收益复利
+    - degradation: 归一空间下 IS 目标均值 - OOS 目标均值，正值 = 样本外退化（过拟合信号），
+      对「越小越好」目标方向也正确
+    - consistency: OOS 总收益 > 0 的折占比（与目标方向无关，直观）；
+      无有效折（n==0）时为 None（「无数据」≠「一致性 0%」，前端显示「—」）
+    - param_stability: 各折最优参数的取值集合（观测参数是否漂移；稳定 = 集合小/单值）
+    """
+    n = len(fold_records)
+    if n == 0:
+        return {
+            "n_folds": 0,
+            # 「没有任何有效折」≠「收益 0%」——与 consistency/degradation 同口径
+            # 置 None（阶段 O review P2-2 统一），前端显示「—」而非误导性 +0.00%
+            "compounded_oos_return": None,
+            "avg_is_objective": None,
+            "avg_oos_objective": None,
+            "degradation": None,
+            "consistency": None,
+            "oos_equity_curve": [],
+            "param_stability": {},
+        }
+
+    equity = 1.0
+    curve: list[dict] = []
+    n_positive = 0
+    for f in fold_records:
+        r = float(f["oos_stats"].get("total_return", 0.0) or 0.0)
+        equity *= (1 + r)
+        if r > 0:
+            n_positive += 1
+        curve.append({"fold": f["index"], "date": str(f["test_end"]), "value": round(equity, 4)})
+
+    is_vals = [f["is_score"] for f in fold_records if f["is_score"] is not None]
+    oos_vals = [f["oos_objective"] for f in fold_records if f["oos_objective"] is not None]
+    avg_is = round(float(sum(is_vals) / len(is_vals)), 4) if is_vals else None
+    avg_oos = round(float(sum(oos_vals) / len(oos_vals)), 4) if oos_vals else None
+    degradation = (
+        round(_norm(avg_is, direction) - _norm(avg_oos, direction), 4)
+        if (avg_is is not None and avg_oos is not None) else None
+    )
+
+    # 参数稳定性：各折最优参数的取值集合（去重保序；稳定 = 单值，漂移 = 多值）
+    param_stability: dict[str, list] = {}
+    for f in fold_records:
+        for k, v in (f.get("best_params") or {}).items():
+            bucket = param_stability.setdefault(k, [])
+            if v not in bucket:
+                bucket.append(v)
+
+    return {
+        "n_folds": n,
+        "compounded_oos_return": round(equity - 1.0, 4),
+        "avg_is_objective": avg_is,
+        "avg_oos_objective": avg_oos,
+        "degradation": degradation,
+        "consistency": round(n_positive / n, 4),
+        "oos_equity_curve": curve,
+        "param_stability": param_stability,
+    }
+
+
+@dataclass
+class WalkForwardConfig:
+    """Walk-forward 配置（与参照 WalkForwardConfig 对齐，轻量化）。
+
+    注意（review P1 修复）：train_days/test_days/step_days 是**日历天数**（含周末节假日），
+    非交易日数——train_days=252 实际约 172 个交易日。回测内部按真实交易日轴截取，
+    窗口内有效交易日数由数据决定。若需精确交易日口径，改用 mining 的 NestedValidationConfig
+    （bars 语义）。字段保留日历天数语义与参照对齐，改名会破坏既有调用，故加强注释锁定。
+    """
+    strategy_id: str
+    symbols: list[str]
+    start: date
+    end: date
+    param_grid: dict
+    objective: str = "sharpe"
+    train_days: int = 252   # 日历天数（非交易日；~172 交易日）
+    test_days: int = 63     # 日历天数（~43 交易日）
+    step_days: int = 63     # 日历天数
+    direction: str | None = None
+    base_params: dict = field(default_factory=dict)
+    config: Any = None                    # MatcherConfig（撮合配置，透传）
+
+
+def run_walk_forward(
+    cfg: WalkForwardConfig,
+    params_meta: list[dict],
+    run_fn: RunBacktestFn,
+    progress_cb=None,
+) -> dict:
+    """滚动窗口 walk-forward：每折训练区间优化 -> 测试区间 OOS 验证 -> 聚合。
+
+    run_fn 签名同 optimizer.optimize（同步回测执行函数，由 runner 注入）。
+    单折失败隔离：训练无结果 / OOS 异常计入 skipped，不混入有效折聚合。
+    """
+    t0 = time.perf_counter()
+    direction = cfg.direction or default_direction(cfg.objective)
+    folds = generate_folds(cfg.start, cfg.end, cfg.train_days, cfg.test_days, cfg.step_days)
+    n_total = len(folds)
+
+    valid_records: list[dict] = []   # IS 与 OOS 都成功，计入聚合
+    skipped: list[dict] = []          # 无优化结果 或 OOS 失败，不计入聚合（避免伪装成有效折）
+
+    for f in folds:
+        base = {
+            "index": f.index,
+            "train_start": str(f.train_start),
+            "train_end": str(f.train_end),
+            "test_start": str(f.test_start),
+            "test_end": str(f.test_end),
+        }
+
+        # 训练区间：网格优化选最优参数（训练折异常隔离，不影响后续折）
+        try:
+            opt_res = optimize(
+                OptimizeConfig(
+                    strategy_id=cfg.strategy_id,
+                    symbols=cfg.symbols,
+                    start=f.train_start,
+                    end=f.train_end,
+                    param_grid=cfg.param_grid,
+                    objective=cfg.objective,
+                    direction=cfg.direction,
+                    base_params=cfg.base_params,
+                    config=cfg.config,
+                ),
+                params_meta,
+                run_fn,
+            )
+        except Exception as e:
+            logger.warning("walk-forward 第 %d 折训练优化异常：%r", f.index, e)
+            skipped.append({**base, "reason": f"训练区间优化失败：{e!r}"})
+            if progress_cb is not None:
+                progress_cb({"type": "walkforward_progress", "done": f.index + 1,
+                             "total": n_total, "fold": f.index})
+            continue
+
+        best_params = opt_res.get("best_params")
+        is_score = opt_res.get("best_score")
+        # 训练区间没优化出参数（全组失败）-> 跳过，不用默认参数硬跑 OOS 伪装成有效折
+        if best_params is None:
+            skipped.append({**base, "reason": "训练区间未优化出参数"})
+            if progress_cb is not None:
+                progress_cb({"type": "walkforward_progress", "done": f.index + 1,
+                             "total": n_total, "fold": f.index})
+            continue
+
+        # 测试区间：用最优参数做样本外回测
+        merged = {**cfg.base_params, **best_params}
+        try:
+            oos_res = run_fn(cfg.symbols, cfg.strategy_id, f.test_start, f.test_end,
+                             params=merged, config=cfg.config)
+            oos_stats = oos_res.get("stats") or {}
+        except Exception as e:
+            logger.warning("walk-forward 第 %d 折 OOS 回测异常：%r", f.index, e)
+            skipped.append({**base, "best_params": best_params,
+                            "reason": f"OOS 回测失败：{e!r}"})
+            if progress_cb is not None:
+                progress_cb({"type": "walkforward_progress", "done": f.index + 1,
+                             "total": n_total, "fold": f.index})
+            continue
+
+        oos_objective = oos_stats.get(cfg.objective)
+        # 该折 OOS 是否较 IS 退化（方向感知：min 类目标数值更大才是退化）
+        oos_degraded = (
+            _norm(oos_objective, direction) < _norm(is_score, direction)
+            if (oos_objective is not None and is_score is not None) else None
+        )
+        valid_records.append({
+            **base,
+            "best_params": best_params,
+            "is_score": is_score,
+            "oos_objective": oos_objective,
+            "oos_degraded": oos_degraded,
+            "oos_stats": oos_stats,
+            # 扁平透出（阶段 M review P0-2：前端契约消费的单一形态，
+            # 防嵌套 oos_stats 键名漂移）
+            "oos_total_return": oos_stats.get("total_return"),
+            "oos_sharpe": oos_stats.get("sharpe"),
+        })
+        if progress_cb is not None:
+            progress_cb({"type": "walkforward_progress", "done": f.index + 1,
+                         "total": n_total, "fold": f.index})
+
+    summary = aggregate_oos(valid_records, cfg.objective, direction)
+    return {
+        "strategy": cfg.strategy_id,
+        "symbols": cfg.symbols,
+        "range": [cfg.start.isoformat(), cfg.end.isoformat()],
+        "objective": cfg.objective,
+        "direction": direction,
+        "n_folds": len(valid_records),
+        "n_skipped": len(skipped),
+        "n_planned_folds": n_total,
+        "folds": valid_records,
+        "skipped": skipped,
+        "summary": summary,
+        # 顶层透出（阶段 M review P0-1：前端直接消费，与 summary 同源）
+        "compounded_oos_return": summary["compounded_oos_return"],
+        "degradation": summary.get("degradation"),
+        "consistency": summary.get("consistency"),
+        # purge 口径元信息（review 缺陷 3 锁定）：折切分无 purge 隔离带
+        # （purge=0，训练窗末与测试窗首仅后移 1 个日历日隔断同日重叠），
+        # 与 mining 模块「purge_bars >= horizon」的交易日 embargo 口径不同。
+        # 前端可据此在 walk-forward 报告页展示口径说明。
+        "meta": {
+            "purge_bars": 0,
+            "purge_note": (
+                "折切分无 purge 隔离带：训练窗末与测试窗首无 embargo 缓冲"
+                "（仅后移 1 个日历日防同日重叠），与 mining 的 purge 口径不同"
+            ),
+        },
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+    }

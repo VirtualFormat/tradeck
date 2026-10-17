@@ -1,0 +1,1101 @@
+"""回测管线 — 数据 → 矩阵 → 复权 → 策略 → 撮合 → 统计的最小闭环。
+
+被 CLI run 与后续 HTTP API 共用：给定标的池 + 策略 + 区间，跑出统计结果。
+每一环的降级都已内建：缺因子降级无复权标注、策略异常降级空信号、无交易返回全零骨架。
+
+阶段 I3：参数优化（run_optimize / run_sensitivity）与 walk-forward（run_walkforward）
+入口也在此接线 —— async 预拉 benchmark/names/分钟K，重计算经 worker 池或进程内串行。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+import uuid
+from datetime import date
+from pathlib import Path
+
+import polars as pl
+
+from app.data import client, factors, store
+from app.engine import (
+    MatcherConfig, MinuteLoader, compute, forward_adjust, simulate,
+)
+from app.engine.result_stats import (
+    daily_trade_rows, factor_attribution, per_symbol_stats,
+    return_distribution, selection_stats,
+)
+from app.engine.minute_replay import (
+    MINUTE_BARS_PARAM_KEY, MinuteReplayResult, replay_minute_strategy,
+)
+from app.matrix import build, enrich
+from app.strategy import StrategyRegistry
+
+__all__ = [
+    "run_backtest", "run_backtest_async", "compute_empty",
+    "user_strategy_dirs", "migrate_legacy_strategy_dirs", "run_backtest_offloaded",
+    "run_backtest_full",
+    "run_optimize", "run_sensitivity", "run_walkforward",
+]
+
+logger = logging.getLogger(__name__)
+
+# 主市场基准指数（用于超额收益与净值对比；按标的池多数市场选取）
+_BENCHMARK_INDEX = {"CN": "000001.SS", "US": "^GSPC", "HK": "^HSI"}
+
+
+def _dominant_market(symbols: list[str]) -> str:
+    """标的池的多数市场（决定基准指数）。"""
+    cn = sum(1 for s in symbols if s.endswith((".SH", ".SS", ".SZ", ".BJ")))
+    hk = sum(1 for s in symbols if s.endswith(".HK"))
+    us = len(symbols) - cn - hk
+    return max((("CN", cn), ("HK", hk), ("US", us)), key=lambda x: x[1])[0]
+
+
+def _default_user() -> str:
+    """未指定用户时的回落值（与 settings.QUANT_DEFAULT_USER 对齐）。"""
+    from app.config import settings
+    return settings.QUANT_DEFAULT_USER
+
+
+def _user_root(user_id: str) -> Path:
+    """用户命名空间根目录：{QUANT_CACHE_DIR}/users/{user_id}。"""
+    from app.config import settings
+    return Path(settings.QUANT_CACHE_DIR) / "users" / user_id
+
+
+def user_strategy_dirs(user_id: str | None = None) -> dict[str, Path]:
+    """按用户合成三层策略目录：builtin 全局共享（随包），custom/ai 进用户命名空间。"""
+    uid = user_id or _default_user()
+    pkg_builtin = Path(__file__).resolve().parent / "strategy" / "builtin"
+    base = _user_root(uid) / "strategies"
+    return {
+        "builtin": pkg_builtin,
+        "custom": base / "custom",
+        "ai": base / "ai",
+    }
+
+
+# 兼容旧引用（cli/screener/jobs 等仍用 _default_strategy_dirs）
+_default_strategy_dirs = user_strategy_dirs
+
+
+def migrate_legacy_strategy_dirs() -> None:
+    """把旧的全局策略目录 {cache}/strategies/{custom,ai} 一次性迁移到 default 用户命名空间。
+
+    幂等：目标已存在（即已迁移过/新结构已建）则跳过；启动时调用一次并 logger.info。
+    """
+    from app.config import settings
+    legacy = Path(settings.QUANT_CACHE_DIR) / "strategies"
+    target_root = _user_root(_default_user()) / "strategies"
+    for sub in ("custom", "ai"):
+        src = legacy / sub
+        dst = target_root / sub
+        if not src.exists():
+            continue
+        if dst.exists():
+            logger.info("策略目录迁移跳过（目标已存在）：%s → %s", src, dst)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        logger.info("策略目录已迁移到 default 用户命名空间：%s → %s", src, dst)
+
+
+def run_backtest_offloaded(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: "MatcherConfig | None" = None,
+    user_id: str | None = None,
+) -> dict:
+    """经 worker 池跑回测的同步入口（CLI/非事件循环场景用）。
+
+    已在运行事件循环的上下文（HTTP API）请直接 await worker_pool.run_backtest_in_worker。
+    """
+    import asyncio
+
+    from app.worker import run_backtest_in_worker
+
+    return asyncio.run(run_backtest_in_worker(
+        symbols, strategy_id, start, end, params=params, config=config, user_id=user_id,
+    ))
+
+
+def _merge_meta_risk(config: "MatcherConfig | None", sdef) -> "MatcherConfig":
+    """把策略 META 声明的风控并入 MatcherConfig（META 值作默认，显式 config 字段优先）。
+
+    修复 P0：内置策略 META 里声明的 stop_loss/max_hold_days 此前从未进入撮合——
+    api_backtest 构造 MatcherConfig 时只传了资金/佣金/分钟口径，runner 用
+    `config or MatcherConfig()` 直透，META 风控形同虚设。
+
+    并入规则：config 显式给了某风控字段（非 None）→ 用 config；否则用 META 声明值。
+    META 未声明的风控字段保持 None（关闭），不臆造默认值。
+    """
+    import dataclasses
+
+    from app.engine import MatcherConfig as _MC
+
+    cfg = config or _MC()
+    # dataclasses.replace 保持不可变语义；仅当 cfg 字段为 None 时回填 META 值。
+    overrides: dict = {}
+    if cfg.stop_loss_pct is None and sdef.stop_loss is not None:
+        overrides["stop_loss_pct"] = sdef.stop_loss
+    if cfg.max_hold_days is None and sdef.max_hold_days is not None:
+        overrides["max_hold_days"] = sdef.max_hold_days
+    # take_profit / trailing_* META 暂未声明 loader 属性，直接读 META 字典键
+    #（与 MatcherConfig 字段同名），策略可声明但 loader 不需要加属性。
+    for field_name in (
+        "take_profit_pct",
+        "trailing_stop_pct",
+        "trailing_take_profit_activate_pct",
+        "trailing_take_profit_drawdown_pct",
+    ):
+        if getattr(cfg, field_name) is None:
+            meta_val = sdef.meta.get(field_name)
+            if meta_val is not None:
+                # P2-6 修复：防御性转换——META 写非数值（如 "abc"）时记 warning
+                # 并跳过该字段（不在回测中途抛 ValueError 进 worker 结构化错误）。
+                try:
+                    overrides[field_name] = float(meta_val)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "策略 %s META 的 %s=%r 非数值，已忽略",
+                        sdef.strategy_id, field_name, meta_val,
+                    )
+    if not overrides:
+        return cfg
+    return dataclasses.replace(cfg, **overrides)
+
+
+async def _fetch_benchmark(
+    symbols: list[str], start: date, end: date
+) -> dict | None:
+    """拉基准指数历史（经 data-api /api/indices），失败降级 None（不阻塞回测）。"""
+    market = _dominant_market(symbols)
+    symbol = _BENCHMARK_INDEX[market]
+    data = await client.get_json("/api/indices", {
+        "symbol": symbol,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+    })
+    if not data or not isinstance(data, list) or not data:
+        return None
+    # 按日期升序的收盘序列
+    rows = sorted(data, key=lambda r: r["date"])
+    # close 为 None 的行连 date 一起剔除：单独过滤 closes 会让 zip/位置配对
+    # 在空洞处整体前移一天，静默错配基准净值
+    rows = [r for r in rows if r.get("close") is not None]
+    closes = [r["close"] for r in rows]
+    if not closes:
+        return None
+    total_return = closes[-1] / closes[0] - 1.0 if closes[0] else 0.0
+    return {
+        "symbol": symbol, "market": market,
+        "total_return": total_return,
+        "dates": [r["date"] for r in rows],
+        "closes": closes,
+    }
+
+
+async def _fetch_names(symbols: list[str]) -> dict[str, str]:
+    """批量拉证券简称（用于 ST 判定），失败降级空 dict。
+
+    双源：先 /api/quotes（quote_snapshots，tracked 报价池）；缺失标的兜底
+    /api/instruments（instrument_master，全市场含 ST 股）。仍缺由撮合层按无名称
+    （非 ST）降级。
+    """
+    if not symbols:
+        return {}
+    names: dict[str, str] = {}
+    # URL query 长度有限（httpx 超限直接 InvalidURL 抛异常）：全市场回测时
+    # symbols 达 5500+，必须分批（200 只/批，对齐 /api/bars 单请求上限的稳妥值）
+    _QUOTES_BATCH = 200
+    for i in range(0, len(symbols), _QUOTES_BATCH):
+        chunk = symbols[i : i + _QUOTES_BATCH]
+        data = await client.get_json("/api/quotes", {"symbols": ",".join(chunk)})
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and row.get("symbol") and row.get("name"):
+                    names.setdefault(row["symbol"], row["name"])
+    # 兜底：quote_snapshots 未覆盖的标的（非 tracked，如 ST 股）从 instrument_master 取
+    missing = [s for s in symbols if s not in names]
+    if missing:
+        # /api/instruments 单请求上限 500（Query max_length）：全市场回测 missing
+        # 可达数千只，必须分批，否则 422 整体落空、ST 判定静默失效
+        for i in range(0, len(missing), 500):
+            chunk = missing[i : i + 500]
+            # FastAPI list 查询参数（重复 symbols 键，非逗号分隔）
+            inst = await client.get_json(
+                "/api/instruments", [("symbols", s) for s in chunk]
+            )
+            rows = inst.get("instruments", []) if isinstance(inst, dict) else []
+            for row in rows:
+                if isinstance(row, dict) and row.get("symbol") and row.get("name"):
+                    names.setdefault(row["symbol"], row["name"])
+    return names
+
+
+# 分钟K 帧固定数值列序（与 engine/minute_fill.resolve_minute_fill 的整数索引约定一致）
+_MINUTE_COLS = ["open", "high", "low", "close", "volume", "amount"]
+
+
+# ---------------------------------------------------------------------------
+# 分钟频策略回放（阶段 H2）
+# ---------------------------------------------------------------------------
+
+# 日线面板加载余量：daily_bars 个交易日约需 2× 自然日（周末/节假日），再留预热
+_MINUTE_PANEL_CAL_FACTOR = 2
+_MINUTE_PANEL_CAL_MARGIN = 30
+
+
+def _minute_panel_start(start: date, daily_bars: int) -> date:
+    """分钟回放的日线面板加载起点：覆盖首个回放日的 daily_bars 根完成态日K 窗口。"""
+    from datetime import timedelta
+    return start - timedelta(days=max(daily_bars, 1) * _MINUTE_PANEL_CAL_FACTOR
+                             + _MINUTE_PANEL_CAL_MARGIN)
+
+
+def _minute_replay_result_dict(strategy_id: str, symbols: list[str],
+                               start: date, end: date,
+                               res: MinuteReplayResult) -> dict:
+    """MinuteReplayResult → API 返回 dict（分钟回放专属结构，与日K 回测结果区分）。"""
+    return {
+        "mode": "minute_replay",
+        "strategy": strategy_id,
+        "symbols": symbols,
+        "range": [start.isoformat(), end.isoformat()],
+        "replayed_days": res.replayed_days,
+        "skipped_days": [d.isoformat() for d in res.skipped_days],
+        "buy_limit_up": res.buy_limit_up,
+        "unadjusted": res.unadjusted,
+        "elapsed_ms": res.elapsed_ms,
+        "hits": [
+            {
+                "trade_date": h.trade_date.isoformat(),
+                "symbol": h.symbol,
+                "entry_price": h.entry_price,
+                "trigger_time": h.trigger_time,
+                "score": h.score,
+            }
+            for h in res.hits
+        ],
+    }
+
+
+async def _run_minute_replay(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None,
+    registry: StrategyRegistry,
+    progress_cb=None,
+    cancel_event=None,
+) -> dict:
+    """分钟频策略回放管线（H2）：预拉日K 面板 + 分钟K，逐日回放策略出盘中命中。
+
+    数据降级语义（与日K 回测一致）：任一环节失败/为空都返回结构完整的空结果，
+    绝不抛错。日K 面板从 store 缓存直接读（调用方应先经 fetch 备数，缺失标的缺席）；
+    分钟K 经 client_minute.get_minute_bars（带缓存 + 缺口补拉）。
+    """
+    from app.data.client_minute import get_minute_bars
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    strategy = reg.get(strategy_id)
+    empty = _minute_replay_result_dict(strategy_id, symbols, start, end, MinuteReplayResult())
+
+    panel_start = _minute_panel_start(start, strategy.minute_daily_bars)
+    daily: dict[str, pl.DataFrame] = {}
+    for s in symbols:
+        df = store.load(s)
+        if df.is_empty():
+            continue
+        df = df.filter((pl.col("date") >= panel_start) & (pl.col("date") <= end))
+        if not df.is_empty():
+            daily[s] = df
+    if not daily:
+        logger.warning("分钟回放 %s：日线面板为空（store 无缓存），返回空结果", strategy_id)
+        return empty
+
+    try:
+        minute = await get_minute_bars(sorted(daily), start, end, use_cache=True)
+    except Exception as e:  # 分钟通路故障返回空结果（优雅降级）
+        logger.warning("分钟回放 %s：分钟K 预拉失败，返回空结果：%s", strategy_id, e)
+        return empty
+    if not minute:
+        logger.warning("分钟回放 %s：分钟K 为空，返回空结果", strategy_id)
+        return empty
+
+    fac = {s: factors.load(s) for s in daily}
+    names = await _fetch_names(sorted(daily))
+
+    res = replay_minute_strategy(
+        strategy, daily=daily, minute=minute, start=start, end=end,
+        params=params, factors=fac, names=names,
+        progress_cb=progress_cb, cancel_event=cancel_event,
+    )
+    return _minute_replay_result_dict(strategy_id, symbols, start, end, res)
+
+
+def _build_minute_loader(
+    cfg: MatcherConfig, minute_bars: dict[str, "pl.DataFrame"] | None
+) -> MinuteLoader | None:
+    """把预拉的分钟K 帧装配成 matcher 的 minute_loader。
+
+    仅在分钟口径启用（minute_fill 或 exit_fill="signal_next_minute"）且有数据时
+    返回加载器；否则返回 None（matcher 全程日K 口径）。加载器本身纯查表：
+    按当日日期切片缓存，缺席返回 None（由 matcher 降级日K 口径）。
+    """
+    import numpy as np
+
+    need = cfg.minute_fill or cfg.exit_fill == "signal_next_minute"
+    if not need or not minute_bars:
+        return None
+    # 预索引：{symbol: {date: float64 2D 数组}}（只留数值列，datetime 用于分组）
+    index: dict[str, dict[date, "np.ndarray"]] = {}
+    for sym, df in minute_bars.items():
+        if df is None or df.is_empty():
+            continue
+        day_map: dict[date, "np.ndarray"] = {}
+        for day, part in df.group_by(df["datetime"].dt.date(), maintain_order=True):
+            day_map[day[0]] = part.select(_MINUTE_COLS).to_numpy().astype(np.float64)
+        if day_map:
+            index[sym] = day_map
+    if not index:
+        return None
+    return lambda sym, d: index.get(sym, {}).get(d)
+
+
+def run_backtest(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    benchmark: dict | None = None,
+    names: dict[str, str] | None = None,
+    minute_bars: dict[str, "pl.DataFrame"] | None = None,
+    progress_cb=None,
+    progress_every: int = 1,
+    cancel_event=None,
+    matrix=None,
+) -> dict:
+    """跑一个策略在一组标的上的回测，返回统计 + 元信息。
+
+    数据来自本地 Parquet 缓存（缺数标的在矩阵层降级为全 NaN 列）；
+    matrix 参数可传入预建的矩阵（跳过内部 build 直读缓存）——调用方不预建时
+    本函数行为与旧版完全一致（同步 build 读本地缓存物化，worker 子进程
+    路径即走此分支：主进程 prefetch_async 只补拉落盘，矩阵物化在子进程内
+    完成，内存峰值不进主进程）。
+    benchmark / names 由 async 包装函数 run_backtest_async 预拉取传入（本函数保持同步）。
+    names 缺省 None 时撮合按无名称（非 ST）分档，保持历史行为。
+    minute_bars：{symbol: 分钟K DataFrame}（阶段 H1，由 run_backtest_async 预拉），
+    仅 config.minute_fill 或 exit_fill="signal_next_minute" 时需要；缺省 None 时
+    分钟口径整体降级日K（不抛错）。
+
+    分钟频策略（META timeframes 含 "1m"）不走本函数（矩阵回测），
+    由 run_backtest_async 分流到 _run_minute_replay（阶段 H2 回放路径）。
+    若误以分钟策略调本同步入口，按「分钟数据不可用」优雅降级为分钟回放空结果。
+
+    progress_every：逐日进度回调的节流档位（每 N 天回调一次，末日必回调）。
+    默认 1（逐日）保持既有行为；任务化跨进程路径按区间长度取档减少
+    Queue 消息（调用方决定，本函数只透传给 matcher.simulate）。
+
+    分钟触发卖出接线（H1 收口）：exit_fill="signal_next_minute" 且策略未产出
+    exit_ref（如 MA 死叉这类「均线交叉」信号没有直接价格参考线）时，按
+    build_minute_exit_reference 从 MA 字段反推防未来函数触发线（全部昨日已知量），
+    使盘中触发不再整体降级 VWAP/日K 口径；策略已产出 exit_ref 的（BOLL/趋势类）
+    以策略产出为准，不覆盖。
+
+    progress_cb：可选逐日进度回调（{"day","total","date"}），透传给 matcher.simulate
+    （热循环零开销：None 时不做任何事；worker 子进程任务化回测经它上报进度）。
+    cancel_event：分钟频策略路径（_run_minute_replay）的协作式取消标记；
+    日K 矩阵回测路径不消费（该路径跨进程取消由 worker 父进程 terminate 实现）。
+    """
+    t0 = time.perf_counter()
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    sdef = reg.get(strategy_id)
+    if sdef.is_minute_strategy:
+        logger.warning(
+            "分钟频策略 %s 需走异步入口 run_backtest_async（分钟K 预拉需协程）；"
+            "同步入口降级为空分钟回放结果", strategy_id,
+        )
+        return _minute_replay_result_dict(strategy_id, symbols, start, end, MinuteReplayResult())
+
+    if matrix is None:
+        matrix = build(symbols, start, end)
+    if not matrix.dates:
+        logger.warning("区间 %s ~ %s 无缓存数据，返回空结果", start, end)
+        if progress_cb is not None:
+            # 空数据路径也回调一次（任务化前端进度条能立即见到 100%）
+            progress_cb({"day": 1, "total": 1, "date": end.isoformat()})
+        empty = {"stats": compute_empty(), "strategy": strategy_id, "symbols": symbols,
+                 "range": [start.isoformat(), end.isoformat()], "unadjusted": symbols,
+                 "equity_curve": [], "trades": [], "benchmark": None}
+        empty.update(_result_ext_empty(t0))
+        return empty
+
+    # 复权：读缓存因子，缺失标的降级无复权并在结果标注。
+    # 边界说明：因子不做按需回源（与日K 的 build_async 不同）——补因子走
+    # `cli fetch --with-factors` 或每日定时 job，缺因子标的按原始价口径跑并标注。
+    fac = {s: factors.load(s) for s in symbols}
+    adjusted_matrix, adjusted_flags = forward_adjust(matrix, fac)
+    enriched = enrich(adjusted_matrix)
+
+    signals = reg.run(strategy_id, enriched, params)
+    # P0 修复：META 风控并入（META 值作默认，显式 config 优先）。
+    cfg = _merge_meta_risk(config, sdef)
+    # 分钟精确成交/盘中触发（阶段 H1）：把预拉的分钟K 帧装配成 matcher 的
+    # minute_loader（symbol, date → float64 2D 数组），matcher 保持纯计算不做 IO。
+    minute_loader = _build_minute_loader(cfg, minute_bars)
+    # 盘中触发卖出参考线兜底（H1 接线）：策略未产出 exit_ref 时，MA 死叉这类
+    # 「均线交叉」信号没有直接价格参考线，按 build_minute_exit_reference 从 MA 字段
+    # 反推防未来函数触发线（该函数此前无调用方，此处为唯一接线点）；策略已产出
+    # exit_ref 的（BOLL/趋势类价格穿越信号）以策略产出为准，不覆盖。
+    exit_refs = signals.exit_ref
+    if (
+        cfg.exit_fill == "signal_next_minute"
+        and exit_refs is None
+        and strategy_id == "ma_golden_cross"
+    ):
+        import numpy as np
+
+        from app.engine.minute_trigger import build_minute_exit_reference
+
+        # 信号编码：ma_golden_cross 的卖出即 MA5/MA20 死叉（白名单内信号），
+        # 非信号日 -1 不参与反推（保持 NaN 降级）。
+        exit_code = np.where(signals.exit, 0, -1)
+        exit_refs = build_minute_exit_reference(
+            adjusted_matrix.close,
+            {
+                "ma5": enriched["ma5"],
+                "ma10": enriched["ma10"],
+                "ma20": enriched["ma20"],
+            },
+            exit_code,
+            ("signal_ma_dead_5_20",),
+        )
+    result = simulate(
+        adjusted_matrix,
+        {s: signals.entry[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        {s: signals.exit[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        cfg,
+        adjusted_flags=adjusted_flags,
+        names=names,
+        entry_refs=(
+            {s: signals.entry_ref[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
+            if signals.entry_ref is not None else None
+        ),
+        exit_refs=(
+            {s: exit_refs[:, j] for j, s in enumerate(adjusted_matrix.symbols)}
+            if exit_refs is not None else None
+        ),
+        minute_loader=minute_loader,
+        # 涨跌停判定须用原始价（真实市价）：复权矩阵跨除权日失真，会漏判一字涨停。
+        raw_close=matrix.close,
+        progress_cb=progress_cb,
+        progress_every=progress_every,
+    )
+    stats = compute(result)
+    # 净值曲线（逐日，叠加基准归一化到同一起点便于对比）
+    equity_curve = []
+    bm = benchmark
+    bm_norm: dict[str, float] = {}
+    if bm and bm["closes"]:
+        base = bm["closes"][0]
+        bm_norm = {d: c / base for d, c in zip(bm["dates"], bm["closes"])}
+    eq0 = result.equity[0] if result.equity else 1.0
+    for d, v in zip(result.equity_dates, result.equity):
+        ds = d.isoformat()
+        equity_curve.append({
+            "date": ds,
+            "value": v / eq0 if eq0 else 1.0,           # 归一化（起点=1）
+            "benchmark": bm_norm.get(ds),                # 基准归一化（无数据 None）
+        })
+    # 交易明细（逐笔，含卖出原因与持仓天数）
+    trades = [
+        {
+            "symbol": t.symbol,
+            "name": (names or {}).get(t.symbol),  # 无名称标的缺省 None
+            "entry_date": t.entry_date.isoformat(),
+            "exit_date": t.exit_date.isoformat(),
+            "entry_price": t.entry_price,
+            "exit_price": t.exit_price,
+            "shares": t.shares,
+            "pnl": t.pnl,
+            "ret": t.ret,
+            "hold_days": (t.exit_date - t.entry_date).days,
+            "exit_reason": t.exit_reason,
+            "entry_fill_mode": t.entry_fill_mode,
+            "exit_fill_mode": t.exit_fill_mode,
+            # 开仓市值占当时组合净值的比例：Trade 只记成交后的静态字段，
+            # 撮合时刻的组合净值未随交易留存，推不出 → 恒 None（不臆造）。
+            "position_pct": None,
+        }
+        for t in result.trades
+    ]
+    # 基准汇总（区间收益 + 超额）
+    benchmark_out = None
+    if bm:
+        benchmark_out = {
+            "symbol": bm["symbol"], "market": bm["market"],
+            "total_return": bm["total_return"],
+            "excess_return": stats["total_return"] - bm["total_return"],
+        }
+    # 结果扩展字段（2026-09-12 新增，向后兼容只加不改）：
+    # run_id / elapsed_ms / 分标的聚合 / 收益分布 / 按日交易明细 / 选择漏斗。
+    # 信号计数：strategy 产出的 entry/exit 信号矩阵 True 日总数（信号右移前口径）。
+    import numpy as np  # 局部导入：runner 主路径本不依赖 numpy，仅此处计信号数
+    n_entry_sig = int(np.count_nonzero(signals.entry))
+    n_exit_sig = int(np.count_nonzero(signals.exit))
+    return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "stats": stats,
+        "strategy": strategy_id,
+        "symbols": symbols,
+        "range": [matrix.dates[0].isoformat(), matrix.dates[-1].isoformat()],
+        "unadjusted": result.unadjusted,
+        "trades": trades,
+        "equity_curve": equity_curve,
+        "benchmark": benchmark_out,
+        # 分钟成交覆盖统计（阶段 H1）：used=走分钟口径笔数，fallback=降级日K 笔数
+        "minute_fill_used": result.minute_fill_used,
+        "minute_fill_fallback": result.minute_fill_fallback,
+        "execution_stats": result.execution_stats,
+        "per_symbol_stats": per_symbol_stats(result.trades, names=names),
+        "return_distribution": return_distribution(result.trades),
+        "daily_trade_rows": daily_trade_rows(
+            result.trades, result.equity_dates, result.equity,
+        ),
+        "selection_stats": selection_stats(
+            n_entry_sig, n_exit_sig, len(result.trades),
+            execution_stats=result.execution_stats,
+        ),
+        # 因子归因（N1）：用复权矩阵的 enriched 指标层 + 成交记录，
+        # 信号日口径随 entry_fill（open_t+1 → 成交日前一行；close_t → 成交日当天，
+        # 详见 result_stats.factor_attribution）
+        "factor_attribution": factor_attribution(
+            enriched, result.trades, adjusted_matrix.symbols, adjusted_matrix.dates,
+            entry_fill=cfg.entry_fill,
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 全量模拟（候选独立执行，评估选股质量；样本口径，非账户净值）
+# ---------------------------------------------------------------------------
+
+
+def _full_ext_empty() -> dict:
+    """全量模拟空结果路径的扩展字段骨架（与主返回同构，向后兼容只加不改）。"""
+    return {
+        "run_id": uuid.uuid4().hex,
+        "execution_stats": {},
+        "selection_stats": selection_stats(0, 0, 0),
+    }
+
+
+def run_backtest_full(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    benchmark: dict | None = None,
+    names: dict[str, str] | None = None,
+    progress_cb=None,
+    cancel_event=None,
+) -> dict:
+    """全量模拟回测：策略选出的全部买入信号当独立样本执行（每信号固定 100 股，
+    不受资金池/持仓数限制），用于评估策略本身的选股质量。
+
+    复用 run_backtest 的 build/enrich/forward_adjust/策略信号管线，撮合换成
+    engine.candidate_exec.simulate_independent；stats 用样本口径的
+    _candidate_stats（含 mode="full" / full_kind="candidate_execution" 判别键，
+    与 BacktestStats 是两套结构，前端按 mode 分流展示）。
+
+    分钟口径（minute_fill / signal_next_minute）不支持：候选执行按候选并行
+    遍历，逐样本加载分钟K 的代价与收益不成比例；config 里开了也在此路径
+    静默走日K 口径（前端切到全量模拟时应隐藏分钟设置）。
+    """
+    from app.engine.candidate_exec import _candidate_stats, simulate_independent
+
+    t0 = time.perf_counter()
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    sdef = reg.get(strategy_id)
+    if sdef.is_minute_strategy:
+        logger.warning(
+            "分钟频策略 %s 不支持全量模拟（走分钟回放路径），返回空结果", strategy_id,
+        )
+        empty = {
+            "stats": {"mode": "full", "full_kind": "candidate_execution",
+                      "n_candidates": 0, "n_trades": 0},
+            "strategy": strategy_id, "symbols": symbols,
+            "range": [start.isoformat(), end.isoformat()],
+            "unadjusted": symbols, "equity_curve": [], "trades": [],
+            "benchmark": None, "per_symbol_stats": [], "return_distribution": [],
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+        empty.update(_full_ext_empty())
+        return empty
+
+    matrix = build(symbols, start, end)
+    if not matrix.dates:
+        logger.warning("全量模拟 %s：区间 %s ~ %s 无缓存数据，返回空结果",
+                       strategy_id, start, end)
+        if progress_cb is not None:
+            progress_cb({"day": 1, "total": 1, "date": end.isoformat()})
+        empty = {
+            "stats": {"mode": "full", "full_kind": "candidate_execution",
+                      "n_candidates": 0, "n_trades": 0},
+            "strategy": strategy_id, "symbols": symbols,
+            "range": [start.isoformat(), end.isoformat()],
+            "unadjusted": symbols, "equity_curve": [], "trades": [],
+            "benchmark": None, "per_symbol_stats": [], "return_distribution": [],
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+        empty.update(_full_ext_empty())
+        return empty
+
+    fac = {s: factors.load(s) for s in symbols}
+    adjusted_matrix, adjusted_flags = forward_adjust(matrix, fac)
+    enriched = enrich(adjusted_matrix)
+
+    signals = reg.run(strategy_id, enriched, params)
+    cfg = _merge_meta_risk(config, sdef)
+    result = simulate_independent(
+        adjusted_matrix,
+        {s: signals.entry[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        {s: signals.exit[:, j] for j, s in enumerate(adjusted_matrix.symbols)},
+        cfg,
+        names=names,
+        adjusted_flags=adjusted_flags,
+        raw_close=matrix.close,  # 涨跌停判定用原始价（与 run_backtest 的 simulate 调用对齐）
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+    stats = _candidate_stats(
+        result.trades, result.n_candidates, benchmark=benchmark, names=names,
+    )
+    # 样本收益曲线（按退出日聚合平均收益的日复利，非账户净值）；
+    # 基准归一化叠加口径与 run_backtest 一致（便于前端直接复用净值图组件）
+    bm_norm: dict[str, float] = {}
+    if benchmark and benchmark["closes"]:
+        base = benchmark["closes"][0]
+        bm_norm = {d: c / base for d, c in zip(benchmark["dates"], benchmark["closes"])}
+    equity_curve = [
+        {"date": d.isoformat(), "value": v, "benchmark": bm_norm.get(d.isoformat())}
+        for d, v in zip(result.sample_dates, result.sample_equity)
+    ]
+    trades = [
+        {
+            "symbol": t.symbol,
+            "name": (names or {}).get(t.symbol),
+            "entry_date": t.entry_date.isoformat(),
+            "exit_date": t.exit_date.isoformat(),
+            "entry_price": t.entry_price,
+            "exit_price": t.exit_price,
+            "shares": t.shares,
+            "pnl": t.pnl,
+            "ret": t.ret,
+            "hold_days": (t.exit_date - t.entry_date).days,
+            "exit_reason": t.exit_reason,
+            # 候选执行无分钟口径与仓位占比概念（恒 daily / None，不臆造）
+            "entry_fill_mode": t.entry_fill_mode,
+            "exit_fill_mode": t.exit_fill_mode,
+            "position_pct": None,
+        }
+        for t in result.trades
+    ]
+    benchmark_out = None
+    if benchmark:
+        benchmark_out = {
+            "symbol": benchmark["symbol"], "market": benchmark["market"],
+            "total_return": benchmark["total_return"],
+            "excess_return": stats.get("excess_return"),
+        }
+    import numpy as np  # 局部导入：仅此处计信号数（与 run_backtest 同款）
+    n_entry_sig = int(np.count_nonzero(signals.entry))
+    n_exit_sig = int(np.count_nonzero(signals.exit))
+    return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "stats": stats,
+        "strategy": strategy_id,
+        "symbols": symbols,
+        "range": [matrix.dates[0].isoformat(), matrix.dates[-1].isoformat()],
+        "unadjusted": result.unadjusted,
+        "trades": trades,
+        "equity_curve": equity_curve,
+        "benchmark": benchmark_out,
+        "execution_stats": result.execution_stats,
+        "per_symbol_stats": stats["per_symbol_stats"],
+        "return_distribution": stats["return_distribution"],
+        "selection_stats": selection_stats(
+            n_entry_sig, n_exit_sig, len(result.trades),
+            execution_stats=result.execution_stats,
+        ),
+    }
+
+
+async def run_backtest_async(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+) -> dict:
+    """async 包装：先拉基准/名称/分钟K（如需）再跑同步回测（HTTP API 用）。
+
+    分钟K 预拉（阶段 H1）：config.minute_fill 或 exit_fill="signal_next_minute"
+    时经 data/client_minute.get_minute_bars 拉全区间分钟K（带本地缓存）；
+    拉取失败/为空时优雅降级（matcher 无 loader 走日K 口径）。
+
+    分钟频策略分流（阶段 H2）：META timeframes 含 "1m" 的策略改走
+    _run_minute_replay（逐日回放日线窗口 + 当日分钟流），不进矩阵回测路径。
+
+    日K 按需回源（冷启动修复）：先经 matrix.build_async 预建矩阵——缓存缺失/
+    不足的标的经 data-api /api/bars 批量补拉落缓存，避免容器缓存目录为空时
+    回测全员全 NaN 零成交；补拉失败按既有语义降级（全 NaN 列，不抛错）。
+    """
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    if reg.get(strategy_id).is_minute_strategy:
+        # 冷启动修复（review P1-2）：分钟回放的日线面板也是 store.load 直读
+        # 缓存，冷缓存下 daily 空 → 返回结构完整的空结果（与 prod 事故同源）。
+        # 分流前对日线面板窗口暖缓存（panel_start 由 _minute_panel_start 算）。
+        from app.matrix import build_async
+
+        sdef = reg.get(strategy_id)
+        await build_async(
+            symbols, _minute_panel_start(start, sdef.minute_daily_bars), end
+        )
+        return await _run_minute_replay(symbols, strategy_id, start, end, params, reg)
+
+    from app.matrix import build_async
+    matrix = await build_async(symbols, start, end)
+    benchmark = await _fetch_benchmark(symbols, start, end)
+    names = await _fetch_names(symbols)
+    minute_bars: dict | None = None
+    cfg = config or MatcherConfig()
+    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+        from app.data.client_minute import get_minute_bars
+        try:
+            minute_bars = await get_minute_bars(symbols, start, end, use_cache=True)
+        except Exception as e:  # 分钟通路故障不阻塞回测，全程日K 口径降级
+            logger.warning("分钟K 预拉失败，分钟口径降级日K：%s", e)
+            minute_bars = None
+    return run_backtest(
+        symbols, strategy_id, start, end, params, config, reg, benchmark, names,
+        minute_bars=minute_bars,
+        matrix=matrix,
+    )
+
+
+def compute_empty() -> dict:
+    """无数据时的全零骨架（与 stats.compute 的空口径一致）。"""
+    return {
+        "total_return": 0.0, "annual_return": 0.0, "max_drawdown": 0.0,
+        "annual_volatility": 0.0, "sharpe": 0.0, "calmar": 0.0,
+        "trades": 0, "win_rate": 0.0, "profit_loss_ratio": 0.0,
+        "turnover": 0.0, "days": 0, "final_value": 0.0, "unadjusted": [],
+        "mc_maxdd_p50": None, "mc_maxdd_p95": None,
+        "risk_free_rate": 0.0,
+    }
+
+
+def _result_ext_empty(t0: float) -> dict:
+    """空结果路径（无数据）的扩展字段骨架（与主返回同构，向后兼容只加不改）。"""
+    return {
+        "run_id": uuid.uuid4().hex,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "per_symbol_stats": [],
+        "return_distribution": [],
+        "daily_trade_rows": [],
+        "execution_stats": {},
+        "selection_stats": selection_stats(0, 0, 0),
+        "factor_attribution": factor_attribution(None, [], [], []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 参数优化 / walk-forward（阶段 I3）
+# ---------------------------------------------------------------------------
+
+# worker 池派发阈值：组合数超过它走 run_backtest_in_worker 批量并发；
+# 小网格进程内串行（避免 spawn 开销盖过计算本身）。
+_OPTIMIZE_OFFLOAD_THRESHOLD = 8
+
+
+def _params_meta(registry: StrategyRegistry, strategy_id: str) -> list[dict]:
+    """取策略 META 参数元信息（params_schema），供优化器 spec 校验。"""
+    return registry.get(strategy_id).params_schema
+
+
+def _check_minute_strategy(registry: StrategyRegistry, strategy_id: str) -> None:
+    """分钟频策略（timeframes 含 "1m"）走分钟回放路径，不进矩阵优化（fail fast）。"""
+    if registry.get(strategy_id).is_minute_strategy:
+        raise ValueError(
+            f"分钟频策略 {strategy_id} 不支持参数优化/walk-forward（走分钟回放路径，"
+            "不进矩阵回测）"
+        )
+
+
+def validate_optimize_request(
+    registry: StrategyRegistry,
+    strategy_id: str,
+    param_grid: dict,
+    param_id: str | None = None,
+) -> None:
+    """优化系请求的同步前置校验（无网络/计算），供 API 层在暖缓存前 fail fast。
+
+    与 run_optimize/run_sensitivity/run_walkforward 入口校验同源：
+    策略存在性/分钟频检查 → count_combinations（grid spec 全量校验 + 组合爆炸
+    预判，含未知参数/类型/范围）→ GRID_MAX_COMBINATIONS 上限检查（与
+    expand_param_grid 同阈值，避免超限网格先跑分钟级全市场暖缓存才被 422）
+    → sensitivity 另要求 param_id 在 grid 中。
+    只做校验不返回内容；非法输入抛 KeyError（策略不存在）或 ValueError。
+    """
+    from app.engine import optimizer
+
+    _check_minute_strategy(registry, strategy_id)
+    params_meta = _params_meta(registry, strategy_id)
+    total = optimizer.count_combinations(params_meta, param_grid)
+    if total > optimizer.GRID_MAX_COMBINATIONS:
+        raise ValueError(
+            f"参数组合数 {total} 超过上限 {optimizer.GRID_MAX_COMBINATIONS}，"
+            "请增大 step 或缩小范围"
+        )
+    if param_id is not None and param_id not in param_grid:
+        raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
+
+
+def _make_run_fn_inprocess(
+    registry: StrategyRegistry,
+    benchmark: dict | None,
+    names: dict[str, str] | None,
+    minute_bars: dict | None,
+) -> "optimizer.RunBacktestFn":
+    """进程内串行的 run_fn：直接调 run_backtest（预拉数据透传，不重拉）。"""
+    def _run(symbols, strategy_id, start, end, params=None, config=None):
+        return run_backtest(
+            symbols, strategy_id, start, end, params=params, config=config,
+            registry=registry, benchmark=benchmark, names=names,
+            minute_bars=minute_bars,
+        )
+    return _run
+
+
+def _make_run_fn_worker(
+    benchmark: dict | None,
+    names: dict[str, str] | None,
+    user_id: str | None,
+    timeout: float | None,
+) -> "optimizer.RunBacktestFn":
+    """worker 池派发的 run_fn：每组回测经 run_backtest_in_worker（spawn 子进程）。
+
+    子进程从本地分钟缓存读分钟K（worker 内建），不预拉网络数据；
+    benchmark/names 由主进程预拉透传（worker 不再拉 data-api）。
+
+    事件循环纪律（review 潜在 P0 修复）：optimize()/walk-forward 是在 async 入口
+    的 running loop 里同步循环调 run_fn 的，run_fn 内直接 asyncio.run() 会抛
+    「cannot be called from a running event loop」。故把协程扔到独立线程跑
+    （线程内无 running loop，asyncio.run 自建新循环）；WorkerPool 的 Semaphore
+    绑的是该新 loop，同一 _run 调用内一致、跨调用经绑 loop 检测惰性重建，
+    并发上限由池 Semaphore 维持，线程只是隔离壳。
+    """
+    from app.worker import run_backtest_in_worker
+
+    def _run(symbols, strategy_id, start, end, params=None, config=None):
+        import concurrent.futures
+
+        async def _go() -> dict:
+            return await run_backtest_in_worker(
+                symbols, strategy_id, start, end, params=params, config=config,
+                user_id=user_id, benchmark=benchmark, names=names, timeout=timeout,
+            )
+
+        # 独立线程 + 自有 loop：running loop 上下文（HTTP API）下安全
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_go())).result()
+    return _run
+
+
+async def _prefetch_optimize_context(
+    symbols: list[str],
+    start: date,
+    end: date,
+    config: MatcherConfig | None,
+) -> tuple[dict | None, dict[str, str], dict | None]:
+    """优化/walk-forward 共享的预拉：基准 + 名称 + 分钟K（如需）。
+
+    与 run_backtest_async 同口径；失败优雅降级（benchmark None / names 空 /
+    minute_bars None，matcher 降级日K 口径）。
+    """
+    benchmark = await _fetch_benchmark(symbols, start, end)
+    names = await _fetch_names(symbols)
+    minute_bars: dict | None = None
+    cfg = config or MatcherConfig()
+    if cfg.minute_fill or cfg.exit_fill == "signal_next_minute":
+        from app.data.client_minute import get_minute_bars
+        try:
+            minute_bars = await get_minute_bars(symbols, start, end, use_cache=True)
+        except Exception as e:  # 分钟通路故障不阻塞优化，全程日K 口径降级
+            logger.warning("优化预拉分钟K 失败，分钟口径降级日K：%s", e)
+            minute_bars = None
+    return benchmark, names, minute_bars
+
+
+async def run_optimize(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    objective: str = "sharpe",
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """参数网格扫描入口（async）：预拉数据 -> 选执行路径（worker 池/进程内）-> 优化。
+
+    组合数 > _OPTIMIZE_OFFLOAD_THRESHOLD 走 worker 池批量并发；小网格进程内串行。
+    """
+    from app.engine import optimizer
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    n = optimizer.count_combinations(params_meta, param_grid)
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = optimizer.OptimizeConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        base_params=base_params or {}, config=config,
+    )
+    out = optimizer.optimize(cfg, params_meta, run_fn, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    return out
+
+
+async def run_sensitivity(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    param_id: str,
+    objective: str = "sharpe",
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """敏感性分析入口（async）：固定其他参数，单参数扰动扫目标指标曲线。"""
+    from app.engine import optimizer
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    if param_id not in param_grid:
+        raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
+    n = optimizer.count_combinations(params_meta, {param_id: param_grid[param_id]})
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = optimizer.OptimizeConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        base_params=base_params or {}, config=config,
+    )
+    out = optimizer.sensitivity(cfg, params_meta, run_fn, param_id, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    return out
+
+
+async def run_walkforward(
+    symbols: list[str],
+    strategy_id: str,
+    start: date,
+    end: date,
+    param_grid: dict,
+    objective: str = "sharpe",
+    train_days: int = 252,
+    test_days: int = 63,
+    step_days: int = 63,
+    direction: str | None = None,
+    base_params: dict | None = None,
+    config: MatcherConfig | None = None,
+    registry: StrategyRegistry | None = None,
+    user_id: str | None = None,
+    timeout: float | None = None,
+    progress_cb=None,
+) -> dict:
+    """Walk-forward 入口（async）：滚动训练/验证折，样本外拼接净值。
+
+    预拉覆盖整个 [start, end] 区间（训练+测试窗口都在其中）；
+    每折训练优化 + OOS 回测复用同一份预拉数据（benchmark/names/分钟K）。
+    """
+    from app.engine import optimizer, walkforward
+
+    reg = registry or StrategyRegistry(_default_strategy_dirs())
+    _check_minute_strategy(reg, strategy_id)
+    params_meta = _params_meta(reg, strategy_id)
+
+    benchmark, names, minute_bars = await _prefetch_optimize_context(
+        symbols, start, end, config
+    )
+
+    # 每折组合数超阈值则训练优化走 worker 池；小网格进程内串行
+    # （避免 spawn 开销盖过计算本身）。折数本身不触发派发 —— walk-forward
+    # 每折内部仍按组合数决策。
+    n_combos = optimizer.count_combinations(params_meta, param_grid)
+    use_worker = n_combos > _OPTIMIZE_OFFLOAD_THRESHOLD
+    if use_worker:
+        run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
+    else:
+        run_fn = _make_run_fn_inprocess(reg, benchmark, names, minute_bars)
+
+    cfg = walkforward.WalkForwardConfig(
+        strategy_id=strategy_id, symbols=symbols, start=start, end=end,
+        param_grid=param_grid, objective=objective, direction=direction,
+        train_days=train_days, test_days=test_days, step_days=step_days,
+        base_params=base_params or {}, config=config,
+    )
+    out = walkforward.run_walk_forward(cfg, params_meta, run_fn, progress_cb=progress_cb)
+    out["execution"] = "worker" if use_worker else "inprocess"
+    out["n_combinations_per_fold"] = n_combos
+    return out

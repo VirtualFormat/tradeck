@@ -3,7 +3,8 @@
  * 路由：/stocks/[symbol]
  * 数据：OpenBB API（profile + metrics + income + historical）
  */
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { normalizeSymbol } from "@/lib/utils";
 import {
   getEquityProfile,
   getFundamentalMetrics,
@@ -15,6 +16,7 @@ import {
   fetchTechnicals,
   fetchAnnouncements,
   fetchResearchReports,
+  getEquityQuotes,
 } from "@/lib/openbb";
 import { fmtPrice, fmtPct } from "@/lib/format";
 import {
@@ -79,14 +81,93 @@ function MetricRow({
   );
 }
 
-function fmtBigNumber(value: number | null | undefined): string {
+const CURRENCY_PREFIX: Record<string, string> = {
+  USD: "US$",
+  CNY: "CN¥",
+  HKD: "HK$",
+};
+
+function fmtBigNumber(
+  value: number | null | undefined,
+  currency: string | null
+): string {
   if (value == null) return "—";
   const sign = value < 0 ? "-" : "";
   const abs = Math.abs(value);
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
-  return `${sign}$${abs.toLocaleString("en-US")}`;
+  const normalizedCurrency = currency?.toUpperCase() ?? null;
+  const prefix = normalizedCurrency
+    ? CURRENCY_PREFIX[normalizedCurrency] ?? `${normalizedCurrency} `
+    : "";
+  if (abs >= 1e12)
+    return `${sign}${prefix}${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9)
+    return `${sign}${prefix}${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6)
+    return `${sign}${prefix}${(abs / 1e6).toFixed(2)}M`;
+  return `${sign}${prefix}${abs.toLocaleString("en-US")}`;
+}
+
+const MARKET_TIME_ZONE_LABEL: Record<string, string> = {
+  "America/New_York": "美东时间",
+  "Asia/Hong_Kong": "香港时间",
+  "Asia/Shanghai": "北京时间",
+};
+
+function getMarketTimeZone(symbol: string): string {
+  const normalized = symbol.toUpperCase();
+  if (normalized.endsWith(".HK")) return "Asia/Hong_Kong";
+  if (/\.(SH|SS|SZ|BJ)$/.test(normalized)) return "Asia/Shanghai";
+  return "America/New_York";
+}
+
+function normalizeCurrency(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toUpperCase();
+  return normalized || null;
+}
+
+function normalizeDate(value: string | null | undefined): string | null {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+function dateInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function quoteDateInMarket(
+  value: string | null | undefined,
+  timeZone: string
+): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return dateInTimeZone(date, timeZone);
+}
+
+function fmtQuoteAsOf(
+  value: string | null | undefined,
+  timeZone: string
+): string {
+  if (!value) return "截止时间未提供";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "截止时间未提供";
+  const formatted = new Intl.DateTimeFormat("zh-CN", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `${formatted} ${MARKET_TIME_ZONE_LABEL[timeZone]}`;
 }
 
 /** 分析师评级英文 → 中文 */
@@ -140,44 +221,96 @@ export default async function StockDetailPage({
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const { symbol } = await params;
-  if (!symbol) notFound();
+  const { symbol: rawSymbol } = await params;
+  if (!rawSymbol) notFound();
 
-  // A 股判断（profile/metrics 不支持 akshare，yfinance 调 A 股太慢 15s+）
-  const isAShare = /\.(SS|SZ|BJ)$/.test(symbol.toUpperCase());
+  // 归一化为标准 symbol（裸码补后缀/港股补零），非标准写法重定向到规范 URL
+  const symbol = normalizeSymbol(rawSymbol);
+  if (symbol !== rawSymbol.toUpperCase()) {
+    redirect(`/stocks/${encodeURIComponent(symbol)}`);
+  }
 
-  // 并行拉取所有数据
-  // A 股：只调 akshare historical（140ms 稳定），跳过 profile/metrics（yfinance 太慢）
-  // 美股：调 yfinance profile + metrics + sec income + yfinance historical
-  // 共识/资产负债表/现金流量表：全部读 backend DB（<50ms），各市场都可调，无数据走空态
-  // 公告/研报：仅 A 股（东财源），同样读 backend DB
-  const [profile, metrics, income, historical, consensus, balance, cashFlow, technicals, announcements, researchReports] =
-    await Promise.all([
-      isAShare ? Promise.resolve(null) : getEquityProfile(symbol).catch(() => null),
-      isAShare ? Promise.resolve(null) : getFundamentalMetrics(symbol).catch(() => null),
+  // A 股判断（.SH 新标准/.SS/.SZ/.BJ）
+  const isAShare = /\.(SH|SS|SZ|BJ)$/.test(symbol.toUpperCase());
+  const historyEnd = new Date();
+  const historyStart = new Date(historyEnd);
+  historyStart.setUTCDate(historyStart.getUTCDate() - 180);
+  const historyStartDate = historyStart.toISOString().slice(0, 10);
+  const historyEndDate = historyEnd.toISOString().slice(0, 10);
+
+  // 并行拉取所有数据（全部读 backend DB，<50ms，无数据走空态）
+  // profile/metrics：全市场都可读（A 股沪市经 yfinance 出向映射已可拉取）
+  // income：SEC 源仅美股，A 股跳过；公告/研报：仅 A 股（东财源）
+  const [
+    profile,
+    metrics,
+    income,
+    historical,
+    consensus,
+    balance,
+    cashFlow,
+    technicals,
+    announcements,
+    researchReports,
+    quotes,
+  ] = await Promise.all([
+      getEquityProfile(symbol).catch(() => null),
+      getFundamentalMetrics(symbol).catch(() => null),
       isAShare ? Promise.resolve([]) : getIncomeStatements(symbol).catch(() => []),
       getEquityHistorical(
         symbol,
-        new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 10),
-        new Date().toISOString().slice(0, 10)
+        historyStartDate,
+        historyEndDate
       ).catch(() => []),
       getAnalystConsensus(symbol).catch(() => null),
       getBalanceSheets(symbol, "annual").catch(() => []),
       getCashFlowStatements(symbol, "annual").catch(() => []),
       fetchTechnicals(symbol, 120).catch(() => []),
-      isAShare ? fetchAnnouncements(symbol, 30).catch(() => []) : Promise.resolve([]),
-      isAShare ? fetchResearchReports(symbol, 90).catch(() => []) : Promise.resolve([]),
+      isAShare
+        ? fetchAnnouncements(symbol, 30).catch(() => [])
+        : Promise.resolve([]),
+      isAShare
+        ? fetchResearchReports(symbol, 90).catch(() => [])
+        : Promise.resolve([]),
+      getEquityQuotes([symbol]).catch(() => []),
     ]);
 
   const displayName = profile?.name ?? symbol;
-  const lastPrice =
-    historical.length > 0 ? historical[historical.length - 1].close : null;
+  const quote = quotes[0] ?? null;
+  const marketTimeZone = getMarketTimeZone(symbol);
+  const latestHistory =
+    historical.length > 0 ? historical[historical.length - 1] : null;
+  const latestHistoryDate = normalizeDate(latestHistory?.date);
+  const quoteMarketDate = quoteDateInMarket(quote?.data_as_of, marketTimeZone);
+  const historicalLastPrice = latestHistory?.close ?? null;
   const prevClose =
     historical.length > 1 ? historical[historical.length - 2].close : null;
-  const changePct =
-    lastPrice && prevClose ? (lastPrice - prevClose) / prevClose : null;
+  const historicalChangePct =
+    historicalLastPrice != null && prevClose != null && prevClose !== 0
+      ? (historicalLastPrice - prevClose) / prevClose
+      : null;
+  const usesQuoteSnapshot =
+    quote?.last_price != null &&
+    quoteMarketDate != null &&
+    (latestHistoryDate == null || quoteMarketDate >= latestHistoryDate);
+  const lastPrice = usesQuoteSnapshot ? quote.last_price : historicalLastPrice;
+  const changePct = usesQuoteSnapshot
+    ? quote.change_percent ?? historicalChangePct
+    : historicalChangePct;
+  const priceAsOf = usesQuoteSnapshot
+    ? `行情截止 · ${fmtQuoteAsOf(quote.data_as_of, marketTimeZone)}${
+        quote.fetched_at
+          ? ` · 抓取于 ${fmtQuoteAsOf(quote.fetched_at, marketTimeZone)}`
+          : ""
+      }`
+    : latestHistory
+      ? `日K收盘 · ${latestHistoryDate ?? latestHistory.date}`
+      : null;
+  const changeAsOf =
+    usesQuoteSnapshot && quote.change_percent == null && latestHistory
+      ? `涨跌幅按 ${latestHistory.date} 日K计算`
+      : null;
+  const financialCurrency = normalizeCurrency(profile?.currency);
   const subtitle = [profile?.exchange, profile?.currency, profile?.sector]
     .filter(Boolean)
     .join(" · ");
@@ -186,7 +319,27 @@ export default async function StockDetailPage({
   const targetLow = consensus?.target_low ?? null;
   const targetHigh = consensus?.target_high ?? null;
   const targetMid = consensus?.target_consensus ?? null;
-  const refPrice = consensus?.current_price ?? lastPrice;
+  const consensusCurrency = normalizeCurrency(consensus?.currency);
+  const displayedPriceCurrencies = [
+    financialCurrency,
+    usesQuoteSnapshot ? normalizeCurrency(quote?.currency) : null,
+  ].filter((currency): currency is string => currency != null);
+  const displayedPriceMatchesConsensus =
+    consensusCurrency != null &&
+    displayedPriceCurrencies.length > 0 &&
+    displayedPriceCurrencies.every(
+      (currency) => currency === consensusCurrency
+    );
+  const usesDisplayedConsensusPrice =
+    displayedPriceMatchesConsensus && lastPrice != null && lastPrice > 0;
+  const consensusCurrentPrice =
+    consensus?.current_price != null && consensus.current_price > 0
+      ? consensus.current_price
+      : null;
+  const refPrice = usesDisplayedConsensusPrice
+    ? lastPrice
+    : consensusCurrentPrice;
+  const refPriceLabel = usesDisplayedConsensusPrice ? "现价" : "共识参考价";
   const recoLabel = consensus?.recommendation
     ? RECOMMENDATION_LABEL[consensus.recommendation] ?? consensus.recommendation
     : null;
@@ -201,7 +354,7 @@ export default async function StockDetailPage({
         )
       : 0;
   const upside =
-    targetMid != null && refPrice ? targetMid / refPrice - 1 : null;
+    targetMid != null && refPrice != null ? targetMid / refPrice - 1 : null;
 
   // 报表只展示最近 4 期（年度）
   const balanceRows = balance.slice(0, 4);
@@ -246,12 +399,12 @@ export default async function StockDetailPage({
             </p>
           )}
         </div>
-        {lastPrice && (
+        {lastPrice != null && (
           <div className="text-right">
             <div className="tab-nums text-3xl font-bold">
               {fmtPrice(lastPrice)}
             </div>
-            {changePct && (
+            {changePct != null && (
               <div
                 className={`tab-nums text-sm ${
                   changePct >= 0 ? "text-up" : "text-down"
@@ -260,9 +413,26 @@ export default async function StockDetailPage({
                 {fmtPct(changePct)}
               </div>
             )}
+            {priceAsOf && (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {priceAsOf}
+              </p>
+            )}
+            {changeAsOf && (
+              <p className="text-[10px] text-muted-foreground">
+                {changeAsOf}
+              </p>
+            )}
           </div>
         )}
       </header>
+
+      {/* 非精选标的兜底提示：有 K 线但无 profile（按需回源也拿不到）时说明覆盖范围 */}
+      {!profile && historical.length > 0 && (
+        <p className="mb-6 text-xs text-muted-foreground">
+          该标的为全市场扩展覆盖：K线、技术指标可用；基本面、新闻等深度数据可能缺失
+        </p>
+      )}
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* TradingView K 线图（占 2 列） */}
@@ -306,7 +476,7 @@ export default async function StockDetailPage({
             <CardContent>
               <MetricRow
                 label="市值"
-                value={fmtBigNumber(metrics?.market_cap)}
+                value={fmtBigNumber(metrics?.market_cap, financialCurrency)}
               />
               <MetricRow
                 label="市盈率 (P/E)"
@@ -460,7 +630,9 @@ export default async function StockDetailPage({
                   {recoLabel && <Badge variant="secondary">{recoLabel}</Badge>}
                   {consensus?.recommendation_mean != null && (
                     <span className="tab-nums text-xs text-muted-foreground">
-                      综合评分 {consensus.recommendation_mean.toFixed(1)} / 5
+                      Yahoo Finance 评级均值{" "}
+                      {consensus.recommendation_mean.toFixed(1)}
+                      （1 = 强力买入，5 = 强力卖出）
                     </span>
                   )}
                   {consensus?.number_of_analysts != null && (
@@ -476,7 +648,7 @@ export default async function StockDetailPage({
                 </div>
                 {hasTargetRange && (
                   <div>
-                    {/* 现价在目标价 low-high 区间的位置；共识/低/高刻度见下方文字行 */}
+                    {/* 可比参考价在目标区间的位置；共识/低/高刻度见下方文字行 */}
                     <Progress
                       value={refPrice != null ? rangePos(refPrice) : 0}
                       className="h-1.5 bg-panel-2"
@@ -499,13 +671,15 @@ export default async function StockDetailPage({
                   <div className="text-xs text-muted-foreground">
                     <Tooltip>
                       <TooltipTrigger className="cursor-help">
-                        现价{" "}
+                        {refPriceLabel}{" "}
                         <span className="tab-nums">{fmtPrice(refPrice)}</span>
                       </TooltipTrigger>
                       <TooltipContent>
                         {hasTargetRange
-                          ? `现价在目标价区间内的位置 ${rangePos(refPrice).toFixed(0)}%`
-                          : "当前最新价"}
+                          ? `${refPriceLabel}在目标价区间内的位置 ${rangePos(refPrice).toFixed(0)}%`
+                          : usesDisplayedConsensusPrice
+                            ? "当前展示价，货币与共识目标价一致"
+                            : "分析师共识记录中的当前价"}
                       </TooltipContent>
                     </Tooltip>
                     ，较共识目标价{" "}
@@ -690,16 +864,16 @@ export default async function StockDetailPage({
                         {item.fiscal_year ?? "—"}
                       </TableCell>
                       <TableCell className="text-right tab-nums">
-                        {fmtBigNumber(item.total_revenue)}
+                        {fmtBigNumber(item.total_revenue, financialCurrency)}
                       </TableCell>
                       <TableCell className="text-right tab-nums">
-                        {fmtBigNumber(item.gross_profit)}
+                        {fmtBigNumber(item.gross_profit, financialCurrency)}
                       </TableCell>
                       <TableCell className="text-right tab-nums">
-                        {fmtBigNumber(item.operating_income)}
+                        {fmtBigNumber(item.operating_income, financialCurrency)}
                       </TableCell>
                       <TableCell className="text-right tab-nums">
-                        {fmtBigNumber(item.net_income)}
+                        {fmtBigNumber(item.net_income, financialCurrency)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -747,19 +921,25 @@ export default async function StockDetailPage({
                             {item.fiscal_date ?? "—"}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.total_assets)}
+                            {fmtBigNumber(item.total_assets, financialCurrency)}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.total_liabilities)}
+                            {fmtBigNumber(
+                              item.total_liabilities,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.total_equity)}
+                            {fmtBigNumber(item.total_equity, financialCurrency)}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.cash_and_equivalents)}
+                            {fmtBigNumber(
+                              item.cash_and_equivalents,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.total_debt)}
+                            {fmtBigNumber(item.total_debt, financialCurrency)}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -789,19 +969,31 @@ export default async function StockDetailPage({
                             {item.fiscal_date ?? "—"}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.operating_cash_flow)}
+                            {fmtBigNumber(
+                              item.operating_cash_flow,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.investing_cash_flow)}
+                            {fmtBigNumber(
+                              item.investing_cash_flow,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.financing_cash_flow)}
+                            {fmtBigNumber(
+                              item.financing_cash_flow,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.capital_expenditure)}
+                            {fmtBigNumber(
+                              item.capital_expenditure,
+                              financialCurrency
+                            )}
                           </TableCell>
                           <TableCell className="text-right tab-nums">
-                            {fmtBigNumber(item.free_cash_flow)}
+                            {fmtBigNumber(item.free_cash_flow, financialCurrency)}
                           </TableCell>
                         </TableRow>
                       ))}

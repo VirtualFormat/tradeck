@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS daily_prices (
     low DECIMAL(12,4),
     close DECIMAL(12,4),
     volume BIGINT,
+    amount DECIMAL(24,4),
     UNIQUE(symbol, date)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_prices_symbol_date ON daily_prices(symbol, date DESC);
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS quote_snapshots (
     change_percent DECIMAL(8,6),
     volume BIGINT,
     market CHAR(2),
+    data_as_of TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -45,17 +47,20 @@ CREATE TABLE IF NOT EXISTS movers_cache (
     id BIGSERIAL PRIMARY KEY,
     type VARCHAR(20) NOT NULL,          -- gainers / losers / active
     market CHAR(2) NOT NULL,
-    rank INT,
-    symbol VARCHAR(20),
+    rank INT NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
     name VARCHAR(100),
     price DECIMAL(12,4),
     percent_change DECIMAL(8,6),
     volume BIGINT,
+    amount DECIMAL(24,4),
     snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_movers_type_market ON movers_cache(type, market);
 CREATE INDEX IF NOT EXISTS idx_movers_date ON movers_cache(snapshot_date, type, market);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_movers_cache_business_key
+    ON movers_cache(type, market, rank, symbol, snapshot_date);
 
 -- 新闻
 CREATE TABLE IF NOT EXISTS news_articles (
@@ -363,3 +368,36 @@ CREATE TABLE IF NOT EXISTS yield_curve_rates (
     year_7 NUMERIC, year_10 NUMERIC, year_20 NUMERIC, year_30 NUMERIC,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================================
+-- auth schema：用户登录（P0）专用，与行情 public schema 物理隔离
+-- 由 /api/auth/* 端点读写；行情数据流不经此 schema。
+-- 注：tradeck prod 的 auth 数据存独立 auth-db（由 api 服务的 auth_main lifespan
+-- 幂等建表），本段仅服务 tradb/旧 dev 场景（auth 与行情同库时的兜底初始化）。
+-- ============================================================================
+CREATE SCHEMA IF NOT EXISTS auth;
+
+-- 用户表（邮箱+密码登录；email 用 TEXT + lower() 唯一索引，避免 citext 扩展依赖）
+CREATE TABLE IF NOT EXISTS auth.users (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    password_hash TEXT NOT NULL,        -- pbkdf2_sha256$... 或 argon2 PHC 串，绝不存明文
+    display_name TEXT,
+    role TEXT NOT NULL DEFAULT 'user',  -- admin / user（首个注册用户自动 admin）
+    status TEXT NOT NULL DEFAULT 'active',  -- active / disabled
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_email_lower ON auth.users (lower(email));
+
+-- 会话表（只存 token 的 sha256，明文 token 仅登录时返回一次）
+CREATE TABLE IF NOT EXISTS auth.sessions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,    -- sha256(token) hex
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth.sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth.sessions (expires_at);

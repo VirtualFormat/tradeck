@@ -1,0 +1,120 @@
+/* ==========================================================================
+   shadcn/typeset — Markdown/HTML 排版系统（一个你拥有的 CSS 文件）
+   依据官方文档手写：容器内元素统一排版，吃主题令牌，流式追加稳定。
+   节奏三变量：--typeset-size(字号) --typeset-leading(行高) --typeset-flow(块间距)
+   可用 builder(https://ui.shadcn.com/typeset) 重新生成后整体替换本文件。
+   ========================================================================== */
+
+.typeset {
+  --typeset-font-body: inherit;
+  --typeset-font-heading: var(--font-heading, inherit);
+  --typeset-font-mono: var(--font-mono, ui-monospace, monospace);
+  --typeset-size: 1em;
+  --typeset-leading: 1.75;
+  --typeset-flow: 1.25em;
+
+  font-family: var(--typeset-font-body);
+  font-size: var(--typeset-size);
+  line-height: var(--typeset-leading);
+  color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+/* 小屏可读性微调 */
+@media (max-width: 640px) {
+  .typeset { --typeset-size: calc(var(--typeset-size) * 1.02); }
+}
+
+/* 流式稳定：间距只用 margin-block-start 单向流动；不用 :last-child/:has()/:empty */
+.typeset :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--typeset-font-heading);
+  font-weight: 600;
+  line-height: 1.25;
+  margin-block-start: calc(var(--typeset-flow) * 1.4);
+  color: var(--foreground);
+}
+.typeset :where(h1) { font-size: 1.5em; }
+.typeset :where(h2) { font-size: 1.28em; }
+.typeset :where(h3) { font-size: 1.12em; }
+.typeset :where(h4, h5, h6) { font-size: 1em; }
+.typeset :where(h1:first-child, h2:first-child, h3:first-child) { margin-block-start: 0; }
+
+.typeset :where(p, ul, ol, blockquote, table, pre, figure, hr) {
+  margin-block-start: var(--typeset-flow);
+}
+.typeset :where(p:first-child, ul:first-child, ol:first-child, pre:first-child, blockquote:first-child) {
+  margin-block-start: 0;
+}
+
+.typeset :where(ul, ol) { padding-inline-start: 1.4em; }
+.typeset :where(li) { margin-block-start: calc(var(--typeset-flow) * 0.4); }
+.typeset :where(li:first-child) { margin-block-start: 0; }
+.typeset :where(li)::marker { color: var(--muted-foreground); }
+
+.typeset :where(a) {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.typeset :where(strong) { font-weight: 600; color: var(--foreground); }
+
+.typeset :where(code):not(pre code) {
+  font-family: var(--typeset-font-mono);
+  font-size: 0.875em;
+  background: var(--muted);
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius);
+}
+
+.typeset :where(pre) {
+  font-family: var(--typeset-font-mono);
+  font-size: 0.875em;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+.typeset :where(pre code) { background: transparent; padding: 0; }
+
+.typeset :where(blockquote) {
+  border-inline-start: 2px solid var(--border);
+  padding-inline-start: 1em;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.typeset :where(hr) {
+  border: none;
+  border-block-start: 1px solid var(--border);
+}
+
+/* 表格：分隔线画在「新增」的单元格上，新行不改上一行（流式稳定） */
+.typeset :where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875em;
+}
+.typeset :where(thead th) {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  padding: 0.5em 0.75em;
+  border-block-end: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 40%, transparent);
+}
+.typeset :where(tbody td) {
+  padding: 0.5em 0.75em;
+  border-block-start: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+.typeset :where(tbody tr:first-child td) { border-block-start: none; }
+
+/* 宽块横向滚动容器（表格/宽 pre），由渲染器或 rehype 包裹 */
+.typeset-scroll { overflow-x: auto; max-width: 100%; }
+
+/* 豁免：not-typeset 子树不受 typeset 影响 */
+.typeset :where(.not-typeset, [data-not-typeset], .not-typeset *, [data-not-typeset] *) {
+  all: revert-layer;
+}

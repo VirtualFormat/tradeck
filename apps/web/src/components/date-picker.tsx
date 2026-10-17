@@ -16,6 +16,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 function fmt(d: Date): string {
   const y = d.getFullYear();
@@ -71,14 +76,21 @@ export function DatePicker() {
         </PopoverContent>
       </Popover>
       {current && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => handleSelect(undefined)}
-          title="回到最近交易日"
-        >
-          <XIcon className="size-3" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="回到最近交易日"
+                onClick={() => handleSelect(undefined)}
+              />
+            }
+          >
+            <XIcon className="size-3" />
+          </TooltipTrigger>
+          <TooltipContent>回到最近交易日</TooltipContent>
+        </Tooltip>
       )}
     </div>
   );

@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
+@import "./typeset.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -41,10 +43,10 @@
   --sidebar-border: oklch(0.925 0.005 214.3);
   --sidebar-ring: oklch(0.723 0.014 214.4);
 
-  /* 业务语义色（preset 之外）：红涨绿跌（A 股习惯），明暗模式一致 */
-  --up: #f0556b;
-  --down: #20cd8d;
-  --warn: #f0a050;
+  /* 业务语义色（preset 之外）：红涨绿跌（A 股习惯），浅色模式提高小字号对比度 */
+  --up: #d72f50;
+  --down: #087a55;
+  --warn: #a85a00;
 
   /* 存量组件别名 → 主题令牌（引用 var()，随明暗模式自动切换） */
   --bg: var(--background);
@@ -88,6 +90,9 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.56 0.021 213.5);
 
+  --up: #f0556b;
+  --down: #20cd8d;
+  --warn: #f0a050;
   --fg-dim: oklch(0.87 0.008 214);
 }
 
@@ -148,7 +153,10 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-html {
+:root {
+  color-scheme: light;
+}
+.dark {
   color-scheme: dark;
 }
 
@@ -175,9 +183,31 @@ html {
     @apply border-border outline-ring/50;
   }
   html {
-    @apply font-serif;
+    @apply font-sans;
   }
   body {
     @apply bg-background text-foreground;
   }
 }
+
+/* ── shadcn/typeset 预设：AI 问答气泡 / 研究报告 ──────────────────
+   吃 preset 令牌：正文 Roboto Slab(--font-serif)、标题 Public Sans(--font-heading)、
+   代码 Geist Mono(--font-mono)。问答紧凑、报告宽松。 */
+.typeset-chat {
+  --typeset-font-body: var(--font-serif);
+  --typeset-font-heading: var(--font-heading);
+  --typeset-font-mono: var(--font-mono);
+  --typeset-size: 0.9375em;
+  --typeset-leading: 1.65;
+  --typeset-flow: 0.9em;
+}
+.typeset-report {
+  --typeset-font-body: var(--font-serif);
+  --typeset-font-heading: var(--font-heading);
+  --typeset-font-mono: var(--font-mono);
+  --typeset-size: 15px;
+  --typeset-leading: 1.8;
+  --typeset-flow: 1.4em;
+}
+/* 全站强制深色，深色下行高略松 */
+.dark .typeset { --typeset-leading: 1.85; }
