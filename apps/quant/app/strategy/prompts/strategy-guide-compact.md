@@ -7,9 +7,11 @@
 
 1. **单文件自足**：一个策略 = 一个 Python 文件，禁止跨策略文件 import；小工具函数（如昨日值 prev）在文件内部各写一份。
 2. **import 白名单**：只允许 `import polars / numpy / datetime / __future__`，以及 `from app.strategy.base import StrategySignals`、`from app.matrix import EnrichedMatrix`。其余一切 import（os/sys/math/pandas 等）一律拒。
-3. **只读输入**：禁止网络 / DB / 文件读写，禁止修改任何现有文件。
+3. **只读输入**：禁止网络 / DB / 文件读写，禁止修改任何现有文件（策略在受限沙箱子进程中执行，写文件会直接失败）。
 4. **禁危险调用**：`eval / exec / compile / open / input / __import__ / globals / locals / vars / dir / getattr / setattr / delattr / breakpoint / exit / quit / help` 一律禁止调用。
 5. **禁下划线前缀访问**：任何以 `_` 或 `__` 开头的属性读取和字符串常量下标（如 `obj.__class__`、`obj["__class__"]`）一律拒；自己的辅助函数用非下划线名（如 prev）。
+   另禁一切双下划线名称（`__name__` / `__builtins__` 等），因此**不要写 `if __name__ == "__main__":` 自测块**（平台按模块加载，该块本就不会执行）；命令行参数（argparse）请改写为 `META["params"]`。
+   唯一例外：`params["__user_factor_values__"]`（平台注入的用户因子值，见第 4 节）。
 6. **纯向量化**：指标层已是 (dates × symbols) 矩阵，整列 numpy 运算，禁止逐股 Python 循环。
 
 ## 2. META（顶层字面量 dict，ast.literal_eval 解析）
@@ -18,6 +20,7 @@
 - 必填 `id`（英文，全局唯一，建议与文件名同名，AI 生成用 `ai_` 前缀）与 `name`（中文显示名），均为非空字符串。
 - 可选：`description` / `tags`（list[str]）/ `params` / `scoring` / `order_by`（通常 "score"）/ `limit` / `stop_loss`（负数，如 -0.06）/ `max_hold_days`（int）。
 - `scoring` 若写必须是 dict，且字段**全部在白名单内**（见第 4 节），白名单外任何一个字段都会导致加载失败。
+  例外：你自己处于 active 状态的用户因子 id（`uf_*` / `cf_*`）也可作为 scoring 字段，其值由平台经 `params["__user_factor_values__"]["<因子id>"]` 注入（缺席时请按缺失字段跳过）。
 
 ## 3. compute 函数与返回约定
 

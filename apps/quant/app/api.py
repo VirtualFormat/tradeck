@@ -6,6 +6,8 @@
 - 优雅降级：策略执行/数据缺失返回空结果，不 500；参数错返回 4xx。
 - 多用户骨架（G4）：X-User-Id 头贯穿到策略目录/候选库/信号表（命名空间隔离），
   缺省回落 QUANT_DEFAULT_USER；重计算（回测）走 spawn 子进程池（app.worker）。
+- 入站鉴权（docs/MCP.md）：INBOUND_SERVICE_TOKENS 非空时只接受持有效服务令牌的
+  调用方（web / mcp），且 X-User-Id 必填（不再回落 default），见 app.inbound_auth。
 """
 from __future__ import annotations
 
@@ -14,7 +16,8 @@ import json
 import logging
 import re
 from datetime import date
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,27 +25,40 @@ from pydantic import BaseModel, Field
 
 from app.ai.validator import validate_strategy_code
 from app.config import settings
+from app.inbound_auth import InboundAuthMiddleware, inbound_auth_enabled, log_inbound_status
 from app.mining import load_candidates, publish_candidate, run_mining
 from app.mining.runtime import save_candidate
 from app.runner import (
     _fetch_benchmark,
     _fetch_names,
+    migrate_default_user_namespace,
     migrate_legacy_strategy_dirs,
     user_strategy_dirs,
 )
 from app.screener import screen
 from app.strategy import StrategyRegistry
-from app.tasks import RegistryFullError, UnknownTaskError, get_registry as get_task_registry
+from app.tasks import (
+    RegistryFullError,
+    TaskNotRunningError,
+    UnknownTaskError,
+    get_registry as get_task_registry,
+)
+from app.sandbox import SandboxError, truncate_error
 from app.worker import (
     BacktestCancelledError,
     BacktestWorkerError,
     CancelToken,
+    TrialBusyError,
     run_backtest_in_worker,
+    run_screen_in_worker,
+    trial_load_sandboxed,
 )
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="tradeck quant", version="0.2.0")
+# 入站服务令牌门槛（未配置 INBOUND_SERVICE_TOKENS 时整体放行）
+app.add_middleware(InboundAuthMiddleware)
 
 # 预拉覆盖率前置门槛：prefetch_async 内部降级不抛错（数据源整体挂掉时
 # 覆盖率为 0），登记回测任务前在主进程侧检查覆盖率，低于阈值直接 503，
@@ -79,17 +95,36 @@ def _check_prefetch_coverage_or_503(prefetch: dict, symbols: list[str]) -> None:
 
 @app.on_event("startup")
 def _startup() -> None:
-    """启动一次性维护：旧全局策略目录迁移到 default 用户命名空间（幂等）。"""
+    """启动一次性维护（均幂等）：
+    ① 旧全局策略目录迁移到 default 用户命名空间；
+    ② QUANT_MIGRATE_DEFAULT_TO 非空时把 default 命名空间迁给目标用户。
+    """
+    log_inbound_status()
     try:
         migrate_legacy_strategy_dirs()
     except Exception as e:  # 迁移失败不阻塞服务（只记日志，下次启动重试）
         logger.warning("策略目录迁移失败（不阻塞启动）：%s", e)
+    target = settings.QUANT_MIGRATE_DEFAULT_TO.strip()
+    if target:
+        if not _USER_ID_RE.fullmatch(target):
+            logger.warning("QUANT_MIGRATE_DEFAULT_TO 非法（%r），跳过 default 命名空间迁移", target)
+        else:
+            try:
+                migrate_default_user_namespace(target)
+            except Exception as e:  # 同上：不阻塞启动，下次启动重试
+                logger.warning("default 命名空间迁移失败（不阻塞启动）：%s", e)
 
 
 def current_user_id(x_user_id: str | None = Header(default=None, alias="X-User-Id")) -> str:
-    """解析用户身份：X-User-Id 头缺省/空白时回落 QUANT_DEFAULT_USER（G4 不鉴权）。"""
+    """解析用户身份。
+
+    入站鉴权启用时 X-User-Id 必填（服务令牌已由中间件校验，调用方对用户身份负责）；
+    未启用（dev / 旧部署）时缺省回落 QUANT_DEFAULT_USER，与改造前一致。
+    """
     uid = (x_user_id or "").strip()
     if not uid:
+        if inbound_auth_enabled():
+            raise HTTPException(status_code=400, detail="缺少 X-User-Id 请求头")
         return settings.QUANT_DEFAULT_USER
     if not _USER_ID_RE.fullmatch(uid):
         raise HTTPException(status_code=400, detail=f"非法 user_id：{uid!r}")
@@ -97,8 +132,12 @@ def current_user_id(x_user_id: str | None = Header(default=None, alias="X-User-I
 
 
 def _registry(user_id: str) -> StrategyRegistry:
-    """每次请求重建注册表（策略文件热加载；注册表本身轻量，扫描三层目录）。"""
-    return StrategyRegistry(user_strategy_dirs(user_id))
+    """每次请求重建注册表（策略文件热加载；注册表本身轻量，扫描三层目录）。
+
+    sandbox=True：custom/ai 只做静态解析，主进程绝不执行用户策略代码
+    （执行一律经 app.sandbox 子进程，见 docs/MCP.md「轻量沙箱」）。
+    """
+    return StrategyRegistry(user_strategy_dirs(user_id), user_id=user_id, sandbox=True)
 
 
 async def _warm_factor_cache(symbols: list[str]) -> None:
@@ -175,7 +214,11 @@ def get_strategy_code(strategy_id: str, user_id: str = Depends(current_user_id))
 
 
 class _SymbolRequest(BaseModel):
-    symbols: list[str] | None = Field(default=None, max_length=500)
+    # symbol 字符白名单（与 tradb data-api 同规则）：symbol 会直接拼进缓存文件名
+    # （data/store、data/factors、matrix 水位标记），不收口即可路径穿越写缓存目录外
+    symbols: list[Annotated[str, Field(pattern=r"^[A-Z0-9.\-]{1,20}$")]] | None = Field(
+        default=None, max_length=500,
+    )
     # symbols 为空（None）时按 universe 档位展开（默认 tracked 100 只）；
     # symbols 非空时 universe 忽略（互斥，显式优先）。
     universe: str | None = Field(
@@ -210,6 +253,22 @@ async def api_screen(req: ScreenRequest, user_id: str = Depends(current_user_id)
     from app.screener.executor import _SCREEN_WINDOW_DAYS
     _screen_end = req.end or date.today()
     await build_async(symbols, _screen_end - timedelta(days=_SCREEN_WINDOW_DAYS), _screen_end)
+    try:
+        sandboxed = reg.needs_sandbox(req.strategy_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if sandboxed:
+        # 用户策略（自身或子策略非 builtin）：只能在沙箱子进程执行
+        try:
+            out = await run_screen_in_worker(
+                req.strategy_id, symbols, req.end, req.params or None, user_id,
+            )
+        except BacktestWorkerError as e:
+            logger.warning("沙箱选股失败（strategy=%s）：%s", req.strategy_id, e)
+            raise HTTPException(status_code=422, detail=truncate_error(f"策略执行失败：{e}"))
+        return {"strategy_id": out["strategy_id"], "as_of": out["as_of"].isoformat(),
+                "rows": out["rows"][: req.limit], "total": out["total"],
+                "unadjusted": out["unadjusted"]}
     try:
         # screen() 是纯同步 CPU+磁盘 IO（store.load 建矩阵→复权→enrich→策略信号），
         # universe=all 全市场分钟级，直接调用会卡死事件循环（/health 与任务轮询
@@ -284,6 +343,13 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     await _warm_factor_cache(symbols)
     benchmark = await _fetch_benchmark(symbols, req.start, end)
     names = await _fetch_names(symbols)
+    # 同步回测不登记任务，但同样计入每用户在途额度（预占），否则前端回退同步接口
+    # 即可绕过 QUANT_MAX_CONCURRENT_PER_USER
+    registry = get_task_registry()
+    try:
+        reservation = registry.reserve(user_id)
+    except RegistryFullError as e:
+        raise HTTPException(status_code=429, detail=f"回测任务队列已满：{e}")
     try:
         return await run_backtest_in_worker(
             symbols, req.strategy_id, req.start, end,
@@ -293,7 +359,9 @@ async def api_backtest(req: BacktestRequest, user_id: str = Depends(current_user
     except BacktestWorkerError as e:
         # 子进程失败 → 结构化错误（不 500；与全局优雅降级口径一致）
         logger.warning("回测 worker 失败：%s", e)
-        return {"error": str(e), "stats": None, "trades": [], "equity_curve": []}
+        return {"error": truncate_error(str(e)), "stats": None, "trades": [], "equity_curve": []}
+    finally:
+        registry.release_reservation(reservation)
 
 
 # ---------------------------------------------------------------------------
@@ -320,30 +388,40 @@ async def _run_backtest_task(
     names: dict[str, str] | None,
     sim_mode: str = "position",
 ) -> None:
-    """后台执行协程：跑 worker 池回测并把进度/终态写回任务注册表。"""
+    """后台执行协程：跑 worker 池回测并把进度/终态写回任务注册表。
+
+    finally 中 release：额度按「执行协程仍在」计（取消中的任务继续占位），
+    任何退出路径（含 CancelledError 等 BaseException）都会归还。
+    """
     registry = get_task_registry()
     token = CancelToken()
-    registry.attach_cancel_token(task_id, token)
-    registry.mark_running(task_id)
     try:
-        result = await run_backtest_in_worker(
-            symbols, strategy_id, start, end,
-            params=params, config=cfg, user_id=user_id, benchmark=benchmark,
-            names=names, sim_mode=sim_mode,
-            progress_cb=lambda p: registry.set_progress(task_id, p),
-            cancel_token=token,
-        )
-    except BacktestCancelledError:
-        # cancel() 已把状态置为 cancelled（终态不可逆）；此分支是兜底
-        registry.mark_cancelled(task_id)
-    except BacktestWorkerError as e:
-        logger.warning("任务化回测 worker 失败（task=%s）：%s", task_id, e)
-        registry.mark_failed(task_id, str(e))
-    except Exception as e:  # 预拉等主进程侧异常同样结构化入终态，绝不泄漏到事件循环
-        logger.exception("任务化回测主流程异常（task=%s）", task_id)
-        registry.mark_failed(task_id, f"回测主流程异常：{e}")
-    else:
-        registry.mark_done(task_id, result)
+        registry.attach_cancel_token(task_id, token)
+        try:
+            registry.mark_running(task_id)
+        except (TaskNotRunningError, UnknownTaskError):
+            return  # 起跑前已被取消 / 清扫：不再执行
+        try:
+            result = await run_backtest_in_worker(
+                symbols, strategy_id, start, end,
+                params=params, config=cfg, user_id=user_id, benchmark=benchmark,
+                names=names, sim_mode=sim_mode,
+                progress_cb=lambda p: registry.set_progress(task_id, p),
+                cancel_token=token,
+            )
+        except BacktestCancelledError:
+            # cancel() 已把状态置为 cancelled（终态不可逆）；此分支是兜底
+            registry.mark_cancelled(task_id)
+        except BacktestWorkerError as e:
+            logger.warning("任务化回测 worker 失败（task=%s）：%s", task_id, e)
+            registry.mark_failed(task_id, truncate_error(str(e)))
+        except Exception as e:  # 预拉等主进程侧异常同样结构化入终态，绝不泄漏到事件循环
+            logger.exception("任务化回测主流程异常（task=%s）", task_id)
+            registry.mark_failed(task_id, truncate_error(f"回测主流程异常：{e}"))
+        else:
+            registry.mark_done(task_id, result)
+    finally:
+        registry.release(task_id)
 
 
 @app.post("/api/backtest/run", status_code=202)
@@ -373,46 +451,45 @@ async def api_backtest_run(req: BacktestRequest,
         exit_fill=req.exit_fill,
     )
     end = req.end or date.today()
-    # 容量预检必须在预拉暖缓存之前：注册表满时直接 429，
-    # 避免超限请求白跑分钟级预拉（build_async/因子/分钟K 都是重活）。
+    # 容量预占必须在预拉暖缓存之前：注册表满时直接 429，避免超限请求白跑分钟级
+    # 预拉（build_async/因子/分钟K 都是重活）。预占（而非只预检）防同一用户的并发
+    # 请求在多个 await 之间全部通过检查；预拉失败/503 时 finally 归还名额。
     registry = get_task_registry()
-    if not registry.has_capacity():
-        raise HTTPException(
-            status_code=429,
-            detail="回测任务队列已满（pending+running 达上限），请稍后重试或取消在途任务",
-        )
-    # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
-    # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
-    # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化下沉到 worker 子进程。
-    from app.matrix import prefetch_async
-    prefetch = await prefetch_async(symbols, req.start, end)
-    # 预拉失败前置（缺陷 3 修复）：prefetch_async 内部 catch 一切只记日志，
-    # 数据源整体挂掉时覆盖率为 0——登记任务前检查覆盖率，过低直接 503，
-    # 避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
-    _check_prefetch_coverage_or_503(prefetch, symbols)
-    # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
-    # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
-    # 失败降级不阻塞登记（缺因子标的按原始价跑并在结果标注 unadjusted）。
-    await _warm_factor_cache(symbols)
-    benchmark = await _fetch_benchmark(symbols, req.start, end)
-    names = await _fetch_names(symbols)
-    # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
-    # 与 run_backtest_async 同口径：分钟通路故障降级日K，不阻塞任务登记。
-    # 全量模拟（sim_mode=full）无分钟口径，跳过预拉。
-    if req.sim_mode != "full" and (
-        cfg.minute_fill or cfg.exit_fill == "signal_next_minute"
-    ):
-        from app.data.client_minute import get_minute_bars
-        try:
-            await get_minute_bars(symbols, req.start, end, use_cache=True)
-        except Exception as e:
-            logger.warning("任务化回测分钟K 预拉失败，分钟口径降级日K：%s", e)
-
-    # 兜底：预拉期间容量可能被并发请求占满，create 拒绝同样转 429
     try:
-        task = registry.create()
+        reservation = registry.reserve(user_id)
     except RegistryFullError as e:
         raise HTTPException(status_code=429, detail=f"回测任务队列已满：{e}")
+    try:
+        # 冷启动修复：登记前在主进程暖日K 缓存（与分钟K 预拉同模式：
+        # 主进程回源落盘，worker 子进程只读缓存）；失败降级不阻塞任务登记。
+        # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化下沉到 worker 子进程。
+        from app.matrix import prefetch_async
+        prefetch = await prefetch_async(symbols, req.start, end)
+        # 预拉失败前置（缺陷 3 修复）：prefetch_async 内部 catch 一切只记日志，
+        # 数据源整体挂掉时覆盖率为 0——登记任务前检查覆盖率，过低直接 503，
+        # 避免 worker 白跑一轮产出 stats 全零的「合法」骨架结果。
+        _check_prefetch_coverage_or_503(prefetch, symbols)
+        # 复权因子预拉：worker 子进程只读本地因子缓存（runner.py 的 factors.load），
+        # 主进程必须先把缺失因子落盘，否则全市场回测大面积按无复权口径跑。
+        # 失败降级不阻塞登记（缺因子标的按原始价跑并在结果标注 unadjusted）。
+        await _warm_factor_cache(symbols)
+        benchmark = await _fetch_benchmark(symbols, req.start, end)
+        names = await _fetch_names(symbols)
+        # 分钟K 预拉落本地缓存（子进程只读缓存不补拉网络，见 worker._load_minute_cache）；
+        # 与 run_backtest_async 同口径：分钟通路故障降级日K，不阻塞任务登记。
+        # 全量模拟（sim_mode=full）无分钟口径，跳过预拉。
+        if req.sim_mode != "full" and (
+            cfg.minute_fill or cfg.exit_fill == "signal_next_minute"
+        ):
+            from app.data.client_minute import get_minute_bars
+            try:
+                await get_minute_bars(symbols, req.start, end, use_cache=True)
+            except Exception as e:
+                logger.warning("任务化回测分钟K 预拉失败，分钟口径降级日K：%s", e)
+        # 预占转正式任务（不重复计额度）
+        task = registry.create(owner=user_id, reservation=reservation)
+    finally:
+        registry.release_reservation(reservation)  # 已转正时为空操作
     asyncio.create_task(
         _run_backtest_task(
             task.task_id, symbols, req.strategy_id, req.start, end,
@@ -428,10 +505,10 @@ def api_backtest_task_poll(task_id: str, user_id: str = Depends(current_user_id)
     """轮询任务：{status, progress, result?, error?}（断线重连接口）。
 
     pending/running 带最新逐日进度；done 带完整结果（与 POST /api/backtest
-    响应同结构）；failed 带结构化错误；任务不存在/TTL 过期 → 404。
+    响应同结构）；failed 带结构化错误；任务不存在/TTL 过期/非本人任务 → 404。
     """
     try:
-        return get_task_registry().poll(task_id)
+        return get_task_registry().poll(task_id, owner=user_id)
     except UnknownTaskError:
         raise HTTPException(status_code=404, detail=f"回测任务不存在：{task_id!r}")
 
@@ -442,7 +519,7 @@ def api_backtest_task_cancel(
 ) -> dict:
     """幂等取消：终态任务返回现状（200）；运行中任务置取消标记并转 cancelled。"""
     try:
-        task = get_task_registry().cancel(task_id)
+        task = get_task_registry().cancel(task_id, owner=user_id)
     except UnknownTaskError:
         raise HTTPException(status_code=404, detail=f"回测任务不存在：{task_id!r}")
     return get_task_registry().snapshot(task)
@@ -471,53 +548,65 @@ class AITweakRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _run_ai_generate_task(task_id: str, description: str, base_code: str | None = None) -> None:
+async def _run_ai_generate_task(
+    task_id: str, description: str, base_code: str | None = None, user_id: str | None = None,
+) -> None:
     """后台执行协程：调 LLM 生成 + 校验（含 repair 重试），终态写回注册表。"""
     from app.ai.generator import AIStrategyGenerator
     registry = get_task_registry()
     token = CancelToken()
-    registry.attach_cancel_token(task_id, token)
-    registry.mark_running(task_id)
     try:
-        if token.is_set():
-            registry.mark_cancelled(task_id)
+        registry.attach_cancel_token(task_id, token)
+        try:
+            registry.mark_running(task_id)
+        except (TaskNotRunningError, UnknownTaskError):
+            return  # 起跑前已被取消 / 清扫：不再调用 LLM
+        try:
+            if token.is_set():
+                registry.mark_cancelled(task_id)
+                return
+            gen = AIStrategyGenerator()
+            result = await gen.generate(description, base_code=base_code, user_id=user_id)
+            # LLM 调用结束后才看到取消标记（协作式取消：不打断进行中的 HTTP 调用，
+            # 只丢弃结果——AI 生成无副作用，丢弃即安全）。取消后额度保留到这里退出，
+            # 防「创建→取消」循环堆积并发 LLM 调用（见 tasks.release）
+            if token.is_set():
+                registry.mark_cancelled(task_id)
+                return
+        except Exception as e:  # 绝不把异常泄漏到事件循环
+            logger.exception("任务化 AI 生成异常（task=%s）", task_id)
+            registry.mark_failed(task_id, f"生成主流程异常：{e}")
             return
-        gen = AIStrategyGenerator()
-        result = await gen.generate(description, base_code=base_code)
-        # LLM 调用结束后才看到取消标记（协作式取消：不打断进行中的 HTTP 调用，
-        # 只丢弃结果——AI 生成无副作用，丢弃即安全）
-        if token.is_set():
-            registry.mark_cancelled(task_id)
-            return
-    except Exception as e:  # 绝不把异常泄漏到事件循环
-        logger.exception("任务化 AI 生成异常（task=%s）", task_id)
-        registry.mark_failed(task_id, f"生成主流程异常：{e}")
-        return
-    # LLM/校验失败是业务终态（generator 永不抛异常，valid=False 带 error），
-    # 不算任务系统故障：done + result.valid=false，前端按原样展示错误文案
-    registry.mark_done(task_id, result)
+        # LLM/校验失败是业务终态（generator 永不抛异常，valid=False 带 error），
+        # 不算任务系统故障：done + result.valid=false，前端按原样展示错误文案
+        registry.mark_done(task_id, result)
+    finally:
+        registry.release(task_id)
 
 
 @app.post("/api/ai/generate", status_code=202)
-async def api_ai_generate(req: AIGenerateRequest):
+async def api_ai_generate(req: AIGenerateRequest, user_id: str = Depends(current_user_id)):
     """任务化 AI 生成：登记任务 + 后台跑 LLM，立即返回 {"task_id"}。
 
     客户端轮询 GET /api/ai/task/{id} 拿终态结果（result 结构与旧同步版一致：
     {valid, code, meta, error}）；取消走 POST /api/ai/task/{id}/cancel（协作式）。
+    任务归属 user_id（与回测任务共用每用户活跃上限）。
     """
     from app.ai.generator import AIStrategyGenerator
     if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
     try:
-        task = get_task_registry().create()
+        task = get_task_registry().create(owner=user_id)
     except RegistryFullError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.base_code))
+    asyncio.create_task(_run_ai_generate_task(
+        task.task_id, req.description, base_code=req.base_code, user_id=user_id,
+    ))
     return {"task_id": task.task_id}
 
 
 @app.post("/api/ai/tweak", status_code=202)
-async def api_ai_tweak(req: AITweakRequest):
+async def api_ai_tweak(req: AITweakRequest, user_id: str = Depends(current_user_id)):
     """任务化 AI 调整：以请求体 code 为底稿，按 description 让 LLM 改写。
 
     与 /api/ai/generate 同一任务语义（登记 → 轮询 → 协作式取消），
@@ -527,30 +616,48 @@ async def api_ai_tweak(req: AITweakRequest):
     if not AIStrategyGenerator().enabled:
         return JSONResponse({"valid": False, "error": "AI 未配置（AI_API_KEY 为空）"}, status_code=200)
     try:
-        task = get_task_registry().create()
+        task = get_task_registry().create(owner=user_id)
     except RegistryFullError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    asyncio.create_task(_run_ai_generate_task(task.task_id, req.description, base_code=req.code))
+    asyncio.create_task(_run_ai_generate_task(
+        task.task_id, req.description, base_code=req.code, user_id=user_id,
+    ))
     return {"task_id": task.task_id}
 
 
 @app.get("/api/ai/task/{task_id}")
-def api_ai_task_poll(task_id: str) -> dict:
-    """轮询 AI 生成任务：done 带 result（{valid, code, meta, error}），failed 带 error。"""
+def api_ai_task_poll(task_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    """轮询 AI 生成任务：done 带 result（{valid, code, meta, error}），failed 带 error。
+
+    非本人任务与不存在同样 404。
+    """
     try:
-        return get_task_registry().poll(task_id)
+        return get_task_registry().poll(task_id, owner=user_id)
     except UnknownTaskError:
         raise HTTPException(status_code=404, detail=f"生成任务不存在：{task_id!r}")
 
 
 @app.post("/api/ai/task/{task_id}/cancel")
-def api_ai_task_cancel(task_id: str) -> dict:
+def api_ai_task_cancel(task_id: str, user_id: str = Depends(current_user_id)) -> dict:
     """幂等取消：运行中任务置取消标记并转 cancelled；终态任务返回现状。"""
     try:
-        task = get_task_registry().cancel(task_id)
+        task = get_task_registry().cancel(task_id, owner=user_id)
     except UnknownTaskError:
         raise HTTPException(status_code=404, detail=f"生成任务不存在：{task_id!r}")
     return get_task_registry().snapshot(task)
+
+
+def _trial_load_or_raise(path: Path, source: str, user_id: str) -> dict:
+    """沙箱试加载（真实 import + 合成矩阵试跑 compute）；失败转 422（文案截断）。"""
+    dirs = user_strategy_dirs(user_id)
+    try:
+        return trial_load_sandboxed(path, source, user_id, extra_dirs=dirs)
+    except TrialBusyError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except (SandboxError, TimeoutError) as e:
+        raise HTTPException(
+            status_code=422, detail=truncate_error(f"落盘后加载失败（已回滚）：{e}"),
+        )
 
 
 class AISaveRequest(BaseModel):
@@ -565,25 +672,16 @@ def api_ai_save(req: AISaveRequest, user_id: str = Depends(current_user_id)) -> 
     通过才写盘；文件名取 META["id"]（validator 已保证 ai_ 前缀字面量），
     写后试加载验证可执行。幂等：同 id 覆盖更新。注册表每次请求重建，落盘即热生效。
     """
-    result = validate_strategy_code(req.code)
+    result = validate_strategy_code(req.code, user_id)
     if not result["valid"]:
         raise HTTPException(status_code=422, detail=f"安全校验未通过：{result['error']}")
     sid = str(result["meta"]["id"])
     # 双保险：文件名只取白名单形态（validator 已保证 ai_ 前缀 + 合法字符）
     if not re.fullmatch(r"ai_[A-Za-z0-9_]{1,60}", sid):
         raise HTTPException(status_code=422, detail=f"策略 id 形态非法：{sid!r}")
-    ai_dir = user_strategy_dirs(user_id)["ai"]
-    ai_dir.mkdir(parents=True, exist_ok=True)
-    path = ai_dir / f"{sid}.py"
-    path.write_text(req.code, encoding="utf-8")
-    # 落盘后试加载：坏了立即删文件回滚，不留半截策略在注册表里
-    try:
-        _registry(user_id).get(sid)
-    except Exception as e:
-        path.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail=f"落盘后加载失败（已回滚）：{e}")
-    logger.info("AI 策略已保存：%s（user=%s, %s）", sid, user_id, path)
-    return {"saved": True, "strategy_id": sid, "name": result["meta"].get("name", sid)}
+    # 复用统一落盘：同 id 覆盖时先挪 .bak，试加载失败（含繁忙 429 / 超时）整体还原，
+    # 不会删掉用户原本可用的同名策略
+    return _save_strategy_file(user_id, req.code)
 
 
 def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None) -> dict:
@@ -594,7 +692,7 @@ def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None
     - overwrite_id 非空且与 META.id 不同时删除旧文件（重命名 = 移动）。
     - 幂等：同 id 覆盖更新；落盘后试加载失败即回滚，不留半截策略。
     """
-    result = validate_strategy_code(code)
+    result = validate_strategy_code(code, user_id)
     if not result["valid"]:
         raise HTTPException(status_code=422, detail=f"安全校验未通过：{result['error']}")
     sid = str(result["meta"]["id"])
@@ -613,6 +711,12 @@ def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None
                 detail=f"内置策略 {overwrite_id!r} 只读，请改 META.id 另存为新策略",
             )
 
+    # 与内置策略重名：用户文件会被注册表静默屏蔽（回测实际跑 builtin），必须拒绝
+    if any(d.strategy_id == sid and d.source == "builtin" for d in _registry(user_id).all()):
+        raise HTTPException(
+            status_code=409,
+            detail=f"策略 id {sid!r} 与内置策略重名（内置策略只读），请改 META.id 后另存",
+        )
     dest_dir = dirs["ai"] if sid.startswith("ai_") else dirs["custom"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / f"{sid}.py"
@@ -640,7 +744,8 @@ def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None
 
     path.write_text(code, encoding="utf-8")
     try:
-        _registry(user_id).get(sid)
+        _registry(user_id).get(sid)  # 静态校验：id 冲突 / composite 引用等注册表级问题
+        _trial_load_or_raise(path, "ai" if sid.startswith("ai_") else "custom", user_id)
     except Exception as e:
         path.unlink(missing_ok=True)
         if backup_path is not None:
@@ -649,7 +754,11 @@ def _save_strategy_file(user_id: str, code: str, overwrite_id: str | None = None
                 backup_path.rename(backup_path.with_name(backup_path.name[:-4]))
             except OSError:
                 logger.error("策略旧文件还原失败：%s", backup_path)
-        raise HTTPException(status_code=422, detail=f"落盘后加载失败（已回滚）：{e}")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=422, detail=truncate_error(f"落盘后加载失败（已回滚）：{e}"),
+        )
     if backup_path is not None:
         backup_path.unlink(missing_ok=True)
     logger.info(
@@ -673,6 +782,73 @@ def api_strategy_save(req: StrategySaveRequest, user_id: str = Depends(current_u
     支持 overwrite_id 声明覆盖/重命名已有策略（builtin 除外）。
     """
     return _save_strategy_file(user_id, req.code, overwrite_id=req.overwrite_id)
+
+
+class StrategyValidateRequest(BaseModel):
+    code: str = Field(min_length=20, max_length=10_000_000)
+
+
+@app.post("/api/strategies/validate")
+def api_strategy_validate(
+    req: StrategyValidateRequest, user_id: str = Depends(current_user_id),
+) -> dict:
+    """校验策略代码但不落盘：validator 静态检查 + 沙箱试加载（合成矩阵试跑 compute）。
+
+    返回 {valid, error, meta}；校验失败是业务结果（200 + valid=false），便于 agent 迭代修复。
+    试加载在缓存目录下的临时目录进行（不碰用户策略目录，不影响注册表）。
+    """
+    import tempfile
+
+    result = validate_strategy_code(req.code, user_id)
+    if not result["valid"]:
+        return {"valid": False, "error": result["error"], "meta": result.get("meta") or {}}
+    sid = str(result["meta"]["id"])
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", sid):
+        return {"valid": False, "error": f"策略 id 形态非法：{sid!r}", "meta": result["meta"]}
+    root = Path(settings.QUANT_CACHE_DIR) / "tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
+        tmp_path = Path(tmp)
+        tmp_path.chmod(0o755)  # mkdtemp 默认 0700：沙箱子进程以 nobody 运行，须可读
+        path = tmp_path / f"{sid}.py"
+        path.write_text(req.code, encoding="utf-8")
+        path.chmod(0o644)
+        source = "ai" if sid.startswith("ai_") else "custom"
+        try:
+            # 带用户策略目录：composite 子策略引用校验与 save 同口径
+            trial = trial_load_sandboxed(
+                path, source, user_id, extra_dirs=user_strategy_dirs(user_id),
+            )
+        except TrialBusyError as e:
+            raise HTTPException(status_code=429, detail=str(e))
+        except (SandboxError, TimeoutError) as e:
+            return {"valid": False, "error": truncate_error(f"试加载失败：{e}"),
+                    "meta": result["meta"]}
+    return {"valid": True, "error": None, "meta": result["meta"],
+            "warnings": [truncate_error(w) for w in trial.get("warnings") or []]}
+
+
+@app.get("/api/strategies/errors")
+def api_strategy_errors(user_id: str = Depends(current_user_id)) -> list[dict]:
+    """本人 custom/ai 策略的加载错误（静态解析口径；builtin 错误属部署问题，不暴露）。
+
+    file 只返回文件名（不暴露服务端绝对路径）。
+    """
+    return [
+        {"file": Path(e["file"]).name, "source": e["source"], "error": truncate_error(e["error"])}
+        for e in _registry(user_id).load_errors()
+        if e.get("source") in ("custom", "ai")
+    ]
+
+
+@app.get("/api/strategies/guide")
+def api_strategy_guide() -> dict:
+    """策略开发指南（精简版，MCP get_strategy_guide 工具消费）。"""
+    guide = Path(__file__).resolve().parent / "strategy" / "prompts" / "strategy-guide-compact.md"
+    try:
+        return {"content": guide.read_text(encoding="utf-8")}
+    except OSError:
+        raise HTTPException(status_code=500, detail="策略指南文件缺失")
 
 
 @app.get("/api/mining/candidates")
@@ -1064,50 +1240,60 @@ async def _run_optimize_route(
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:  # grid 非法/组合爆炸/分钟频策略等 → 422
         raise HTTPException(status_code=422, detail=str(e))
-    # 冷启动修复：worker 子进程与进程内串行都只读本地日K 缓存，
-    # 缺失标的必须在这里（主进程）经 prefetch_async 补拉落盘，
-    # 否则缓存目录为空时全部组合零成交；补拉失败降级不阻塞（runner 层照常跑）。
-    # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化在 worker 子进程内完成。
-    from app.matrix import prefetch_async
-    await prefetch_async(symbols, req.start, req.end)
-    # 复权因子预拉：优化系路由同样走 worker 子进程（只读本地因子缓存），
-    # 缺失因子需在主进程落盘，否则全市场优化大面积无复权。
-    await _warm_factor_cache(symbols)
-    runner_fn = getattr(quant_runner, runner_fn_name)
+    # 优化系一次请求可串行跑最多 GRID_MAX_COMBINATIONS 组回测，同样计入每用户在途额度
+    # （预占），否则并发提交即可绕过 QUANT_MAX_CONCURRENT_PER_USER 占满共享 worker 池
+    registry = get_task_registry()
     try:
-        # 事件循环纪律（缺陷 2 修复）：run_optimize 等内部按组合数自选执行路径，
-        # 进程内串行路径（n <= _OPTIMIZE_OFFLOAD_THRESHOLD）是同步 CPU 循环——
-        # 8 组 × 全市场 universe 单次分钟级 = 事件循环卡死数分钟（/health 一起挂）。
-        # 整个 runner_fn 甩到默认线程池执行：worker 路径本就把 asyncio.run 包在
-        # 独立线程里（_make_run_fn_worker 自带 running-loop 隔离），线程上下文下
-        # 行为不变；进程内路径由此不再阻塞事件循环。取舍说明：不改 runner 的
-        # offload 判定（保持 runner 对 CLI 等其他调用方的语义不变），
-        # 只在 API 层统一加线程隔离——小网格仍进程内串行省 spawn 开销，
-        # 只是不再占事件循环。
-        return await asyncio.to_thread(
-            _run_optimize_blocking,
-            runner_fn,
-            symbols,
-            req.strategy_id,
-            req.start,
-            req.end,
-            req.param_grid,
-            objective=req.objective,
-            direction=req.direction,
-            base_params=req.base_params or None,
-            registry=_registry(user_id),
-            user_id=user_id,
-            **extra_kwargs,
-        )
-    except HTTPException:
-        raise
-    except KeyError as e:  # 未知策略等引擎侧查找失败 → 404
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:  # 参数错误（grid 非法/组合爆炸/param_id 缺失等）→ 422
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:  # 其余异常结构化 500，不走全局兜底
-        logger.exception("%s 执行异常", runner_fn_name)
-        raise HTTPException(status_code=500, detail=f"{runner_fn_name} 执行异常：{e}")
+        reservation = registry.reserve(user_id)
+    except RegistryFullError as e:
+        raise HTTPException(status_code=429, detail=f"在途任务已满：{e}")
+    try:
+        # 冷启动修复：worker 子进程与进程内串行都只读本地日K 缓存，
+        # 缺失标的必须在这里（主进程）经 prefetch_async 补拉落盘，
+        # 否则缓存目录为空时全部组合零成交；补拉失败降级不阻塞（runner 层照常跑）。
+        # 内存优化（方向 B）：主进程只补拉落盘，矩阵物化在 worker 子进程内完成。
+        from app.matrix import prefetch_async
+        await prefetch_async(symbols, req.start, req.end)
+        # 复权因子预拉：优化系路由同样走 worker 子进程（只读本地因子缓存），
+        # 缺失因子需在主进程落盘，否则全市场优化大面积无复权。
+        await _warm_factor_cache(symbols)
+        runner_fn = getattr(quant_runner, runner_fn_name)
+        try:
+            # 事件循环纪律（缺陷 2 修复）：run_optimize 等内部按组合数自选执行路径，
+            # 进程内串行路径（n <= _OPTIMIZE_OFFLOAD_THRESHOLD）是同步 CPU 循环——
+            # 8 组 × 全市场 universe 单次分钟级 = 事件循环卡死数分钟（/health 一起挂）。
+            # 整个 runner_fn 甩到默认线程池执行：worker 路径本就把 asyncio.run 包在
+            # 独立线程里（_make_run_fn_worker 自带 running-loop 隔离），线程上下文下
+            # 行为不变；进程内路径由此不再阻塞事件循环。取舍说明：不改 runner 的
+            # offload 判定（保持 runner 对 CLI 等其他调用方的语义不变），
+            # 只在 API 层统一加线程隔离——小网格仍进程内串行省 spawn 开销，
+            # 只是不再占事件循环。
+            return await asyncio.to_thread(
+                _run_optimize_blocking,
+                runner_fn,
+                symbols,
+                req.strategy_id,
+                req.start,
+                req.end,
+                req.param_grid,
+                objective=req.objective,
+                direction=req.direction,
+                base_params=req.base_params or None,
+                registry=_registry(user_id),
+                user_id=user_id,
+                **extra_kwargs,
+            )
+        except HTTPException:
+            raise
+        except KeyError as e:  # 未知策略等引擎侧查找失败 → 404
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:  # 参数错误（grid 非法/组合爆炸/param_id 缺失等）→ 422
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:  # 其余异常结构化 500，不走全局兜底
+            logger.exception("%s 执行异常", runner_fn_name)
+            raise HTTPException(status_code=500, detail=f"{runner_fn_name} 执行异常：{e}")
+    finally:
+        registry.release_reservation(reservation)
 
 
 def _run_optimize_blocking(runner_fn, *args, **kwargs) -> dict:

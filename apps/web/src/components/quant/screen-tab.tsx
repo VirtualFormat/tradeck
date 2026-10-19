@@ -112,7 +112,13 @@ export function ScreenTab({
         }),
       });
       if (!res.ok) {
-        setError("扫描服务不可用，请稍后重试");
+        // 4xx（参数非法 / 策略执行失败）由代理透传 detail，优先展示具体原因
+        const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+        setError(
+          res.status >= 400 && res.status < 500 && typeof body.detail === "string"
+            ? body.detail
+            : "扫描服务不可用，请稍后重试"
+        );
         setResult(null);
         return;
       }

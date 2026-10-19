@@ -5,16 +5,15 @@
  * detail（P1-1：结构化 500 的原因不能被抹成笼统 502），无 detail 才 502
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { quantFetch } from "@/lib/quant";
 
 export async function POST(request: NextRequest) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
     const body = await request.json();
-    const res = await fetch(`${QUANT_API_URL}/api/walkforward`, {
+    const res = await quantFetch(user, `/api/walkforward`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

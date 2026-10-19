@@ -113,17 +113,20 @@ class OptimizeApiErrorMappingTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertIn("no_such_param", ctx.exception.detail)
 
-    def test_universe_default_expands_to_tracked(self) -> None:
-        """symbols 缺省时按 universe 默认档 tracked 展开（runner 层 mock，保持快）。"""
+    def test_universe_default_expands_to_hs300(self) -> None:
+        """symbols 缺省时按 universe 默认档 hs300 展开（b115106 起默认沪深300，替代 tracked）。"""
         from app import runner as quant_runner
         from app.api import api_optimize
-        from app.jobs import DEFAULT_SIGNAL_UNIVERSE
 
+        hs300 = ["600519.SH", "000001.SZ", "300750.SZ"]
         req = _optimize_request(symbols=None)
         with (
             mock.patch.object(
                 quant_runner, "run_optimize", new=AsyncMock(return_value={"ok": True})
             ) as mocked,
+            mock.patch(
+                "app.universe._fetch_index_symbols", new=AsyncMock(return_value=hs300)
+            ) as fetch_index,
             # 暖缓存（冷启动修复）在 runner 之前：屏蔽网络，补拉返回空走降级
             mock.patch(
                 "app.data.client.fetch_bars", new=AsyncMock(return_value=[])
@@ -131,7 +134,8 @@ class OptimizeApiErrorMappingTest(unittest.TestCase):
         ):
             out = asyncio.run(api_optimize(req, user_id=_UID))
         self.assertEqual(out, {"ok": True})
-        self.assertEqual(mocked.call_args.args[0], list(DEFAULT_SIGNAL_UNIVERSE))
+        self.assertEqual(fetch_index.await_args.args[0], "000300.SH")
+        self.assertEqual(mocked.call_args.args[0], hs300)
 
     def test_explicit_symbols_win_over_universe(self) -> None:
         """显式 symbols 优先：universe 参数被忽略（互斥语义与 api_screen 一致）。"""

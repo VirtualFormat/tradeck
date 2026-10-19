@@ -391,8 +391,6 @@ class ApiRoutingTest(unittest.TestCase):
         self.assertEqual(req2.sim_mode, "position")
 
     def test_worker_entry_dispatches_to_full(self) -> None:
-        import queue
-
         import app.worker as worker_mod
 
         task = {
@@ -402,23 +400,15 @@ class ApiRoutingTest(unittest.TestCase):
             "params": None, "config": {}, "user_id": "default",
             "names": None, "sim_mode": "full",
         }
-        q: queue.Queue = queue.Queue()
         with mock.patch("app.runner.run_backtest_full",
                         return_value={"stats": {"mode": "full"}}) as full_fn, \
-             mock.patch("app.runner.run_backtest") as pos_fn, \
-             mock.patch.object(worker_mod.os, "_exit"):  # 真 os._exit 会杀掉测试进程
-            worker_mod._worker_entry(task, q)
+             mock.patch("app.runner.run_backtest") as pos_fn:
+            result = worker_mod.execute_backtest_task(task, lambda _p: None)
         self.assertTrue(full_fn.called)
         self.assertFalse(pos_fn.called)
-        # 终态消息入队（result 携带 full 模式 stats）
-        msgs = []
-        while not q.empty():
-            msgs.append(q.get_nowait())
-        self.assertTrue(any(m.get("type") == "result" for m in msgs))
+        self.assertEqual(result["stats"]["mode"], "full")
 
     def test_worker_entry_default_dispatches_to_position(self) -> None:
-        import queue
-
         import app.worker as worker_mod
 
         task = {
@@ -428,12 +418,10 @@ class ApiRoutingTest(unittest.TestCase):
             "params": None, "config": {}, "user_id": "default",
             "names": None,  # 无 sim_mode 键：旧任务兼容，按 position
         }
-        q: queue.Queue = queue.Queue()
         with mock.patch("app.runner.run_backtest_full") as full_fn, \
              mock.patch("app.runner.run_backtest",
-                        return_value={"stats": {"total_return": 0.0}}) as pos_fn, \
-             mock.patch.object(worker_mod.os, "_exit"):
-            worker_mod._worker_entry(task, q)
+                        return_value={"stats": {"total_return": 0.0}}) as pos_fn:
+            worker_mod.execute_backtest_task(task, lambda _p: None)
         self.assertTrue(pos_fn.called)
         self.assertFalse(full_fn.called)
 

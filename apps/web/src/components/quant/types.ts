@@ -3,6 +3,8 @@
  * 契约以 quant 后端（apps/quant/app/api.py）为准，前端只经 Next 代理路由消费
  */
 
+import { normalizeSymbol } from "@/lib/utils";
+
 export interface StrategyParam {
   id: string;
   label?: string;
@@ -64,12 +66,17 @@ export function buildParamsPayload(
   return payload;
 }
 
-/** 逗号 / 空白分隔的标的输入 → symbol 数组 */
+/**
+ * 逗号 / 空白分隔的标的输入 → 规范 symbol 数组（大写 + 后缀归一 + 去重保序）。
+ * quant 侧按 ^[A-Z0-9.-]{1,20}$ 校验，未归一的小写输入会被 422 拒绝。
+ */
 export function parseSymbols(input: string): string[] {
-  return input
-    .split(/[\s,，]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const out: string[] = [];
+  for (const raw of input.split(/[\s,，]+/)) {
+    const s = normalizeSymbol(raw);
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
 }
 
 /** 收益类数值着色：正 var(--up) 红，负 var(--down) 绿 */

@@ -413,6 +413,13 @@ export function BacktestTab({
       body: JSON.stringify(payload),
     });
     if (!runRes.ok) {
+      // 业务拒绝（429 在途任务超限 / 422 参数 / 404 策略）直接提示，绝不回退旧同步接口
+      // ——旧接口不登记任务，回退等于绕过每用户并发上限
+      if (!GATEWAY_STATUS.has(runRes.status)) {
+        setError(await describeHttpFailure(runRes));
+        setResult(null);
+        return null;
+      }
       const legacy = await runBacktestLegacy(payload);
       if (!legacy.ok) {
         // 优先用 run 接口的状态描述失败原因（兜底接口多半同样不可用）

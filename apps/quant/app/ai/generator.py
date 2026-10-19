@@ -95,7 +95,9 @@ class AIStrategyGenerator:
                 self._guide_cache = _FALLBACK_GUIDE
         return self._guide_cache
 
-    async def generate(self, description: str, base_code: str | None = None) -> dict:
+    async def generate(
+        self, description: str, base_code: str | None = None, user_id: str | None = None,
+    ) -> dict:
         """生成策略代码并过安全闸；不合法时把错误反馈给 LLM 重试 repair 一轮。
 
         返回 {"valid": bool, "code": str, "meta": dict, "error": str | None}。
@@ -131,7 +133,7 @@ class AIStrategyGenerator:
         if code is None:
             return {"valid": False, "code": "", "meta": {}, "error": "LLM 调用失败（连接或响应异常）"}
 
-        result = validate_strategy_code(code)
+        result = validate_strategy_code(code, user_id)
         if result["valid"]:
             return {"valid": True, "code": code, "meta": result["meta"], "error": None}
 
@@ -156,7 +158,7 @@ class AIStrategyGenerator:
                 "meta": result.get("meta", {}),
                 "error": f"{result['error']}（repair 重试时 LLM 调用失败）",
             }
-        final = validate_strategy_code(repaired)
+        final = validate_strategy_code(repaired, user_id)
         if final["valid"]:
             return {"valid": True, "code": repaired, "meta": final["meta"], "error": None}
         return {

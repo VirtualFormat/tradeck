@@ -9,7 +9,11 @@
   宁可误伤也不留口子。禁的是「读取」，模块的 __name__ 变量解析本身不受影响
   （Name 节点与 Attribute 不同）。
 - 字符串下标拦截：x["__class__"] / x["__bases__"] / x["__subclasses__"] 等
-  绕过属性检查的经典逃逸，按字符串常量下标逐个拦。
+  绕过属性检查的经典逃逸，按字符串常量下标逐个拦。例外：平台注入的
+  params["__user_factor_values__"]（loader.run 约定的用户因子值键）。
+- 禁 dunder 名称：读写 __builtins__ / __import__ / __loader__ 等一律拒（__builtins__
+  下标可直取 exec）；对 __name__ 等赋值同样拒（`__name__ = "__main__"` 能让自测块
+  在加载时执行）。顶层只允许 __future__ 导入引入的名字，不影响合法代码。
 - 危险调用按名称拦：eval/exec/compile/open/__import__/getattr(动态属性跳板)/
   globals/locals/vars/dir/input/breakpoint/setattr/delattr。
 - META 在 ast 层做纯字面量校验（ast.literal_eval，不执行代码），
@@ -23,10 +27,11 @@
 from __future__ import annotations
 
 import ast
+import re
 import logging
 from typing import Any
 
-from app.strategy.loader import ALLOWED_SCORING_FIELDS
+from app.strategy.loader import ALLOWED_SCORING_FIELDS, allowed_scoring_fields
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,9 @@ _FORBIDDEN_CALL_NAMES = frozenset({
     "breakpoint", "exit", "quit", "help",
 })
 
+# 平台注入、允许以字符串下标读取的私有键（loader.StrategyRegistry.run 注入用户因子值）
+_ALLOWED_PRIVATE_KEYS = frozenset({"__user_factor_values__"})
+
 # 保守起见，一切下划线前缀（_ 或 __ 开头）的属性读取/字符串下标都拒：
 # 策略代码无合法用途访问内部属性，且 Python 名称改写也保护 __class 这类
 # 单下双下混合写法（类内 __class 会被改写为 _ClassName__class）。
@@ -71,6 +79,10 @@ def _check_imports(tree: ast.Module) -> str | None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                if any(part.startswith("_") for part in alias.name.split(".")) or (
+                    alias.asname or ""
+                ).startswith("_"):
+                    return f"禁止导入 {alias.name!r}：不允许导入下划线前缀模块或别名"
                 top = alias.name.split(".", 1)[0]
                 if top not in _ALLOWED_TOP_MODULES:
                     return (
@@ -79,6 +91,13 @@ def _check_imports(tree: ast.Module) -> str | None:
                     )
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
+            if mod != "__future__":
+                for alias in node.names:
+                    # from numpy import __builtins__ as b → b["exec"]：名称检查只看 ast.Name，
+                    # 导入别名会绕过，这里按导入名与别名一并拦下划线前缀
+                    for name in (alias.name, alias.asname or ""):
+                        if name.startswith("_") or name == "*":
+                            return f"禁止导入 {name!r}：不允许导入下划线前缀名称或通配导入"
             if mod.split(".", 1)[0] in _ALLOWED_TOP_MODULES:
                 continue
             if mod in _ALLOWED_FROM_MODULES:
@@ -90,12 +109,31 @@ def _check_imports(tree: ast.Module) -> str | None:
     return None
 
 
+# str.format 的字段语法可做属性访问（"{0.__class__}".format(x)），绕过 Attribute 检查
+_FORMAT_PRIVATE_ATTR = re.compile(r"\{[^{}]*\._")
+
+
 def _check_dangerous_calls(tree: ast.Module) -> str | None:
     for node in ast.walk(tree):
+        # 危险名称的任何引用都拒（不只是直接调用）：装饰器 @exec、默认参数 a=eval、
+        # 别名 b = breakpoint、海象 (e := eval) 等都能把它们变成可调用对象
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_CALL_NAMES:
+            return f"禁止使用 {node.id}：策略不得执行动态代码或访问系统资源"
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id in _FORBIDDEN_CALL_NAMES:
                 return f"禁止调用 {func.id}()：策略不得执行动态代码或访问系统资源"
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _FORMAT_PRIVATE_ATTR.search(node.value)
+        ):
+            return "禁止在格式化字符串中访问下划线属性（如 \"{0.__class__}\"）"
+        # match 类模式的关键字属性：case object(__class__=c) 等价于属性读取
+        if isinstance(node, ast.MatchClass):
+            bad = [a for a in node.kwd_attrs if a.startswith("_")]
+            if bad:
+                return f"禁止在 match 模式中访问内部属性 {bad[0]}"
             # getattr 的属性写法已在 dunder 检查里拦；这里补 type(x)(...) 这类
             # 无名称调用不拦——它本身不构成逃逸，逃逸口在 dunder/下标。
     return None
@@ -111,10 +149,29 @@ def _check_dunder_escape(tree: ast.Module) -> str | None:
                 isinstance(sl, ast.Constant)
                 and isinstance(sl.value, str)
                 and _is_dunder(sl.value)
+                and sl.value not in _ALLOWED_PRIVATE_KEYS
             ):
                 return (
                     f"禁止下标访问 {sl.value!r}：策略不允许反射遍历逃逸"
                 )
+        # 双下划线名称（__builtins__ / __import__ / __name__ 等）：读写一律拒。
+        # 单下划线私有名（如 _prev 工具函数）是合法写法，不受影响。
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            if node.id == "__name__":
+                return (
+                    "禁止使用 __name__：平台按模块加载策略，"
+                    "请删除 if __name__ == \"__main__\": 自测块"
+                )
+            return f"禁止使用双下划线名称 {node.id}：策略不允许访问解释器内部对象"
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and node.name.startswith("__"):
+            return f"禁止定义双下划线名称 {node.name}"
+        if isinstance(node, ast.arg) and node.arg.startswith("__"):
+            return f"禁止使用双下划线参数名 {node.arg}"
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            bad = [n for n in node.names if n.startswith("__")]
+            if bad:
+                return f"禁止声明双下划线名称 {bad[0]}"
     return None
 
 
@@ -131,8 +188,53 @@ def _find_top_level_assign(tree: ast.Module, name: str) -> ast.expr | None:
     return None
 
 
-def _check_meta(tree: ast.Module) -> tuple[str | None, dict]:
-    """META 字面量校验；返回 (错误描述或 None, 解析出的 meta dict)。"""
+def _check_meta_immutable(tree: ast.Module) -> str | None:
+    """META 只能在顶层以字面量赋值一次，之后不得修改。
+
+    主进程注册表只做静态解析（不执行用户代码），若模块执行时再改 META，
+    参数表单/注册表就与子进程实际执行分叉。
+    """
+    top_level = 0
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        elif isinstance(node, ast.Delete):
+            targets = list(node.targets)
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "META":
+                if isinstance(node, (ast.AugAssign, ast.Delete)) or node not in tree.body:
+                    return "META 只能在模块顶层以字面量定义一次，不得重新赋值或修改"
+                top_level += 1
+            elif isinstance(t, (ast.Subscript, ast.Attribute)):
+                base = t.value
+                while isinstance(base, (ast.Subscript, ast.Attribute)):
+                    base = base.value
+                if isinstance(base, ast.Name) and base.id == "META":
+                    return "禁止修改 META（META[...] / META.x 赋值）：请直接写进顶层字面量"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            base = node.func.value
+            while isinstance(base, (ast.Subscript, ast.Attribute)):
+                base = base.value
+            if isinstance(base, ast.Name) and base.id == "META" and node.func.attr in (
+                "update", "setdefault", "pop", "popitem", "clear", "append", "extend",
+                "insert", "remove",
+            ):
+                return f"禁止调用 META 的修改方法 {node.func.attr}()：请直接写进顶层字面量"
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and "META" in node.names:
+            return "禁止在函数内声明 global META"
+    if top_level > 1:
+        return "META 只能定义一次（发现重复的顶层 META 赋值）"
+    return None
+
+
+def _check_meta(tree: ast.Module, user_id: str | None = None) -> tuple[str | None, dict]:
+    """META 字面量校验；返回 (错误描述或 None, 解析出的 meta dict)。
+
+    scoring 白名单 = 内置字段 ∪ user_id 本人 active 用户因子（与 loader 同口径）。
+    """
     value = _find_top_level_assign(tree, "META")
     if value is None:
         return "缺少顶层 META = {...} 字面量 dict（AI 策略元数据必填）", {}
@@ -152,11 +254,16 @@ def _check_meta(tree: ast.Module) -> tuple[str | None, dict]:
     if scoring is not None:
         if not isinstance(scoring, dict):
             return "META.scoring 必须是 dict（字段名 → 权重）", meta
-        bad = sorted(set(scoring) - ALLOWED_SCORING_FIELDS)
+        extra_fields = set(scoring) - ALLOWED_SCORING_FIELDS
+        # 只有出现内置之外的字段才合成用户因子白名单（要读盘 + 编译 DSL）
+        allowed = allowed_scoring_fields(user_id) if extra_fields else ALLOWED_SCORING_FIELDS
+        bad = sorted(set(scoring) - allowed)
         if bad:
+            extra = sorted(allowed - ALLOWED_SCORING_FIELDS)
             return (
                 f"META.scoring 含白名单外字段 {bad}；"
                 f"允许字段：{sorted(ALLOWED_SCORING_FIELDS)}"
+                + (f"，以及你的 active 用户因子 {extra}" if extra else "")
             ), meta
     return None, meta
 
@@ -174,8 +281,10 @@ def _check_compute(tree: ast.Module) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def validate_strategy_code(code: str) -> dict[str, Any]:
+def validate_strategy_code(code: str, user_id: str | None = None) -> dict[str, Any]:
     """校验 AI 生成的策略代码。永不抛异常，返回结构化结果。
+
+    user_id：scoring 白名单合成的用户命名空间（为空时仅内置字段）。
 
     返回 {"valid": bool, "error": str | None, "meta": dict}：
     - valid=True 时代码过了全部静态检查（可进入 strategy/ai/ 目录）；
@@ -198,12 +307,19 @@ def validate_strategy_code(code: str) -> dict[str, Any]:
         if error is not None:
             return {"valid": False, "error": error, "meta": {}}
 
-    error, meta = _check_meta(tree)
+    error = _check_meta_immutable(tree)
+    if error is not None:
+        return {"valid": False, "error": error, "meta": {}}
+
+    error, meta = _check_meta(tree, user_id)
     if error is not None:
         return {"valid": False, "error": error, "meta": meta}
 
-    error = _check_compute(tree)
-    if error is not None:
-        return {"valid": False, "error": error, "meta": meta}
+    # composite（叠加策略）是声明式的：只经 META["children"] 引用其他策略，
+    # 不含 compute（loader 同口径，见 StrategyRegistry._load_file）
+    if str(meta.get("kind", "")).lower() != "composite":
+        error = _check_compute(tree)
+        if error is not None:
+            return {"valid": False, "error": error, "meta": meta}
 
     return {"valid": True, "error": None, "meta": meta}

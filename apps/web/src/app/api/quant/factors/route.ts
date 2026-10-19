@@ -4,15 +4,14 @@
  * 代理 quant 容器（因子注册表），失败降级返回空数组 / 502
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { quantFetch } from "@/lib/quant";
 
 export async function GET() {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
-    const res = await fetch(`${QUANT_API_URL}/api/factors`, {
+    const res = await quantFetch(user, `/api/factors`, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
@@ -27,11 +26,11 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
     const body = await request.json();
-    const res = await fetch(`${QUANT_API_URL}/api/factors`, {
+    const res = await quantFetch(user, `/api/factors`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

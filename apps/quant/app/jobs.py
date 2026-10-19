@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, timedelta
 from pathlib import Path
@@ -83,9 +84,12 @@ async def daily_signals_job() -> int:
         await build_async(
             symbols, today - timedelta(days=_SCREEN_WINDOW_DAYS), today
         )
-        n = run_daily_signals(symbols, user_id=settings.QUANT_DEFAULT_USER)
+        # default 命名空间已迁给管理员（QUANT_MIGRATE_DEFAULT_TO）时信号随之归属，
+        # 避免每日重建 users/default/signals 让启动迁移反复告警「目标已存在」
+        uid = settings.QUANT_MIGRATE_DEFAULT_TO.strip() or settings.QUANT_DEFAULT_USER
+        n = await asyncio.to_thread(run_daily_signals, symbols, None, uid)
         logger.info("每日信号 job done: %d rows（universe=%d，user=%s）",
-                    n, len(symbols), settings.QUANT_DEFAULT_USER)
+                    n, len(symbols), uid)
         return n
     except Exception as e:
         logger.error("每日信号 job 失败（不影响 API，下次 cron 重试）：%s", e)
@@ -114,23 +118,35 @@ def run_daily_signals(
     symbols: list[str], strategy_ids: list[str] | None = None,
     user_id: str | None = None,
 ) -> int:
-    """对 universe 跑策略，把当日 entry 信号写信号表（覆盖式最新快照）。返回写入行数。"""
-    reg = StrategyRegistry(user_strategy_dirs(user_id))
+    """对 universe 跑策略，把当日 entry 信号写信号表（覆盖式最新快照）。返回写入行数。
+
+    沙箱纪律（docs/MCP.md）：本函数在 quant 主进程（定时 job）执行，注册表为沙箱模式；
+    用户策略（custom/ai）经沙箱子进程选股，builtin 进程内直跑。
+    """
+    reg = StrategyRegistry(user_strategy_dirs(user_id), user_id=user_id, sandbox=True)
     ids = strategy_ids or [s.strategy_id for s in reg.all()]
     rows = []
     today = date.today()
     for sid in ids:
         try:
-            res = screen(sid, symbols, registry=reg)
+            if reg.needs_sandbox(sid):
+                picked = _screen_sandboxed(sid, symbols, user_id)
+            else:
+                res = screen(sid, symbols, registry=reg)
+                picked = [
+                    {"symbol": r.symbol, "score": r.score, "entry": r.signals.get("entry"),
+                     "exit": r.signals.get("exit"), "market": r.market}
+                    for r in res.rows
+                ]
         except Exception as e:
             logger.warning("策略 %s 信号扫描失败，跳过：%s", sid, e)
             continue
-        for r in res.rows:
-            if r.signals.get("entry"):
+        for r in picked:
+            if r.get("entry"):
                 rows.append({
-                    "date": today, "strategy_id": sid, "symbol": r.symbol,
-                    "score": r.score, "entry": True, "exit": bool(r.signals.get("exit")),
-                    "market": r.market,
+                    "date": today, "strategy_id": sid, "symbol": r["symbol"],
+                    "score": r["score"], "entry": True, "exit": bool(r.get("exit")),
+                    "market": r["market"],
                 })
     df = pl.DataFrame(rows, schema=_SIGNALS_SCHEMA) if rows else pl.DataFrame(schema=_SIGNALS_SCHEMA)
     f = _signals_file(user_id)
@@ -138,3 +154,20 @@ def run_daily_signals(
     df.write_parquet(f)
     logger.info("每日信号扫描完成：%d 策略 × %d 标的 → %d 条信号", len(ids), len(symbols), df.height)
     return df.height
+
+
+# 每日信号单策略沙箱选股超时：tracked 100 只 × 90 天窗口，正常秒级
+_SIGNAL_SANDBOX_TIMEOUT_SECONDS = 300.0
+
+
+def _screen_sandboxed(strategy_id: str, symbols: list[str], user_id: str | None) -> list[dict]:
+    """用户策略的沙箱选股（同步，job 线程内调用）：返回 rows（symbol/score/entry/exit/market）。"""
+    from app.sandbox import run_sandboxed
+
+    out = run_sandboxed(
+        "screen",
+        {"strategy_id": strategy_id, "symbols": list(symbols), "end_date": None,
+         "params": None, "user_id": user_id},
+        timeout=_SIGNAL_SANDBOX_TIMEOUT_SECONDS,
+    )
+    return list(out.get("rows") or [])

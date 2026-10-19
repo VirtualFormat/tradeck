@@ -5,24 +5,27 @@
  * 未配置 AI 时 quant 返回 200 {valid:false, error}，原样透传给前端降级展示。
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { quantFetch } from "@/lib/quant";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
     const body = await request.json();
-    const res = await fetch(`${QUANT_API_URL}/api/ai/tweak`, {
+    const res = await quantFetch(user, `/api/ai/tweak`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       cache: "no-store",
     });
     const data = await res.json().catch(() => null);
+    if (res.status >= 400 && res.status < 500 && data !== null) {
+      // 429 在途任务超限等业务拒绝：透传 detail，前端直接展示
+      return NextResponse.json(data, { status: res.status });
+    }
     if (!res.ok || data === null) {
       return NextResponse.json(
         { error: "backend unavailable" },

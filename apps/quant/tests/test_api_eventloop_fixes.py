@@ -37,21 +37,6 @@ _SYM = "AAPL"
 _D0 = date(2026, 1, 5)
 _END = date(2026, 2, 20)
 # MarketMatrix 六个字段（与 matrix.market.FIELDS 一致，避免测试 import matrix 模块本体）
-_FIELDS = ("open", "high", "low", "close", "volume", "amount")
-
-
-def _make_matrix(n_symbols: int, n_data: int):
-    """构造合成 MarketMatrix：前 n_data 列有数据，其余全 NaN。"""
-    from app.matrix.market import MarketMatrix
-
-    close = np.full((1, n_symbols), np.nan)
-    close[:, :n_data] = 10.0
-    kwargs = {f: close.copy() for f in _FIELDS}
-    return MarketMatrix(
-        dates=[_D0], symbols=[f"S{i:03d}" for i in range(n_symbols)], **kwargs,
-    )
-
-
 @unittest.skipUnless(_DEPS_OK, "缺 numpy/polars 依赖，跳过运行时测试")
 class ScreenOffloadTest(unittest.TestCase):
     """缺陷 1：screen() 同步调用经 asyncio.to_thread 甩线程池。"""
@@ -65,7 +50,11 @@ class ScreenOffloadTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             settings.QUANT_CACHE_DIR = tmp  # build_async 走空缓存纯本地读
             with (
-                mock.patch.object(quant_api, "_registry", return_value=mock.Mock()),
+                mock.patch.object(
+                    quant_api, "_registry",
+                    # builtin 策略：needs_sandbox=False，走进程内 to_thread 路径
+                    return_value=mock.Mock(needs_sandbox=mock.Mock(return_value=False)),
+                ),
                 # build_async 会回源补拉（缓存为空），mock 掉避免网络/慢
                 mock.patch(
                     "app.data.client.fetch_bars", new=AsyncMock(return_value=[]),
@@ -153,41 +142,65 @@ class OptimizeOffloadTest(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS_OK, "缺 numpy/polars 依赖，跳过运行时测试")
 class MatrixCoverageGateTest(unittest.TestCase):
-    """缺陷 3：预拉覆盖率门槛——_matrix_coverage 的判定与 503 前置。"""
+    """缺陷 3：预拉覆盖率门槛——_check_prefetch_coverage_or_503 的 503 前置。
 
-    def test_coverage_ratio(self) -> None:
-        from app.api import _matrix_coverage
+    内存优化方向 B（4b63504）后，覆盖率由 prefetch_async 返回的摘要给出
+    （不再为检查而物化整张矩阵），门槛函数只读摘要的 coverage 字段。
+    """
 
-        self.assertAlmostEqual(_matrix_coverage(_make_matrix(10, 6)), 0.6)
-        self.assertAlmostEqual(_matrix_coverage(_make_matrix(10, 0)), 0.0)
-        self.assertAlmostEqual(_matrix_coverage(_make_matrix(10, 10)), 1.0)
-
-    def test_empty_matrix_zero_coverage(self) -> None:
-        from app.api import _matrix_coverage
-        from app.matrix.market import MarketMatrix
-
-        empty = MarketMatrix(
-            dates=[], symbols=[],
-            **{f: np.full((0, 0), np.nan) for f in _FIELDS},
-        )
-        self.assertEqual(_matrix_coverage(empty), 0.0)
+    @staticmethod
+    def _summary(total: int, covered: int) -> dict:
+        return {"total": total, "covered": covered,
+                "coverage": covered / total if total else 0.0,
+                "missing": total - covered, "stale_checked": 0}
 
     def test_below_threshold_raises_503(self) -> None:
         from fastapi import HTTPException
 
-        from app.api import _check_matrix_coverage_or_503
+        from app.api import _check_prefetch_coverage_or_503
 
         with self.assertRaises(HTTPException) as ctx:
-            _check_matrix_coverage_or_503(_make_matrix(10, 3), ["S"] * 10)
+            _check_prefetch_coverage_or_503(self._summary(10, 3), ["S"] * 10)
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn("覆盖率", ctx.exception.detail)
 
     def test_at_or_above_threshold_passes(self) -> None:
-        from app.api import _check_matrix_coverage_or_503
+        from app.api import _check_prefetch_coverage_or_503
 
         # 恰好 50%（部分缺失常态：新股/停牌）必须放行，不误伤
-        _check_matrix_coverage_or_503(_make_matrix(10, 5), ["S"] * 10)
-        _check_matrix_coverage_or_503(_make_matrix(10, 10), ["S"] * 10)
+        _check_prefetch_coverage_or_503(self._summary(10, 5), ["S"] * 10)
+        _check_prefetch_coverage_or_503(self._summary(10, 10), ["S"] * 10)
+
+    def test_empty_or_missing_coverage_is_503(self) -> None:
+        from fastapi import HTTPException
+
+        from app.api import _check_prefetch_coverage_or_503
+
+        for summary in (self._summary(0, 0), {}):
+            with self.subTest(summary=summary):
+                with self.assertRaises(HTTPException) as ctx:
+                    _check_prefetch_coverage_or_503(summary, [])
+                self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_prefetch_summary_drives_gate(self) -> None:
+        """prefetch_async 补拉整体失败 → 摘要 coverage=0 → 门槛 503（端到端口径一致）。"""
+        from fastapi import HTTPException
+
+        from app.api import _check_prefetch_coverage_or_503
+        from app.matrix import prefetch_async
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(settings, "QUANT_CACHE_DIR", tmp),
+                mock.patch(
+                    "app.data.client.fetch_bars",
+                    new=AsyncMock(side_effect=RuntimeError("数据源整体故障")),
+                ),
+            ):
+                summary = asyncio.run(prefetch_async([_SYM], _D0, _END))
+        self.assertEqual(summary["coverage"], 0.0)
+        with self.assertRaises(HTTPException):
+            _check_prefetch_coverage_or_503(summary, [_SYM])
 
 
 @unittest.skipUnless(_DEPS_OK, "缺 numpy/polars 依赖，跳过运行时测试")

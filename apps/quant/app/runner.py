@@ -33,7 +33,8 @@ from app.strategy import StrategyRegistry
 
 __all__ = [
     "run_backtest", "run_backtest_async", "compute_empty",
-    "user_strategy_dirs", "migrate_legacy_strategy_dirs", "run_backtest_offloaded",
+    "user_strategy_dirs", "migrate_legacy_strategy_dirs", "migrate_default_user_namespace",
+    "run_backtest_offloaded",
     "run_backtest_full",
     "run_optimize", "run_sensitivity", "run_walkforward",
 ]
@@ -99,6 +100,71 @@ def migrate_legacy_strategy_dirs() -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dst)
         logger.info("策略目录已迁移到 default 用户命名空间：%s → %s", src, dst)
+
+
+def migrate_default_user_namespace(target_user: str) -> list[str]:
+    """把 default 用户命名空间下的数据子目录迁给 target_user（QUANT_MIGRATE_DEFAULT_TO）。
+
+    背景：web 早期不透传 X-User-Id，prod 全部用户数据都落在 users/default/；
+    接入用户身份后需整体归属到管理员（docs/MCP.md）。
+
+    按子目录（strategies/factors/mining/signals 等）迁移：目标不存在时整目录 rename；
+    目标已存在（如代码先于配置上线、用户已以新身份写过数据）时逐文件合并——不冲突的
+    文件移入目标，同名文件保留目标版本，default 中的那份原地保留并告警（不覆盖、
+    不删除，宁可留待人工处理，也不静默丢数据）。符号链接一律不跟随、原地保留。
+    迁完的空目录逐级删除。幂等：default 已空/不存在即无事发生。
+    返回有内容迁入的子目录名列表。
+    """
+    src_root = _user_root(_default_user())
+    if target_user == _default_user() or not src_root.is_dir():
+        return []
+    dst_root = _user_root(target_user)
+    moved: list[str] = []
+    skipped: list[Path] = []
+    for src in sorted(src_root.iterdir()):
+        dst = dst_root / src.name
+        if src.is_symlink() or dst.is_symlink():
+            skipped.append(src)
+            continue
+        if not dst.exists():
+            dst_root.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+            moved.append(src.name)
+            logger.info("default 命名空间已迁移：%s → %s", src, dst)
+        elif src.is_dir() and dst.is_dir():
+            if _merge_tree(src, dst, skipped):
+                moved.append(src.name)
+                logger.info("default 命名空间已合并：%s → %s", src, dst)
+        else:
+            skipped.append(src)
+    for item in skipped:
+        logger.warning("default 命名空间迁移跳过（目标已有同名项，需人工合并）：%s", item)
+    try:
+        src_root.rmdir()  # 仅空目录可删；有跳过项时保留
+    except OSError:
+        pass
+    return moved
+
+
+def _merge_tree(src: Path, dst: Path, skipped: list[Path]) -> bool:
+    """把 src 目录内容合入已存在的 dst：返回是否有条目迁入；冲突项记入 skipped。"""
+    any_moved = False
+    for item in sorted(src.iterdir()):
+        target = dst / item.name
+        if item.is_symlink() or target.is_symlink():
+            skipped.append(item)
+        elif not target.exists():
+            item.rename(target)
+            any_moved = True
+        elif item.is_dir() and target.is_dir():
+            any_moved = _merge_tree(item, target, skipped) or any_moved
+        else:
+            skipped.append(item)
+    try:
+        src.rmdir()  # 全部迁走才删得掉
+    except OSError:
+        pass
+    return any_moved
 
 
 def run_backtest_offloaded(
@@ -831,7 +897,8 @@ def _result_ext_empty(t0: float) -> dict:
 # ---------------------------------------------------------------------------
 
 # worker 池派发阈值：组合数超过它走 run_backtest_in_worker 批量并发；
-# 小网格进程内串行（避免 spawn 开销盖过计算本身）。
+# 小网格进程内串行（避免子进程开销盖过计算本身）——仅限 builtin 策略，
+# 用户策略不论组合数一律走沙箱 worker（docs/MCP.md「轻量沙箱」）。
 _OPTIMIZE_OFFLOAD_THRESHOLD = 8
 
 
@@ -984,7 +1051,8 @@ async def run_optimize(
     )
 
     n = optimizer.count_combinations(params_meta, param_grid)
-    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    # 用户策略（非 builtin）必须进沙箱 worker：主进程注册表为沙箱模式，不执行用户代码
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD or reg.needs_sandbox(strategy_id)
     if use_worker:
         run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
     else:
@@ -1030,7 +1098,8 @@ async def run_sensitivity(
     if param_id not in param_grid:
         raise ValueError(f"敏感性分析需要在 param_grid 中提供 '{param_id}' 的 spec")
     n = optimizer.count_combinations(params_meta, {param_id: param_grid[param_id]})
-    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD
+    # 用户策略（非 builtin）必须进沙箱 worker：主进程注册表为沙箱模式，不执行用户代码
+    use_worker = n > _OPTIMIZE_OFFLOAD_THRESHOLD or reg.needs_sandbox(strategy_id)
     if use_worker:
         run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
     else:
@@ -1083,7 +1152,7 @@ async def run_walkforward(
     # （避免 spawn 开销盖过计算本身）。折数本身不触发派发 —— walk-forward
     # 每折内部仍按组合数决策。
     n_combos = optimizer.count_combinations(params_meta, param_grid)
-    use_worker = n_combos > _OPTIMIZE_OFFLOAD_THRESHOLD
+    use_worker = n_combos > _OPTIMIZE_OFFLOAD_THRESHOLD or reg.needs_sandbox(strategy_id)
     if use_worker:
         run_fn = _make_run_fn_worker(benchmark, names, user_id, timeout)
     else:

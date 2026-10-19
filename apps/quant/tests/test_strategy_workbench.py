@@ -262,7 +262,7 @@ class AITweakTaskTest(_CacheDirTestCase):
 
         tweaked = _AI_CODE.replace("工作台测试策略", "调整后策略")
 
-        async def _fake_generate(self, description, base_code=None):
+        async def _fake_generate(self, description, base_code=None, user_id=None):
             _fake_generate.calls.append(
                 {"description": description, "base_code": base_code}
             )
@@ -285,12 +285,13 @@ class AITweakTaskTest(_CacheDirTestCase):
                 resp = await api_mod.api_ai_tweak(
                     api_mod.AITweakRequest(
                         code=_AI_CODE, description="把止损收紧到 5%"
-                    )
+                    ),
+                    user_id="tester",
                 )
                 task_id = resp["task_id"]
                 state = None
                 for _ in range(200):
-                    state = api_mod.api_ai_task_poll(task_id)
+                    state = api_mod.api_ai_task_poll(task_id, user_id="tester")
                     if state["status"] in ("done", "failed", "cancelled"):
                         break
                     await asyncio.sleep(0.05)
@@ -314,7 +315,8 @@ class AITweakTaskTest(_CacheDirTestCase):
                 return await api_mod.api_ai_tweak(
                     api_mod.AITweakRequest(
                         code=_AI_CODE, description="把止损收紧到 5%"
-                    )
+                    ),
+                    user_id="tester",
                 )
 
         resp = asyncio.run(_run())

@@ -199,7 +199,13 @@ export function AIGenerateTab({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        setError("生成服务不可用，请稍后重试");
+        // 429（在途任务超限）等业务拒绝透传了 detail：优先展示具体原因
+        const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+        setError(
+          res.status >= 400 && res.status < 500 && typeof body.detail === "string"
+            ? body.detail
+            : "生成服务不可用，请稍后重试"
+        );
         return;
       }
       const data = (await res.json()) as AIResult & { task_id?: string };

@@ -4,16 +4,15 @@
  * 代理 quant 容器（条件筛选），失败降级返回空结果
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { quantFetch } from "@/lib/quant";
 
 export async function POST(request: NextRequest) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
     const body = await request.json();
-    const res = await fetch(`${QUANT_API_URL}/api/screen`, {
+    const res = await quantFetch(user, `/api/screen`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -22,6 +21,11 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(body),
       cache: "no-store",
     });
+    if (res.status >= 400 && res.status < 500) {
+      // 参数非法 / 策略不存在 / 策略执行失败：透传 detail，避免静默显示「无入选」
+      const data = await res.json().catch(() => ({}));
+      return NextResponse.json(data, { status: res.status });
+    }
     if (!res.ok) {
       return NextResponse.json({ rows: [], total: 0 });
     }

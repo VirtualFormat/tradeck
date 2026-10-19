@@ -6,6 +6,12 @@
 - ai/       ：AI 生成（source="ai"，文件名 ai_ 前缀，先经 ai/validator 校验才可入此目录）
 
 加载容错（与 tick-stock-panel 一致）：单文件坏不波及其他，记入 load_errors。
+
+沙箱模式（docs/MCP.md「轻量沙箱」）：quant 主进程构造注册表时 sandbox=True，
+custom/ai 目录的策略只用 AST 解析 META（不执行模块代码），compute_fn 为占位
+函数——主进程误调直接抛 SandboxViolation（不吞成空信号，漏改路径会立刻暴露）。
+真正执行用户代码只发生在 app.sandbox 拉起的降权子进程内（sandbox=False）。
+builtin 随镜像发布、可信，任何模式下照常 import。
 """
 from __future__ import annotations
 
@@ -259,10 +265,59 @@ def _validate_meta(meta: Any, path: Path, user_id: str | None = None) -> dict:
             raise ValueError(f"{path.name}: META 缺少必填键 {key!r}（{typ.__name__}）")
     scoring = meta.get("scoring", {})
     if isinstance(scoring, dict):
-        bad = set(scoring) - allowed_scoring_fields(user_id)
+        # 只有出现内置之外的字段才合成用户因子白名单（要读盘 + 编译 DSL，按需付费）
+        extra = set(scoring) - ALLOWED_SCORING_FIELDS
+        bad = extra - allowed_scoring_fields(user_id) if extra else set()
         if bad:
             raise ValueError(f"{path.name}: scoring 含白名单外字段 {sorted(bad)}")
     return dict(meta)
+
+
+def _parse_meta_static(path: Path) -> Any:
+    """沙箱模式：只用 AST 取顶层 META 字面量（不执行模块代码）。
+
+    与 validator 同口径（ast.literal_eval）；落盘前 validator 已强制 META 为纯字面量，
+    这里再解析一次是因为磁盘文件不一定经过 validator（历史文件/人工放置）。
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    for node in tree.body:
+        target = None
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "META" in names:
+                target = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "META":
+            target = node.value
+        if target is not None:
+            try:
+                return ast.literal_eval(target)
+            except (ValueError, SyntaxError) as e:
+                raise ValueError(f"{path.name}: META 必须是纯字面量 dict：{e}") from e
+    return None
+
+
+def _has_top_level_compute(path: Path) -> bool:
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    return any(
+        isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "compute"
+        for n in tree.body
+    )
+
+
+def _sandbox_guard(sid: str) -> Callable[[EnrichedMatrix, dict], StrategySignals]:
+    """沙箱模式的 compute 占位：主进程调用即抛 SandboxViolation。"""
+    def _blocked(enriched: EnrichedMatrix, params: dict) -> StrategySignals:
+        from app.sandbox import SandboxViolation
+
+        raise SandboxViolation(
+            f"策略 {sid} 为用户代码，禁止在 quant 主进程执行（应经 app.sandbox 子进程）"
+        )
+    return _blocked
 
 
 def _load_module(path: Path):
@@ -286,17 +341,29 @@ def _wrap_compute(mod: Any, path: Path) -> Callable[[EnrichedMatrix, dict], Stra
 class StrategyRegistry:
     """策略注册表：扫描三层目录，加载/缓存全部策略定义。"""
 
-    def __init__(self, dirs: dict[str, Path], user_id: str | None = None):
+    def __init__(
+        self, dirs: dict[str, Path], user_id: str | None = None, sandbox: bool = False,
+    ):
         """dirs: {"builtin": Path, "custom": Path, "ai": Path}（缺省目录跳过）。
 
         user_id：scoring 白名单合成的用户命名空间（该用户 active 因子 id 可用作
         scoring 字段）；为空时白名单为纯内置字段（与阶段 K6 前行为完全一致）。
+        sandbox：True 时 custom/ai 只做静态解析不执行（quant 主进程用），见模块 docstring。
         """
         self._dirs = dirs
         self._user_id = user_id
+        self._sandbox = sandbox
         self._strategies: dict[str, StrategyDef] = {}
         self._errors: list[dict] = []
         self.reload()
+
+    @property
+    def sandboxed(self) -> bool:
+        return self._sandbox
+
+    @property
+    def user_id(self) -> str | None:
+        return self._user_id
 
     def reload(self) -> None:
         strategies: dict[str, StrategyDef] = {}
@@ -309,7 +376,8 @@ class StrategyRegistry:
                 if f.name.startswith("_"):
                     continue
                 try:
-                    s = self._load_file(f, source, self._user_id)
+                    static = self._sandbox and source != "builtin"
+                    s = self._load_file(f, source, self._user_id, static=static)
                     sid = s.strategy_id
                     if sid in strategies:
                         raise ValueError(f"策略 id 重复 {sid!r}（{f.name}）")
@@ -341,10 +409,28 @@ class StrategyRegistry:
         self._strategies = strategies
         self._errors = errors
 
+    def needs_sandbox(self, strategy_id: str) -> bool:
+        """执行该策略是否涉及用户代码（自身或任一子策略非 builtin）。"""
+        s = self.get(strategy_id)
+        if s.source != "builtin":
+            return True
+        return any(
+            self._strategies[cid].source != "builtin"
+            for cid, _w in s.composite_children
+            if cid in self._strategies
+        )
+
     @staticmethod
-    def _load_file(path: Path, source: str, user_id: str | None = None) -> StrategyDef:
-        mod = _load_module(path)
-        meta = _validate_meta(getattr(mod, "META", None), path, user_id)
+    def _load_file(
+        path: Path, source: str, user_id: str | None = None, static: bool = False,
+    ) -> StrategyDef:
+        mod = None
+        if static:
+            raw_meta = _parse_meta_static(path)
+        else:
+            mod = _load_module(path)
+            raw_meta = getattr(mod, "META", None)
+        meta = _validate_meta(raw_meta, path, user_id)
         sid = str(meta["id"])
         composite_children: list[tuple[str, float]] = []
         composite_merge_mode = "union"
@@ -353,13 +439,17 @@ class StrategyRegistry:
             # 叠加策略是声明式的：不含业务代码，仅经 META["children"] 引用其他策略。
             # compute_fn 在此无法闭包捕获 registry（单文件加载阶段注册表未就绪），
             # 由 StrategyRegistry.run 在引用校验后走合并分支（见 run）。
-            if getattr(mod, "compute", None) is not None:
+            if mod is not None and getattr(mod, "compute", None) is not None:
                 logger.warning(
                     "composite 策略 %s 声明了 compute 函数，已忽略（叠加策略只读 children）", sid,
                 )
             composite_children = _parse_composite_children(meta.get("children"), sid)
             composite_merge_mode, composite_min_confirm = _parse_composite_merge(meta, sid)
             compute_fn = _composite_placeholder
+        elif static:
+            if not _has_top_level_compute(path):
+                raise ValueError(f"{path.name}: 缺少策略入口 compute(enriched, params)")
+            compute_fn = _sandbox_guard(sid)
         else:
             compute_fn = _wrap_compute(mod, path)
         # 分钟回放日线窗口长度：非正数一律按 0（不用日线窗口）容错
@@ -407,6 +497,10 @@ class StrategyRegistry:
         try:
             sig = s.compute_fn(enriched, merged)
         except Exception as e:
+            from app.sandbox import SandboxViolation
+
+            if isinstance(e, SandboxViolation):
+                raise  # 主进程误执行用户代码：必须暴露，不能静默降级成空信号
             logger.exception("策略 %s 执行异常，降级为空信号：%s", strategy_id, e)
             return empty_signals(enriched.base.shape)
         shape = enriched.base.shape
@@ -460,3 +554,95 @@ def _composite_placeholder(enriched: EnrichedMatrix, params: dict) -> StrategySi
     """
     logger.warning("composite 占位 compute 被直接调用，返回空信号")
     return empty_signals(enriched.base.shape)
+
+
+# 试加载合成矩阵规模：接近真实回测量级（约一年 × 数十只），避免截面 top-k /
+# 长回看窗口等合法写法在过小矩阵上误报；构建与 enrich 仍在百毫秒内
+_TRIAL_DAYS = 260
+_TRIAL_SYMBOLS = tuple(f"TRIAL_{i:02d}" for i in range(40))
+
+
+def _trial_matrix() -> EnrichedMatrix:
+    """确定性合成矩阵（正弦 + 线性趋势），供保存/校验时试跑 compute。"""
+    from datetime import date, timedelta
+
+    from app.matrix import MarketMatrix, enrich
+
+    n, m = _TRIAL_DAYS, len(_TRIAL_SYMBOLS)
+    t = np.arange(n, dtype=float)[:, None]
+    phase = np.arange(m, dtype=float)[None, :]
+    close = 10.0 + 0.05 * t + np.sin(t / 5.0 + phase)
+    open_ = np.vstack([close[:1], close[:-1]])
+    high = np.maximum(open_, close) * 1.01
+    low = np.minimum(open_, close) * 0.99
+    volume = 1e6 * (1.0 + 0.3 * np.cos(t / 3.0 + phase))
+    d0 = date(2024, 1, 2)
+    dates = [d0 + timedelta(days=i) for i in range(n)]
+    base = MarketMatrix(
+        dates=dates, symbols=list(_TRIAL_SYMBOLS),
+        open=open_, high=high, low=low, close=close,
+        volume=volume, amount=volume * close,
+    )
+    return enrich(base)
+
+
+def trial_run_strategy_file(
+    path: Path,
+    source: str = "custom",
+    user_id: str | None = None,
+    extra_dirs: dict | None = None,
+) -> dict:
+    """真实加载单个策略文件并在合成矩阵上跑一次 compute（仅在沙箱子进程调用）。
+
+    返回 {"strategy_id", "name", "meta", "warnings"}。严格程度与运行时对齐：
+    - 判失败（抛异常）：加载失败、META 不合法、执行后的 META 与静态解析不一致
+      （主进程只看静态 META，二者不一致会让参数表单/注册表与实际执行分叉）、
+      compute 返回值不是 StrategySignals 或形状不符。
+    - 只告警：compute 在合成矩阵上抛普通异常——运行时 registry.run 同样降级为
+      空信号，不应在保存时比运行时更严（合成数据不具代表性）。
+    分钟频策略只做加载校验；composite 只做声明校验（extra_dirs 提供子策略上下文）。
+    """
+    sdef = StrategyRegistry._load_file(path, source, user_id, static=False)
+    static_meta = _validate_meta(_parse_meta_static(path), path, user_id)
+    if static_meta != sdef.meta:
+        raise ValueError(
+            "META 在模块执行后与顶层字面量不一致（不得在定义后修改或重复赋值 META）"
+        )
+    warnings: list[str] = []
+    out = {"strategy_id": sdef.strategy_id, "name": sdef.name, "meta": sdef.meta,
+           "warnings": warnings}
+    if sdef.is_composite:
+        if extra_dirs:
+            # 子策略引用校验（与注册表二阶段同规则）：直接对照用户策略目录，
+            # 被校验文件不论在策略目录（save）还是临时目录（validate）都同口径
+            reg = StrategyRegistry({k: Path(v) for k, v in extra_dirs.items()}, user_id=user_id)
+            known = {d.strategy_id: d for d in reg.all() if d.file_path != path}
+            for cid, _w in sdef.composite_children:
+                child = known.get(cid)
+                if child is None:
+                    raise ValueError(f"composite 策略 {sdef.strategy_id} 引用的子策略 {cid!r} 不存在")
+                if child.is_composite:
+                    raise ValueError(f"composite 策略 {sdef.strategy_id} 引用的子策略 {cid!r} 也是 composite（禁止嵌套）")
+                if child.is_minute_strategy:
+                    raise ValueError(f"composite 策略 {sdef.strategy_id} 暂不支持分钟频子策略 {cid!r}")
+        return out
+    if sdef.is_minute_strategy:
+        return out
+    enriched = _trial_matrix()
+    params = {p["id"]: p.get("default") for p in sdef.params_schema}
+    try:
+        sig = sdef.compute_fn(enriched, params)
+    except Exception as e:  # 与 registry.run 同口径：运行期异常降级，不拒存
+        warnings.append(f"合成矩阵试跑 compute 抛出 {type(e).__name__}: {e}")
+        return out
+    if not isinstance(sig, StrategySignals):
+        raise ValueError(f"compute 必须返回 StrategySignals，实际为 {type(sig).__name__}")
+    shape = enriched.base.shape
+    for name in ("entry", "exit", "score"):
+        arr = getattr(sig, name)
+        if getattr(arr, "shape", None) != shape:
+            raise ValueError(
+                f"compute 返回的 {name} 形状 {getattr(arr, 'shape', None)} "
+                f"与输入矩阵 {shape} 不一致"
+            )
+    return out

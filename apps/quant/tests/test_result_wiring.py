@@ -10,6 +10,7 @@ FastAPI 任务化端点的结构断言，防「后端输出 A、前端消费 B�
 from __future__ import annotations
 
 import tempfile
+import asyncio
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -165,7 +166,7 @@ class BacktestTaskApiWiringTest(unittest.TestCase):
         from app.api import api_backtest_task_poll
 
         with self.assertRaises(HTTPException) as ctx:
-            api_backtest_task_poll("nonexistent-task-id")
+            api_backtest_task_poll("nonexistent-task-id", user_id="tester")
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_cancel_unknown_task_404(self) -> None:
@@ -174,7 +175,7 @@ class BacktestTaskApiWiringTest(unittest.TestCase):
         from app.api import api_backtest_task_cancel
 
         with self.assertRaises(HTTPException) as ctx:
-            api_backtest_task_cancel("nonexistent-task-id")
+            api_backtest_task_cancel("nonexistent-task-id", user_id="tester")
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_poll_response_shape_for_pending(self) -> None:
@@ -182,21 +183,61 @@ class BacktestTaskApiWiringTest(unittest.TestCase):
         from app.api import api_backtest_task_poll
         from app.tasks import get_registry as get_task_registry
 
-        task = get_task_registry().create()
-        body = api_backtest_task_poll(task.task_id)
+        task = get_task_registry().create(owner="tester")
+        body = api_backtest_task_poll(task.task_id, user_id="tester")
         self.assertEqual(body["status"], "pending")
         self.assertNotIn("result", body)
         self.assertNotIn("error", body)
+
+    def test_other_user_task_404(self) -> None:
+        """他人任务的 poll/cancel 与不存在同样 404（不泄露存在性），且不被取消。"""
+        from fastapi import HTTPException
+
+        from app.api import api_backtest_task_cancel, api_backtest_task_poll
+        from app.tasks import get_registry as get_task_registry
+
+        task = get_task_registry().create(owner="owner_a")
+        for fn in (api_backtest_task_poll, api_backtest_task_cancel):
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaises(HTTPException) as ctx:
+                    fn(task.task_id, user_id="owner_b")
+                self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(
+            api_backtest_task_poll(task.task_id, user_id="owner_a")["status"], "pending"
+        )
+        get_task_registry().cancel(task.task_id)  # 清理：不占全局单例额度
+
+    def test_backtest_task_failure_releases_slot(self) -> None:
+        """worker 失败的任务化回测进入 failed 且归还额度（review：曾因线程桥 NameError 永久 running）。"""
+        from unittest import mock as _mock
+
+        from app import api as quant_api
+        from app.tasks import BacktestTaskRegistry
+        from app.worker import BacktestWorkerError
+
+        reg = BacktestTaskRegistry(max_active_per_owner=1)
+        task = reg.create(owner="owner_x")
+        with _mock.patch.object(quant_api, "get_task_registry", return_value=reg), \
+             _mock.patch.object(quant_api, "run_backtest_in_worker",
+                                new=_mock.AsyncMock(side_effect=BacktestWorkerError("x" * 5000))):
+            asyncio.run(quant_api._run_backtest_task(
+                task.task_id, ["AAPL"], "ma_golden_cross", date(2025, 1, 2), date(2025, 2, 3),
+                None, None, "owner_x", None, None,
+            ))
+        snap = reg.poll(task.task_id, owner="owner_x")
+        self.assertEqual(snap["status"], "failed")
+        self.assertLessEqual(len(snap["error"]), 2200)
+        reg.create(owner="owner_x")  # 额度已归还
 
     def test_cancel_idempotent(self) -> None:
         """cancel 幂等：重复取消/对终态任务取消都返回现状不报错。"""
         from app.api import api_backtest_task_cancel
         from app.tasks import get_registry as get_task_registry
 
-        task = get_task_registry().create()
-        first = api_backtest_task_cancel(task.task_id)
+        task = get_task_registry().create(owner="tester")
+        first = api_backtest_task_cancel(task.task_id, user_id="tester")
         self.assertEqual(first["status"], "cancelled")
-        second = api_backtest_task_cancel(task.task_id)
+        second = api_backtest_task_cancel(task.task_id, user_id="tester")
         self.assertEqual(second["status"], "cancelled")
 
 

@@ -4,16 +4,15 @@
  * 代理 quant 容器（把挖掘候选发布为策略），失败返回 502
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { quantFetch } from "@/lib/quant";
 
 export async function POST(request: NextRequest) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   try {
     const body = await request.json();
-    const res = await fetch(`${QUANT_API_URL}/api/mining/publish`, {
+    const res = await quantFetch(user, `/api/mining/publish`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -23,6 +22,12 @@ export async function POST(request: NextRequest) {
       cache: "no-store",
     });
     if (!res.ok) {
+      // 4xx（429 在途任务超限 / 422 参数非法 / 404 策略不存在）原样透传 detail，
+      // 前端据此提示且不回退旧接口；其余（5xx/网关）统一 502
+      if (res.status >= 400 && res.status < 500) {
+        const data = await res.json().catch(() => ({}));
+        return NextResponse.json(data, { status: res.status });
+      }
       return NextResponse.json(
         { error: "backend unavailable" },
         { status: 502 }

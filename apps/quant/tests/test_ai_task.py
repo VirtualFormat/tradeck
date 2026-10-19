@@ -46,7 +46,7 @@ class AIGenerateTaskApiTest(unittest.TestCase):
     def _post_generate(self, description: str = "双均线金叉买入死叉卖出"):
         from app.api import AIGenerateRequest, api_ai_generate
 
-        return _run(api_ai_generate(AIGenerateRequest(description=description)))
+        return _run(api_ai_generate(AIGenerateRequest(description=description), user_id="tester"))
 
     def test_route_registered(self) -> None:
         from app.api import app
@@ -66,7 +66,7 @@ class AIGenerateTaskApiTest(unittest.TestCase):
             gen_cls.return_value.enabled = True
             # 屏蔽后台协程真实执行（单测不调 LLM；协程体由专门用例覆盖）
             with mock.patch("app.api.asyncio.create_task") as create_task:
-                resp = _run(api_ai_generate(AIGenerateRequest(description="测试策略描述")))
+                resp = _run(api_ai_generate(AIGenerateRequest(description="测试策略描述"), user_id="tester"))
         self.assertIn("task_id", resp)
         create_task.assert_called_once()
         # 关掉协程对象防 RuntimeWarning（未 await）
@@ -131,7 +131,7 @@ class AIGenerateTaskApiTest(unittest.TestCase):
 
         task = self.registry.create()
 
-        async def slow_generate(_desc, base_code=None):
+        async def slow_generate(_desc, base_code=None, user_id=None):
             # 模拟 LLM 调用期间用户点了取消
             self.registry.cancel(task.task_id)
             return {"valid": True, "code": "x", "meta": {}, "error": None}
@@ -143,13 +143,43 @@ class AIGenerateTaskApiTest(unittest.TestCase):
         self.assertEqual(snap["status"], "cancelled")
         self.assertNotIn("result", snap)
 
+    def test_cancel_then_create_loop_cannot_exceed_cap(self) -> None:
+        """「创建 → 立即取消」循环：执行协程未退出前额度不释放（review 回归）。"""
+        import asyncio
+
+        from app.api import _run_ai_generate_task
+        from app.tasks import OwnerLimitError
+
+        release = asyncio.Event()
+
+        async def slow_generate(_desc, base_code=None, user_id=None):
+            await release.wait()
+            return {"valid": True, "code": "x", "meta": {}, "error": None}
+
+        async def scenario():
+            with mock.patch("app.ai.generator.AIStrategyGenerator") as gen_cls:
+                gen_cls.return_value.generate = slow_generate
+                runners = []
+                for _ in range(2):
+                    t = self.registry.create(owner="u1")
+                    runners.append(asyncio.create_task(_run_ai_generate_task(t.task_id, "x")))
+                    await asyncio.sleep(0)  # 让协程起跑（mark_running）
+                    self.registry.cancel(t.task_id, owner="u1")
+                with self.assertRaises(OwnerLimitError):
+                    self.registry.create(owner="u1")
+                release.set()
+                await asyncio.gather(*runners)
+                self.registry.create(owner="u1")  # 协程退出后额度归还
+
+        _run(scenario())
+
     def test_poll_unknown_task_404(self) -> None:
         from fastapi import HTTPException
 
         from app.api import api_ai_task_poll
 
         with self.assertRaises(HTTPException) as ctx:
-            api_ai_task_poll("nonexistent")
+            api_ai_task_poll("nonexistent", user_id="tester")
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_cancel_unknown_task_404(self) -> None:
@@ -158,7 +188,7 @@ class AIGenerateTaskApiTest(unittest.TestCase):
         from app.api import api_ai_task_cancel
 
         with self.assertRaises(HTTPException) as ctx:
-            api_ai_task_cancel("nonexistent")
+            api_ai_task_cancel("nonexistent", user_id="tester")
         self.assertEqual(ctx.exception.status_code, 404)
 
 

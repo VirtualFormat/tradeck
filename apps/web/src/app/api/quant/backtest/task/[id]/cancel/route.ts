@@ -4,19 +4,22 @@
  * 代理 quant 容器，失败返回 502
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertSession } from "@/app/api/_guard";
-
-const QUANT_API_URL = process.env.QUANT_API_URL ?? "http://localhost:8083";
+import { requireSessionUser } from "@/app/api/_guard";
+import { TASK_ID_RE, quantFetch } from "@/lib/quant";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(_request: NextRequest, ctx: Ctx) {
-  const guard = await assertSession();
-  if (guard) return guard;
+  const user = await requireSessionUser();
+  if (user instanceof NextResponse) return user;
   const { id } = await ctx.params;
+  if (!TASK_ID_RE.test(id)) {
+    return NextResponse.json({ detail: "回测任务不存在" }, { status: 404 });
+  }
   try {
-    const res = await fetch(
-      `${QUANT_API_URL}/api/backtest/task/${id}/cancel`,
+    const res = await quantFetch(
+      user,
+      `/api/backtest/task/${id}/cancel`,
       {
         method: "POST",
         headers: { Accept: "application/json" },
