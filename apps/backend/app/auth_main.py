@@ -1,7 +1,7 @@
 """tradeck api（应用层总 API）：用户域独立服务入口（/api/auth/* + /health）。
 
 本服务是 tradeck 应用层组件（用户域），与 tradb（行情数据服务）职责分离：
-- 只服务 auth（注册 / 登录 / 会话校验 / 登出），不 import 任何行情路由；
+- 只服务 auth（注册 / 登录 / 会话校验 / 登出 / 个人访问令牌），不 import 任何行情路由；
 - 不碰 DATA_MODE / 数据库身份 marker 校验 / ClickHouse；
 - DB 连接走 AUTH_DATABASE_URL（独立 auth-db 小库），与行情库物理隔离。
 
@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth
+from app.api import auth, auth_tokens
 from app.config import settings
 from app.db import close_pool, get_pool
 
@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth.sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth.sessions (expires_at);
+
+-- 个人访问令牌（PAT，MCP 客户端用；只存 token 的 sha256，明文仅签发时返回一次）
+CREATE TABLE IF NOT EXISTS auth.api_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,        -- 展示用，如 tdk_pat_ab12
+    token_hash TEXT NOT NULL UNIQUE,   -- sha256(token) hex，绝不存明文
+    scopes TEXT[] NOT NULL,            -- strategy:read / strategy:write / backtest
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,   -- 默认 90 天，上限 365 天
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_auth_api_tokens_user_id ON auth.api_tokens (user_id);
 """
 
 
@@ -97,6 +112,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(auth_tokens.router)
 
 
 @app.get("/health")

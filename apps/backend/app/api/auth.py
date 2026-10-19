@@ -137,7 +137,8 @@ class LogoutRequest(BaseModel):
 # ---- 内部工具 ----
 
 
-def _sha256_hex(token: str) -> str:
+def sha256_hex(token: str) -> str:
+    """token 的 sha256 hex（session / PAT 入库统一口径，库里绝不存明文）。"""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -258,7 +259,7 @@ async def login(body: LoginRequest, request: Request):
             VALUES ($1, $2, $3, now())
             """,
             row["id"],
-            _sha256_hex(token),
+            sha256_hex(token),
             expires_at,
         )
     _clear_failures(key)
@@ -269,15 +270,15 @@ async def login(body: LoginRequest, request: Request):
     }
 
 
-@router.post("/api/auth/session")
-async def get_session(token: str = Header(..., min_length=1, alias="X-Session-Token")):
-    """会话校验（供 web middleware/server 调用）。POST + X-Session-Token 头传
-    token（避免 GET query string 进 access log）。命中且未过期、用户 active
-    则返回用户信息并异步更新 last_seen_at；否则 401。
+async def validate_session(token: str):
+    """校验 session 明文 token：命中、未过期且用户 active 则返回行
+    （session_id / expires_at + 用户字段 id/email/display_name/role/status），
+    否则一律 401「会话无效或已过期」。
 
-    顺手清理已过期 session（低频调用，无需专门优化）。
+    供 /api/auth/session 与需要识别当前用户的端点（如 /api/auth/tokens）复用；
+    顺手清理已过期 session（限定批量），并 fire-and-forget 更新 last_seen_at。
     """
-    token_hash = _sha256_hex(token)
+    token_hash = sha256_hex(token)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -312,6 +313,25 @@ async def get_session(token: str = Header(..., min_length=1, alias="X-Session-To
         )
     # fire-and-forget 更新 last_seen_at（不阻塞响应）
     asyncio.create_task(_touch_last_seen(row["session_id"]))
+    return row
+
+
+async def session_user(
+    token: str = Header(..., min_length=1, alias="X-Session-Token"),
+):
+    """FastAPI 依赖：从 X-Session-Token 头识别当前登录用户（校验逻辑同
+    /api/auth/session），返回 validate_session 的行。"""
+    return await validate_session(token)
+
+
+@router.post("/api/auth/session")
+async def get_session(row=Depends(session_user)):
+    """会话校验（供 web middleware/server 调用）。POST + X-Session-Token 头传
+    token（避免 GET query string 进 access log）。命中且未过期、用户 active
+    则返回用户信息并异步更新 last_seen_at；否则 401。
+
+    顺手清理已过期 session（低频调用，无需专门优化）。
+    """
     return {
         "user": _user_payload(row),
         "expires_at": row["expires_at"].isoformat(),
@@ -325,6 +345,6 @@ async def logout(body: LogoutRequest):
     async with pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM auth.sessions WHERE token_hash = $1",
-            _sha256_hex(body.token),
+            sha256_hex(body.token),
         )
     return {"ok": True}

@@ -1,10 +1,42 @@
 """配置：从环境变量读取"""
+import logging
 import os
 from typing import Literal, cast
 
+logger = logging.getLogger(__name__)
 
 DataMode = Literal["live", "mock"]
 _VALID_DATA_MODES = {"live", "mock"}
+
+
+def _parse_user_ids(raw: str, env_name: str) -> frozenset[int] | None:
+    """解析逗号分隔的 auth.users.id 名单。
+
+    返回 None = 未配置（无任何非空项）；否则返回合法 id 集合。空项跳过，
+    非法项（非正整数，如误写成 quant 口径的 u1）忽略并告警——只会收窄名单。
+    配置了但全部非法时返回空集合（= 拒绝所有人，fail-closed），绝不退化成
+    「未配置 = 全部放行」。
+    """
+    ids: set[int] = set()
+    configured = False
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        configured = True
+        try:
+            value = int(item)
+        except ValueError:
+            value = 0
+        if value < 1:
+            logger.warning("%s 含非法用户 id %r（应为正整数），已忽略", env_name, item)
+            continue
+        ids.add(value)
+    if not configured:
+        return None
+    if not ids:
+        logger.error("%s 已配置但无合法用户 id，按拒绝所有用户处理", env_name)
+    return frozenset(ids)
 
 
 class Settings:
@@ -21,6 +53,7 @@ class Settings:
     AUTH_DATABASE_URL: str
     AUTH_INVITE_CODE: str
     AUTH_SESSION_DAYS: int
+    PAT_ALLOWED_USER_IDS: frozenset[int] | None
 
     def __init__(self) -> None:
         data_mode = os.getenv("DATA_MODE", "live").strip()
@@ -85,6 +118,13 @@ class Settings:
                 f"Invalid AUTH_SESSION_DAYS={raw_session_days!r}; expected integer >= 1"
             )
         self.AUTH_SESSION_DAYS = session_days
+        # ---- 个人访问令牌（PAT，/api/auth/tokens，见 docs/MCP.md）----
+        # 可签发 PAT 的用户 id 名单（逗号分隔 auth.users.id）：小范围使用的门禁。
+        # 空（None）= 所有登录用户可签发；非空时名单外用户签发 403、已签发令牌
+        # verify 401；配置了但全部非法 = 空集合 = 拒绝所有人（fail-closed）。
+        self.PAT_ALLOWED_USER_IDS = _parse_user_ids(
+            os.getenv("PAT_ALLOWED_USER_IDS", ""), "PAT_ALLOWED_USER_IDS"
+        )
 
 
 settings = Settings()

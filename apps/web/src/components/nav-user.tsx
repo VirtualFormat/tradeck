@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -18,7 +19,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { CaretUpDownIcon, SignOutIcon } from "@phosphor-icons/react";
+import { CaretUpDownIcon, KeyIcon, SignOutIcon } from "@phosphor-icons/react";
 
 export interface NavUserInfo {
   name: string;
@@ -35,7 +36,7 @@ const triggerClassName =
   "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate h-12 text-sm group-data-[collapsible=icon]:p-0! aria-expanded:bg-muted";
 
 export function NavUser({ user }: { user: NavUserInfo }) {
-  const { isMobile } = useSidebar();
+  const { isMobile, setOpenMobile } = useSidebar();
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
 
@@ -93,6 +94,19 @@ export function NavUser({ user }: { user: NavUserInfo }) {
                 </div>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            {/* render 为 next/link：保留客户端导航；MenuItem 默认 nativeButton=false，
+                渲染 <a> 合法，Enter/点击即触发链接跳转并关闭菜单。
+                移动端侧栏是 Sheet，客户端导航不会卸载 layout，需手动收起（同 nav-main）。 */}
+            <DropdownMenuItem
+              render={<Link href="/settings/tokens" />}
+              onClick={() => {
+                if (isMobile) setOpenMobile(false);
+              }}
+            >
+              <KeyIcon />
+              API 令牌
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem disabled={signingOut} onClick={handleLogout}>
               <SignOutIcon />
