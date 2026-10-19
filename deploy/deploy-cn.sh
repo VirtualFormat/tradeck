@@ -45,7 +45,7 @@ log "校验 compose 配置"
 docker compose -f "${COMPOSE_FILE}" config --quiet
 
 log "串行拉取 tradeck 应用镜像，避免镜像站并发大层超时"
-for service in api quant web; do
+for service in api quant mcp web; do
   pull_service "${service}"
 done
 
@@ -63,7 +63,7 @@ log "当前服务状态"
 docker compose -f "${COMPOSE_FILE}" ps
 
 # ── 健康检查（失败 exit 1，供 CI/CD 判定部署成败）────────────────
-# web/quant 查宿主机映射端口的 /health；api 无宿主机端口（仅容器网络可达），
+# web/quant/mcp 查宿主机回环映射端口的 /health；api 无宿主机端口（仅容器网络可达），
 # 且 compose 已配 curl healthcheck，直接看 compose 状态。
 
 wait_http() {
@@ -93,6 +93,7 @@ wait_healthy_container() {
 log "健康检查"
 wait_http "web" "http://127.0.0.1:3000"
 wait_http "quant" "http://127.0.0.1:8083/health"
+wait_http "mcp" "http://127.0.0.1:8084/health"
 wait_healthy_container "api" "api"
 
 log "部署完成，全部服务健康"

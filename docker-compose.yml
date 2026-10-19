@@ -54,6 +54,8 @@ services:
       # 不能直接用裸 token，故由 .env 的 AUTH_SERVICE_TOKENS 拼装为
       # {"<TRADB_SERVICE_TOKEN 同值>": "web-bff"}；留空 = 不启用鉴权（仅容器网络可达，可接受）。
       SERVICE_TOKENS: ${AUTH_SERVICE_TOKENS:-}
+      # 可签发个人访问令牌（PAT）的用户 id 名单；留空 = 所有登录用户
+      PAT_ALLOWED_USER_IDS: ${PAT_ALLOWED_USER_IDS:-}
     depends_on:
       auth-db:
         condition: service_healthy
@@ -90,15 +92,53 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
+      # 入站服务令牌（web-bff / mcp；docs/MCP.md）：留空 = 不鉴权
+      INBOUND_SERVICE_TOKENS: ${QUANT_INBOUND_SERVICE_TOKENS:-}
+      # 一次性把 users/default 迁给管理员（u<id>）；留空 = 不迁移
+      QUANT_MIGRATE_DEFAULT_TO: ${QUANT_MIGRATE_DEFAULT_TO:-}
+      QUANT_MAX_CONCURRENT_PER_USER: ${QUANT_MAX_CONCURRENT_PER_USER:-2}
+      # 用户策略沙箱子进程降权 uid（quant 以 root 运行，子进程切 nobody）
+      QUANT_SANDBOX_UID: ${QUANT_SANDBOX_UID:-65534}
     volumes:
       - ./quant/cache:/data/cache
     ports:
-      - "8083:8083"  # HTTP 服务（web 经 Next 代理消费）
+      # 仅绑回环：quant 无用户级鉴权语义，只对 web / mcp 开放（容器网络直达），
+      # 宿主机端口只供 deploy-cn.sh 健康检查。Docker 端口映射绕过宿主机防火墙，
+      # 绑 0.0.0.0 即公网可达（docs/MCP.md「P0 quant 加固」）。
+      - "127.0.0.1:8083:8083"
     # 接入 tradb 的外部网络，与同网络的 tradb data-api/collector 直接通信。
     networks:
       - default
       - tradb_net
     # quant 无 depends_on：经 tradb_net 访问 tradb data-api，不依赖本仓库任何数据层服务。
+    restart: unless-stopped
+
+  # ── MCP 服务（docs/MCP.md）──────────────────────────
+  # MCP 客户端凭个人访问令牌（PAT）经 nginx /mcp 接入；mcp 调 api 校验 PAT 换出
+  # 用户身份，再以 X-Service-Token(mcp) + X-User-Id 调 quant。只接 default 网络。
+  mcp:
+    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-mcp:latest
+    container_name: tradeck-mcp
+    mem_limit: 256m
+    environment:
+      MCP_SERVICE_TOKEN: ${MCP_SERVICE_TOKEN:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-https://tradeck.virtualformat.cn}
+      AUTH_API_URL: http://api:8080
+      QUANT_API_URL: http://quant:8083
+    ports:
+      # 仅绑回环：对外由宿主机 nginx 反代 /mcp（CF 橙云回源）
+      - "127.0.0.1:8084:8084"
+    depends_on:
+      api:
+        condition: service_healthy
+      quant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # ── 前端 ──────────────────────────────────────────

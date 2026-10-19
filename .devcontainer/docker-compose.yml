@@ -74,6 +74,7 @@ services:
       AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
       # 消费方令牌（JSON）：留空 = 内网放行（dev 默认）
       SERVICE_TOKENS: ${SERVICE_TOKENS:-}
+      PAT_ALLOWED_USER_IDS: ${PAT_ALLOWED_USER_IDS:-}
     volumes:
       - ../apps/backend:/app
     ports:
@@ -114,6 +115,9 @@ services:
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
       AI_TEMPERATURE: ${AI_TEMPERATURE:-}
+      # 入站服务令牌（dev 默认留空 = 不鉴权，行为同改造前）
+      INBOUND_SERVICE_TOKENS: ${QUANT_INBOUND_SERVICE_TOKENS:-}
+      QUANT_MIGRATE_DEFAULT_TO: ${QUANT_MIGRATE_DEFAULT_TO:-}
     volumes:
       - quant-cache:/data/cache
       # dev 热挂载（改动无需重建镜像）

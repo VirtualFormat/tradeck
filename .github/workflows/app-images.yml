@@ -21,6 +21,7 @@ on:
       - "apps/web/**"
       - "apps/backend/**"
       - "apps/quant/**"
+      - "apps/mcp/**"
       - ".github/workflows/app-images.yml"
   workflow_dispatch:
 
@@ -41,6 +42,7 @@ jobs:
           - { name: tradeck-web, dockerfile: apps/web/Dockerfile, context: apps/web, target: prod }
           - { name: tradeck-api, dockerfile: apps/backend/Dockerfile, context: apps/backend, target: "" }
           - { name: tradeck-quant, dockerfile: apps/quant/Dockerfile, context: apps/quant, target: "" }
+          - { name: tradeck-mcp, dockerfile: apps/mcp/Dockerfile, context: apps/mcp, target: "" }
         arch:
           - { platform: linux/amd64, runner: ubuntu-24.04, suffix: amd64 }
           - { platform: linux/arm64, runner: ubuntu-24.04-arm, suffix: arm64 }
@@ -96,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [tradeck-web, tradeck-api, tradeck-quant]
+        image: [tradeck-web, tradeck-api, tradeck-quant, tradeck-mcp]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -153,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [tradeck-web, tradeck-api, tradeck-quant]
+        image: [tradeck-web, tradeck-api, tradeck-quant, tradeck-mcp]
     steps:
       # 只取 amd64 的 digest（artifact 名后缀架构名在末尾，见 build job 注释）
       - uses: actions/download-artifact@v4

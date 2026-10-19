@@ -81,6 +81,7 @@ auth-db（tradeck 自有独立 PG 16 service，与 tradb 行情库物理分离�
 | P1 | 改密 / 忘记密码（邮件发送基建，含邮箱验证） | 未开始 |
 | P2 | OAuth 第三方登录（届时重估 Auth.js v6） | 未开始 |
 | P3 | 用户业务数据 `userdata` schema（自选股、看板布局等，角色门禁需求届时再定） | 未开始 |
+| PAT | 个人访问令牌 `auth.api_tokens`（MCP 客户端身份，scope + 可撤销，见 `MCP.md`） | 施工中 |
 
 ## 与 service-token 体系的关系
 
@@ -90,3 +91,5 @@ auth-db（tradeck 自有独立 PG 16 service，与 tradb 行情库物理分离�
 - **用户 session**（`tdk_session` cookie + auth-db `sessions` 表）：人对 web 的身份。回答「当前是哪个用户」，作用域止于 web BFF；api 服务看到的调用方永远是 web-bff 这个 service token，用户信息经 auth 端点出入，不向行情读接口传播。
 
 即：浏览器 →（用户 session）→ web BFF →（service token）→ api 服务。两层身份各管各的信任边界，任一层撤销不影响另一层。
+
+第三种身份 **个人访问令牌**（PAT，`tdk_pat_*`）服务于非浏览器客户端（MCP）：MCP 客户端 →（PAT）→ mcp 服务 →（verify 换出 `u<id>`）→ quant（service token + `X-User-Id`）。PAT 与 session 同为「人」的身份，但长期有效、带 scope、独立撤销；设计与链路见 `MCP.md`。

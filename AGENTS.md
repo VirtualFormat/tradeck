@@ -326,5 +326,6 @@ PostgreSQL 16，24 张表，DDL 在 `apps/backend/init.sql`：`daily_prices`、`
 - `docs/OVERSEAS-NODE.md` — 海外节点部署（韩国瘦 OpenBB、token、分流/回滚/排查）
 - `docs/DATA-SERVICE.md` — 数据服务拆分技术方案（三条铁律、分层、容量、对外接口）
 - `docs/AUTH.md` — 用户认证与登录（邮箱+密码 session、auth schema、邀请制、分期路线图）
+- `docs/MCP.md` — MCP 接入（个人访问令牌、独立 mcp 服务、quant 入站鉴权/任务归属/轻量沙箱）
 - `docs/QUANT-BACKTEST.md` — 量化引擎与策略开发技术方案（Polars 矩阵引擎、AI 策略生成、因子挖掘）
 - `plans/` — 过程性施工文件目录（任务拆解/验收记录，如 TASKS-DATA-SERVICE.md、TASKS-QUANT-BACKTEST.md）；过程性计划不入 docs
