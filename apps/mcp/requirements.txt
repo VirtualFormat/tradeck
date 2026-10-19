@@ -1,0 +1,5 @@
+# 官方 MCP Python SDK v2（docs/MCP.md「P2 MCP 服务」：v1 的 mcp.server.fastmcp 在 v2 已移除）。
+# 锁定确切版本：SDK 仍在快速迭代（2.x minor 可能调整 middleware / 鉴权接口）。
+# starlette / uvicorn / httpx2 / pydantic 均为其传递依赖，业务代码直接复用，不另行引入
+# （HTTP 客户端跟随 SDK 用 httpx2，而非 httpx）。
+mcp==2.3.0
