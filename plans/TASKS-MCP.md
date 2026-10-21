@@ -122,6 +122,23 @@ quant GET  /api/backtest/task/{id}         → 404（非本人任务，与不存
 迁移改为逐文件合并（目标已有数据时不冲突的文件并入、同名保留目标版本），兜底「代码先于配置上线」的部署顺序。
 上线手册定稿见 docs/MCP.md「上线顺序」。
 
+2026-10-21（prod 部署完成，主 agent）：
+
+- 部署：推 develop（c4e975c）→ CI 构建 4 镜像（含新增 tradeck-mcp，可公开拉取）→ CD 自动部署成功
+  （web/quant/mcp/api 健康检查全过）；VPS 配置先备份至 /data/apps/tradeck/backup-20261021-153833，
+  .env 修改另备份为 .env.bak-mcp-*（权限 600）。
+- 迁移：`users/default` → `users/u2`（factors/signals/strategies 共 7 个文件），quant 日志可见；
+  迁移后 u2 策略列表 3 个 AI 策略 + 6 个 builtin，load errors 为空。
+- 沙箱（prod 实测）：子进程 uid=65534、环境仅白名单 5 项、读 /proc/1/environ 失败、写缓存失败；
+  u2 的用户策略沙箱回测 done；u1 查 u2 任务 404。
+- 收口：外网 curl 81.68.69.250:8083 不通；web 容器内四种情况分别为 401/401/400/200
+  （无令牌/错令牌/缺用户/正常）；web BFF 完整链路（策略列表/回测登记/轮询终态）正常。
+- MCP：mcp 容器带服务令牌与公网 URL；CF→nginx→mcp 链路无 Bearer 401（带 WWW-Authenticate）、
+  resource metadata 200；api verify 端点非 mcp 调用 403、mcp 带伪 PAT 401、无服务令牌 401；
+  nginx 配置已切到新版并 reload（备份在 backup 目录）。
+- 端到端带真 PAT 的全链路验证未做：PAT 签发走 web「API 令牌」页（用户菜单入口），
+  需要用户自行登录签发后实测（分类器禁止直写 prod auth-db 造验证 session，属正确拦截）。
+
 ## 遗留事项
 
 - 沙箱强化：seccomp 禁 socket/execve；独立 `network_mode: none` 沙箱容器 + 缓存只读挂载；按用户目录权限。
