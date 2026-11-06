@@ -48,13 +48,14 @@ devcontainer 配置在 `.devcontainer/`，自动装：
 # 本地验证 prod 配置
 docker compose up -d --build
 
-# 中国大陆 VPS：GHCR 默认经南京大学镜像站拉取
+# 中国大陆 VPS：GHCR 默认经 ghcr.zqg.cc.cd（oracle-arm pull-through 缓存）拉取
 bash deploy/deploy-cn.sh
 
-# 海外 VPS 或镜像站异常时临时直连 GHCR
+# 缓存异常时临时改用 NJU 镜像站；海外 VPS 直连 GHCR
+GHCR_REGISTRY=ghcr.nju.edu.cn bash deploy/deploy-cn.sh
 GHCR_REGISTRY=ghcr.io bash deploy/deploy-cn.sh
 
-# NJU 镜像站回源卡死时（新镜像常见）：在开发机执行，本机拉 ghcr.io 后经 SSH
+# 镜像源都不通时兜底：在开发机执行，本机拉 ghcr.io 后经 SSH
 # 管道 docker save | docker load 直送 prod，只重建镜像有变化的服务
 deploy/ship-images.sh              # 全部应用服务；可指定服务，DRY_RUN=1 只对比
 ```

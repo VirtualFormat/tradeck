@@ -24,16 +24,17 @@
 
 - 开发在 devcontainer 内完成（见 `CODEBUDDY.md`）。
 - Prod 部署：中国大陆服务器运行 `bash deploy/deploy-cn.sh`，GHCR 镜像默认经
-  南京大学镜像站拉取；其他环境也可直接使用根 `docker-compose.yml`。
+  `ghcr.zqg.cc.cd`（oracle-arm 上的 pull-through 缓存）拉取；其他环境也可直接使用根 `docker-compose.yml`。
 
 ```bash
-# 上海等中国大陆服务器：校验配置、经 NJU 拉镜像并启动
+# 上海等中国大陆服务器：校验配置、经 ghcr.zqg.cc.cd 拉镜像并启动
 bash deploy/deploy-cn.sh
 
-# 临时绕过镜像站排障
+# 临时改用 NJU 镜像站 / 直连 GHCR 排障
+GHCR_REGISTRY=ghcr.nju.edu.cn bash deploy/deploy-cn.sh
 GHCR_REGISTRY=ghcr.io bash deploy/deploy-cn.sh
 
-# NJU 镜像站回源卡死时（新镜像常见）：在开发机执行，本机拉 ghcr.io 后经 SSH
+# 镜像源都不通时兜底：在开发机执行，本机拉 ghcr.io 后经 SSH
 # 管道 docker save | docker load 直送 prod，只重建镜像有变化的服务
 deploy/ship-images.sh              # 全部应用服务；可指定服务，DRY_RUN=1 只对比
 ```

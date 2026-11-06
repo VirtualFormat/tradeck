@@ -36,7 +36,7 @@ tradeck (web/quant)                      tradb (独立 compose)
 1. VPS 上 `/data/apps/tradeck` 与 `/data/apps/tradb` 为纯部署目录（无 git 克隆，
    见上文「部署形态」）；compose/配置文件若需更新，在本地仓库改 → 推 main →
    CI/rsync 下发，**不在 prod 跑 git 命令**。
-2. tradb 镜像已构建发布（CI `app-images.yml`，GHCR `ghcr.nju.edu.cn/virtualformat/tradb-*`）。
+2. tradb 镜像已构建发布（CI `app-images.yml`，GHCR `ghcr.io/virtualformat/tradb-*`，prod 经 `ghcr.zqg.cc.cd` 缓存拉取）。
 3. 准备 token：每个消费方一把 `openssl rand -hex 32`，web 与 quant 各一。
 
 ## 步骤 1 — 配置 tradb `.env`
@@ -66,7 +66,7 @@ cp .env.example .env
 
 ```bash
 cd tradb
-bash deploy/deploy-cn.sh        # 拉镜像 + compose up（经南京大学镜像站）
+bash deploy/deploy-cn.sh        # 拉镜像 + compose up（经 ghcr.zqg.cc.cd 缓存）
 docker compose ps                # 5 容器健康：postgres/clickhouse/openbb/collector/data-api
 curl http://127.0.0.1:8080/health            # -> {"status":"ok"}
 curl http://127.0.0.1:8080/api/quotes        # -> 401（鉴权生效）

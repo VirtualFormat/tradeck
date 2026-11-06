@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# 中国大陆生产部署入口：GHCR 镜像经南京大学镜像站拉取。
+# 中国大陆生产部署入口：GHCR 镜像经 ghcr.zqg.cc.cd 拉取（oracle-arm 上的 registry:2
+# pull-through 缓存，CF 橙云）。NJU 镜像站新镜像回源常卡死，仅作回退：
+#   GHCR_REGISTRY=ghcr.nju.edu.cn bash deploy/deploy-cn.sh
 # 官方公共镜像（postgres）保持原仓库，不经过 GHCR 镜像站。
 # 行情数据层镜像（collector/openbb/data-api）由 tradb 仓库部署，与本脚本无关。
 
@@ -9,7 +11,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.yml"
 
-export GHCR_REGISTRY="${GHCR_REGISTRY:-ghcr.nju.edu.cn}"
+export GHCR_REGISTRY="${GHCR_REGISTRY:-ghcr.zqg.cc.cd}"
 
 log() {
   printf '[deploy-cn] %s\n' "$*"

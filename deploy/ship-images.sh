@@ -3,12 +3,12 @@ set -Eeuo pipefail
 
 # 从本机（开发机）把 GHCR 镜像直接推送到 prod 并重建服务，绕开大陆镜像站。
 #
-# 背景：prod 经 ghcr.nju.edu.cn 拉 GHCR，新构建的镜像 NJU 未缓存时要回源 ghcr.io，
-# 实测常卡死（0 KB/s、10 分钟以上无进展）。本机拉 ghcr.io 只需几十秒，
+# 背景：prod 平时经 ghcr.zqg.cc.cd（oracle-arm 缓存）拉 GHCR；该缓存或线路异常时（NJU 更常见：新镜像回源 ghcr.io
+# 实测常卡死），本脚本兜底：本机拉 ghcr.io 只需几十秒，
 # 再经 SSH 管道 `docker save | gzip | docker load` 传到 prod，两个镜像约 1 分钟。
 #
 # 流程：
-#   1. 读 prod compose，解析每个服务的镜像名（如 ghcr.nju.edu.cn/virtualformat/x:latest）
+#   1. 读 prod compose，解析每个服务的镜像名（如 ghcr.zqg.cc.cd/virtualformat/x:latest）
 #   2. 本机从 ghcr.io 拉同路径镜像（linux/amd64），打上 prod 镜像名
 #   3. 对比 prod 本地镜像 ID，一致则跳过传输与重建
 #   4. save | gzip | ssh load，校验 ID

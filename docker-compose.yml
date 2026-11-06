@@ -39,7 +39,7 @@ services:
 
   api:
     # tradeck 应用层总 API（当前为用户域 auth 入口 app.auth_main；apps/backend 构建）。
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-api:latest
+    image: ${GHCR_REGISTRY:-ghcr.zqg.cc.cd}/virtualformat/tradeck-api:latest
     container_name: tradeck-api
     command: uvicorn app.auth_main:app --host 0.0.0.0 --port 8080 --workers 1
     mem_limit: 512m
@@ -73,7 +73,7 @@ services:
   # ── 量化引擎（回测/选股/因子挖掘，仅经 data-api 读数，绝不直连 DB）──
   # 默认随全栈启动（HTTP 服务，web 经 Next 代理消费 8083）。
   quant:
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-quant:latest
+    image: ${GHCR_REGISTRY:-ghcr.zqg.cc.cd}/virtualformat/tradeck-quant:latest
     container_name: tradeck-quant
     # 全市场矩阵（~5500 只全历史）峰值内存会顶到 1g 被 OOM 杀（2026-09-22 事故），放宽到 2g
     mem_limit: 2g
@@ -117,7 +117,7 @@ services:
   # MCP 客户端凭个人访问令牌（PAT）经 nginx /mcp 接入；mcp 调 api 校验 PAT 换出
   # 用户身份，再以 X-Service-Token(mcp) + X-User-Id 调 quant。只接 default 网络。
   mcp:
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-mcp:latest
+    image: ${GHCR_REGISTRY:-ghcr.zqg.cc.cd}/virtualformat/tradeck-mcp:latest
     container_name: tradeck-mcp
     mem_limit: 256m
     environment:
@@ -143,7 +143,7 @@ services:
 
   # ── 前端 ──────────────────────────────────────────
   web:
-    image: ${GHCR_REGISTRY:-ghcr.nju.edu.cn}/virtualformat/tradeck-web:latest
+    image: ${GHCR_REGISTRY:-ghcr.zqg.cc.cd}/virtualformat/tradeck-web:latest
     container_name: tradeck-web
     mem_limit: 512m
     ports:
