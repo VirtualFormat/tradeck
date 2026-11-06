@@ -32,4 +32,8 @@ bash deploy/deploy-cn.sh
 
 # 临时绕过镜像站排障
 GHCR_REGISTRY=ghcr.io bash deploy/deploy-cn.sh
+
+# NJU 镜像站回源卡死时（新镜像常见）：在开发机执行，本机拉 ghcr.io 后经 SSH
+# 管道 docker save | docker load 直送 prod，只重建镜像有变化的服务
+deploy/ship-images.sh              # 全部应用服务；可指定服务，DRY_RUN=1 只对比
 ```
