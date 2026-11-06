@@ -42,25 +42,38 @@ CD 失败后在开发机执行 `deploy/ship-images.sh`（d5d13f3 / tradb 196d14b
 结论：可行。docker 默认 3 层并行下载，预计整体 ~10 MB/s：tradeck 4 镜像冷拉几分钟，日常增量层几秒到几十秒。
 线路偶发抖动（单连接掉到 0.5 MB/s），并行与重试可吸收。
 
-#### 实现方式（推荐 4b）
+#### 已有设施：`ghcr.zqg.cc.cd`（2026-08 部署，橙云）
 
-- **4a 代理 dockerd**：oracle-arm 现有 3x-ui(xray) 开一个入站，prod 跑 xray 客户端，systemd drop-in 给 dockerd 配 `HTTPS_PROXY` + `NO_PROXY`。
-  缺点：改 dockerd 环境需重启 dockerd，未开 `live-restore` 时会重启 prod 全部容器；且所有 daemon 出网流量都绕韩国。
-- **4b pull-through 缓存 registry（推荐）**：oracle-arm 跑 `registry:2`（`proxy.remoteurl=https://ghcr.io`，缓存落 `/home/ubuntu/apps/ghcr-cache`，96G 盘仅用 5%），
-  经现有宿主 nginx 443 暴露为如 `ghcr.zqg.cc.cd`：
-  - DNS **灰云直连**（实测走的就是直连链路；橙云回源绕 CF 到大陆的速度未知）→ 证书需 Let's Encrypt，CF Origin CA 不被 docker 信任；
-  - nginx `allow 81.68.69.250; deny all;` 只放行 prod，避免被当公共镜像代理滥用；
-  - prod 侧零改造：compose 已是 `${GHCR_REGISTRY:-ghcr.nju.edu.cn}`，部署时设 `GHCR_REGISTRY=ghcr.zqg.cc.cd`，不重启 dockerd。
-  - 注意 `deploy/deploy-cn.sh` 会 `export GHCR_REGISTRY="${GHCR_REGISTRY:-ghcr.nju.edu.cn}"`，只写进 prod `.env` 不生效（shell 导出变量优先于 .env），需改脚本默认值或在 `deploy.yml` 里传入。
-  - 需实测：`latest` tag 更新后缓存能否拿到新 manifest（distribution proxy 对 tag 会回源校验，但要验证）；NJU 保留为回退源。
+oracle-arm 上**早已运行 pull-through 缓存**：容器 `ghcr-proxy`（`registry:2`，`127.0.0.1:5000`），
+宿主 nginx `conf.d/ghcr-proxy.conf` 以 `ghcr.zqg.cc.cd` 暴露，CF 橙云接入（边缘证书公网可信，docker 直接可用）。
+但 prod 一直没用它：两个仓库的 `deploy-cn.sh` 和 compose 默认值仍是 `ghcr.nju.edu.cn`。
+
+11-06 实测（host-thu 经橙云）：
+
+| 测试 | 结果 |
+|---|---|
+| `/v2/` 与 manifest 请求 | 200，每次约 2.5 s（CF 往返） |
+| 137 MB blob 单连接 ×3 | 47–116 秒，**1.2–2.9 MB/s**（波动大，约为灰云直连的一半） |
+| 真实 `docker pull ghcr.zqg.cc.cd/virtualformat/tradeck-api:latest` | **98 秒**，镜像 ID 与当天 CI 产物一致 → `latest` 会回源刷新 |
+
+443 已被橙云站点占用并不妨碍灰云：橙/灰是按 DNS 记录区分的，nginx 按 `server_name` 分流，同一 443 可并存。
+
+#### 实现路线
+
+1. **立即可用**：CD 改用 `GHCR_REGISTRY=ghcr.zqg.cc.cd`（两个仓库 `deploy-cn.sh` 默认值 / compose 默认值），NJU 降为回退。
+   注意 `deploy-cn.sh` 会 `export GHCR_REGISTRY="${GHCR_REGISTRY:-ghcr.nju.edu.cn}"`，只改 prod `.env` 不生效（shell 导出变量优先于 .env）。
+2. **可选提速约 2 倍**：新增灰云记录（如 `ghcr-kr.zqg.cc.cd` → 152.69.239.4，直连实测 3.5–4 MB/s），
+   nginx 复用 `ghcr-proxy` upstream，证书改 Let's Encrypt（CF Origin CA 不被 docker 信任），
+   并 `allow 81.68.69.250; deny all;` 只放行 prod，避免灰云暴露源站被当公共镜像代理。
+3. 不推荐 4a（dockerd 走 xray 代理）：改 dockerd 环境需重启 dockerd，未开 `live-restore` 会重启 prod 全部容器。
 
 #### 与其他方案对比
 
-| | ① 隧道推增量 | ② 大陆 runner | ④b oracle 缓存 |
+| | ① 隧道推增量 | ② 大陆 runner | ④ oracle 缓存（已有） |
 |---|---|---|---|
 | 保留 GitHub 托管 CD | 是 | 否（自托管 runner） | 是 |
-| 跨境方向 | 美→大陆上传（未测，历史慢） | 无 | 韩→大陆下载（实测 3.5–4 MB/s 单连接） |
-| 新增维护 | prod 上临时 registry | 常驻 runner | oracle-arm 上一个容器 + 证书 |
+| 跨境方向 | 美→大陆上传（未测，历史慢） | 无 | 韩→大陆下载（橙云 1.2–2.9 MB/s，灰云 3.5–4 MB/s） |
+| 新增维护 | prod 上临时 registry | 常驻 runner | 无（已部署） |
 | prod 改动 | 部署脚本 | 部署流程 | 只换 `GHCR_REGISTRY` |
 
-推荐 ④b，③ 保留为手动兜底。
+推荐 ④：先直接切到现有 `ghcr.zqg.cc.cd`，再视需要加灰云直连；③ 保留为手动兜底。
