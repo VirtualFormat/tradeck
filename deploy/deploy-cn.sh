@@ -53,7 +53,7 @@ done
 
 log "拉取 PostgreSQL 公共镜像"
 if ! docker image inspect postgres:16-alpine >/dev/null 2>&1; then
-  pull_service postgres
+  pull_service auth-db
 else
   log "本机已有 postgres:16-alpine，跳过公共镜像拉取"
 fi

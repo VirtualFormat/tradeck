@@ -56,6 +56,7 @@ image_map="$(remote "cd '${DEPLOY_PATH}' && docker compose config --format json 
 
 to_ship=()      # 需要传输的 prod 镜像名
 to_recreate=()  # 需要重建的服务
+declare -A target_image_ids=()  # 本次拉取确定的目标，防止旧健康容器被误判成功
 for svc in "${services[@]}"; do
   dst="$(awk -v s="${svc}" '$1==s {print $2}' <<<"${image_map}")"
   [[ -n "${dst}" ]] || die "prod compose 中没有服务 ${svc}（或未声明 image）"
@@ -65,6 +66,7 @@ for svc in "${services[@]}"; do
   docker pull -q --platform linux/amd64 "${src}" >/dev/null || die "本机拉取失败：${src}"
   docker tag "${src}" "${dst}"
   local_id="$(docker image inspect -f '{{.Id}}' "${dst}")"
+  target_image_ids["${svc}"]="${local_id}"
   remote_id="$(remote "docker image inspect -f '{{.Id}}' '${dst}' 2>/dev/null" || true)"
   running_id="$(remote "cd '${DEPLOY_PATH}' && c=\$(docker compose ps -q '${svc}') && [ -n \"\$c\" ] && docker inspect -f '{{.Image}}' \$c" 2>/dev/null || true)"
 
@@ -113,17 +115,19 @@ fi
 
 log "重建：${to_recreate[*]}"
 remote "cd '${DEPLOY_PATH}' && docker compose up -d --no-deps --pull never --force-recreate ${to_recreate[*]}" \
-  2>&1 | grep -vE 'variable is not set|orphan containers' || true
+  || die "compose up 失败，终止部署"
 
 # 健康检查：有 healthcheck 等 healthy；无则要求连续 20s 运行且重启计数不变
 for svc in "${to_recreate[@]}"; do
   ok=0
   for attempt in $(seq 1 24); do
-    state="$(remote "cd '${DEPLOY_PATH}' && c=\$(docker compose ps -q '${svc}') && set -- \$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}}' \$c) && echo \$1 \$2 \$3 \$(( \$(date +%s) - \$(date -d \$4 +%s) ))" 2>/dev/null || true)"
-    read -r status health restarts age <<<"${state:-unknown unknown 0 0}"
-    if [[ "${health}" == "healthy" ]]; then ok=1; break; fi
-    if [[ "${health}" == "none" && "${status}" == "running" && "${restarts}" == "0" ]] && (( age >= 20 )); then
-      ok=1; break
+    state="$(remote "cd '${DEPLOY_PATH}' && c=\$(docker compose ps -q '${svc}') && set -- \$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}} {{.Image}}' \$c) && echo \$1 \$2 \$3 \$(( \$(date +%s) - \$(date -d \$4 +%s) )) \$5" 2>/dev/null || true)"
+    read -r status health restarts age running_image <<<"${state:-unknown unknown 0 0 unknown}"
+    if [[ "${status}" == "running" && "${restarts}" == "0" && "${running_image}" == "${target_image_ids[${svc}]}" ]]; then
+      if [[ "${health}" == "healthy" ]] || { [[ "${health}" == "none" ]] && (( age >= 20 )); }; then
+        ok=1
+        break
+      fi
     fi
     sleep 5
   done

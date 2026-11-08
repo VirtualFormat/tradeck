@@ -21,6 +21,7 @@ on:
       - "apps/quant/**"
       - "apps/mcp/**"
       - ".github/workflows/app-images.yml"
+      - "deploy/prewarm-images.py"
   workflow_dispatch:
 
 env:
@@ -98,6 +99,10 @@ jobs:
       matrix:
         image: [tradeck-web, tradeck-api, tradeck-quant, tradeck-mcp]
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         with:
           pattern: digests-*-${{ matrix.image }}
@@ -122,15 +127,36 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' }}
 
       - name: Create manifest list and push
+        id: publish
         working-directory: /tmp/digests
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          CI_TAG: ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          set -Eeuo pipefail
           docker buildx imagetools create \
+            --metadata-file /tmp/manifest-metadata.json \
+            -t "${IMAGE_REF}:${CI_TAG}" \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE_REF}@sha256:%s " *)
+          digest="$(jq -er '."containerimage.descriptor".digest' /tmp/manifest-metadata.json)"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Inspect
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
-        run: docker buildx imagetools inspect "${IMAGE_REF}:${{ steps.meta.outputs.version }}"
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: docker buildx imagetools inspect "${IMAGE_REF}@${DIGEST}"
+
+      - name: Prewarm amd64 manifest and all blobs
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          IMAGE: ${{ env.OWNER }}/${{ matrix.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          if ! timeout -k 5s 200s python3 deploy/prewarm-images.py "${IMAGE}@${DIGEST}" --timeout 180; then
+            echo "::warning::amd64 blob 预热失败或超时，prod 首次拉取可能回源"
+            exit 1
+          fi
