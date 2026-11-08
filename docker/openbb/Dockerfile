@@ -11,8 +11,11 @@ RUN apk add --no-cache curl ca-certificates
 # 安装 OpenBB（含 Platform API + 30+ 官方 Provider）
 # 预装免费 Provider：yfinance/sec/fred/federal_reserve/bls/cftc/congress_gov/ecb/eia 等
 # 付费 Provider（fmp/intrinio/tiingo 等）装了但不配 key 不启用
-RUN pip install --no-cache-dir openbb && \
-    pip uninstall -y openbb-cftc 2>/dev/null || true
+# 固定已验证的 OpenBB 核心与 REST/provider 版本，安装或卸载失败直接令构建失败。
+RUN pip install --no-cache-dir "openbb==4.7.2" \
+    "openbb-core==1.6.13" "openbb-platform-api==1.3.6" \
+    "openbb-yfinance==1.6.3" && \
+    pip uninstall -y openbb-cftc
 
 # 配置目录
 WORKDIR /data
