@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, timedelta
+import math
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -184,10 +186,80 @@ async def _fetch_factors_window(
         logger.warning("/api/factors 连接异常（%s），该分片跳过", e)
 
 
+@dataclass
+class MinuteBarsResult:
+    """内部读取结果：登记未截断的请求子窗，行情逐分钟完整性由服务端保证。"""
+
+    bars: list[dict[str, Any]] = field(default_factory=list)
+    covered_ranges: dict[str, list[tuple[date, date]]] = field(default_factory=dict)
+
+    def extend(self, other: MinuteBarsResult) -> None:
+        self.bars.extend(other.bars)
+        for symbol, ranges in other.covered_ranges.items():
+            self.covered_ranges.setdefault(symbol, []).extend(ranges)
+
+
+def _minute_api_symbol(symbol: str) -> str:
+    return symbol[:-3] if symbol.endswith(".US") else symbol
+
+
+def _validate_minute_response(
+    data: Any, symbols: list[str], start: date, end: date
+) -> dict[str, Any]:
+    """缺少完整性字段或行不符合窗口时，按坏响应重试，避免登记错误覆盖。"""
+    if not isinstance(data, dict) or not isinstance(data.get("bars"), list):
+        raise ValueError("分钟K 响应缺少 bars 数组")
+    if type(data.get("truncated")) is not bool:
+        raise ValueError("分钟K 响应缺少 truncated 布尔值")
+    bars = data["bars"]
+    if type(data.get("count")) is not int or data["count"] != len(bars):
+        raise ValueError("分钟K 响应 count 与 bars 不一致")
+    expected_symbols = {_minute_api_symbol(symbol) for symbol in symbols}
+    seen: set[tuple[str, str]] = set()
+    for row in bars:
+        if not isinstance(row, dict) or row.get("symbol") not in expected_symbols:
+            raise ValueError("分钟K 响应标的不符合请求")
+        timestamp = row["datetime"]
+        if not isinstance(timestamp, str) or len(timestamp) < 19:
+            raise ValueError("分钟K 响应缺少完整 datetime")
+        stamp = datetime.fromisoformat(timestamp)
+        if (
+            stamp.tzinfo is not None
+            or stamp.second
+            or stamp.microsecond
+            or not start <= stamp.date() <= end
+        ):
+            raise ValueError("分钟K 响应时间不符合本地分钟窗口")
+        row["datetime"] = stamp.isoformat()
+        key = (row["symbol"], row["datetime"])
+        if key in seen:
+            raise ValueError("分钟K 响应存在重复时间键")
+        seen.add(key)
+        for column in ("open", "high", "low", "close", "volume", "amount"):
+            value = row[column]
+            if value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value)
+            ):
+                raise ValueError("分钟K 响应数值列非法")
+        prices = [row[column] for column in ("open", "high", "low", "close")]
+        if all(value is not None for value in prices):
+            if (
+                min(prices) <= 0
+                or row["low"] > min(row["open"], row["close"])
+                or row["high"] < max(row["open"], row["close"])
+            ):
+                raise ValueError("分钟K 响应 OHLC 边界非法")
+        if row["volume"] is not None and row["volume"] < 0:
+            raise ValueError("分钟K 响应 volume 为负")
+        if row["source"] is not None and not isinstance(row["source"], str):
+            raise ValueError("分钟K 响应 source 非法")
+    return data
+
+
 async def _post_minute_once(
     client: httpx.AsyncClient, symbols: list[str], start: date, end: date
 ) -> dict[str, Any] | None:
-    """单次 /api/bars/minute 请求；重试与降级语义同 _post_bars_once。"""
+    """分钟K 传输/解析失败均重试，4xx 降级，耗尽后返回 None。"""
     payload = {
         "symbols": symbols,
         "start_date": start.isoformat(),
@@ -196,40 +268,111 @@ async def _post_minute_once(
     }
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            resp = await client.post(_url("/api/bars/minute"), json=payload, headers=_headers())
+            resp = await client.post(
+                _url("/api/bars/minute"), json=payload, headers=_headers()
+            )
             if resp.status_code == 200:
-                return resp.json()
+                return _validate_minute_response(resp.json(), symbols, start, end)
             if 400 <= resp.status_code < 500:
                 logger.error(
-                    "/api/bars/minute %s（symbols=%d，%s ~ %s）：%s",
-                    resp.status_code, len(symbols), start, end, resp.text[:200],
+                    "/api/bars/minute %s（symbols=%d，%s ~ %s）",
+                    resp.status_code,
+                    len(symbols),
+                    start,
+                    end,
                 )
                 return None
-            logger.warning("/api/bars/minute %s，第 %d 次重试", resp.status_code, attempt + 1)
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            logger.warning("/api/bars/minute 连接异常（%s），第 %d 次重试", e, attempt + 1)
-        await asyncio.sleep(2**attempt)
-    logger.error("/api/bars/minute 重试耗尽（symbols=%d，%s ~ %s）", len(symbols), start, end)
+            logger.warning(
+                "/api/bars/minute %s，第 %d 次请求失败", resp.status_code, attempt + 1
+            )
+        except (
+            httpx.RequestError,
+            ValueError,
+            TypeError,
+            KeyError,
+            OverflowError,
+        ) as exc:
+            logger.warning(
+                "/api/bars/minute %s，第 %d 次请求失败", type(exc).__name__, attempt + 1
+            )
+        if attempt < _MAX_RETRIES:
+            await asyncio.sleep(2**attempt)
+    logger.error(
+        "/api/bars/minute 重试耗尽（symbols=%d，%s ~ %s）", len(symbols), start, end
+    )
     return None
 
 
 async def _fetch_minute_window(
     client: httpx.AsyncClient, symbols: list[str], start: date, end: date
-) -> list[dict[str, Any]]:
-    """拉一个 symbol 片在时间窗内的全部分钟K；truncated 时递归对半切窗（同 _fetch_window）。"""
+) -> MinuteBarsResult:
+    """仅未截断的成功子窗口可登记覆盖；单日仍截断时继续拆标的。"""
     data = await _post_minute_once(client, symbols, start, end)
     if data is None:
-        return []
-    bars = data.get("bars", [])
-    if not data.get("truncated"):
-        return bars
-    if start >= end:
-        logger.error("/api/bars/minute 单日仍截断（symbols=%d，%s），数据可能不完整", len(symbols), start)
-        return bars
-    mid = start + (end - start) // 2
-    first = await _fetch_minute_window(client, symbols, start, mid)
-    second = await _fetch_minute_window(client, symbols, mid + timedelta(days=1), end)
-    return first + second
+        return MinuteBarsResult()
+    if not data["truncated"]:
+        return MinuteBarsResult(
+            data["bars"], {symbol: [(start, end)] for symbol in symbols}
+        )
+    if start < end:
+        mid = start + (end - start) // 2
+        first = await _fetch_minute_window(client, symbols, start, mid)
+        second = await _fetch_minute_window(
+            client, symbols, mid + timedelta(days=1), end
+        )
+    elif len(symbols) > 1:
+        mid = len(symbols) // 2
+        first = await _fetch_minute_window(client, symbols[:mid], start, end)
+        second = await _fetch_minute_window(client, symbols[mid:], start, end)
+    else:
+        logger.error(
+            "/api/bars/minute 单标的单日仍截断（%s，%s），保留部分行但不登记覆盖",
+            symbols[0],
+            start,
+        )
+        return MinuteBarsResult(data["bars"])
+    first.extend(second)
+    return first
+
+
+async def fetch_minute_bars_with_coverage(
+    symbols: list[str],
+    start: date,
+    end: date,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> MinuteBarsResult:
+    """缓存内部入口：分片/切窗后保留覆盖信息，失败仅影响对应子窗口。"""
+    result = MinuteBarsResult()
+    symbols = list(dict.fromkeys(symbols))
+
+    async def _run(client: httpx.AsyncClient) -> None:
+        w_start = start
+        while w_start <= end:
+            w_end = min(end, w_start + timedelta(days=_MINUTE_MAX_WINDOW_DAYS))
+            for i in range(0, len(symbols), _MINUTE_MAX_SYMBOLS_PER_REQ):
+                chunk = symbols[i : i + _MINUTE_MAX_SYMBOLS_PER_REQ]
+                fetched = await _fetch_minute_window(client, chunk, w_start, w_end)
+                logger.info(
+                    "fetch_minute_bars 分片 symbols=%d，%s ~ %s，行数=%d",
+                    len(chunk),
+                    w_start,
+                    w_end,
+                    len(fetched.bars),
+                )
+                result.extend(fetched)
+            w_start = w_end + timedelta(days=1)
+
+    if symbols and start <= end:
+        if http_client is not None:
+            await _run(http_client)
+        else:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                await _run(client)
+    # 不同窗口/标的片拼接后仍保证全局排序，并消除重复请求产生的重复键。
+    by_key = {(row["symbol"], row["datetime"]): row for row in result.bars}
+    result.bars = [by_key[key] for key in sorted(by_key)]
+    return result
 
 
 async def fetch_minute_bars(
@@ -239,38 +382,15 @@ async def fetch_minute_bars(
     *,
     http_client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """批量拉分钟K：symbols>50 分批、窗口>366 天切窗、truncated 递归对半切，返回扁平 bars 列表。
+    """批量分钟K 兼容入口：返回扁平列表，按 symbol/datetime 排序去重。
 
-    任一分片失败只损失该分片数据（记日志），不影响其它分片——与 fetch_bars 同一降级模式。
-    symbol 按服务端返回原样使用（服务端已把 US 标的的 .US 内部后缀去掉，无需再转换）。
-    http_client 参数仅供测试注入（MockTransport），生产调用不传。
+    失败返回成功部分，单标的单日截断保留部分行。缓存使用带覆盖信息的内部入口。
+    US 响应沿用服务端规范裸码。http_client 参数供离线测试注入。
     """
-    all_bars: list[dict[str, Any]] = []
-
-    async def _run(client: httpx.AsyncClient) -> None:
-        # 窗口切分为 ≤366 天的段（服务端合约上限：(end-start).days > 366 直接 422）
-        windows: list[tuple[date, date]] = []
-        w_start = start
-        while w_start <= end:
-            w_end = min(end, w_start + timedelta(days=_MINUTE_MAX_WINDOW_DAYS))
-            windows.append((w_start, w_end))
-            w_start = w_end + timedelta(days=1)
-        for w_start, w_end in windows:
-            for i in range(0, len(symbols), _MINUTE_MAX_SYMBOLS_PER_REQ):
-                chunk = symbols[i : i + _MINUTE_MAX_SYMBOLS_PER_REQ]
-                bars = await _fetch_minute_window(client, chunk, w_start, w_end)
-                logger.info(
-                    "fetch_minute_bars 分片 symbols=%d，%s ~ %s，行数=%d",
-                    len(chunk), w_start, w_end, len(bars),
-                )
-                all_bars.extend(bars)
-
-    if http_client is not None:
-        await _run(http_client)
-    else:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            await _run(client)
-    return all_bars
+    result = await fetch_minute_bars_with_coverage(
+        symbols, start, end, http_client=http_client
+    )
+    return result.bars
 
 
 async def get_json(path: str, params: dict[str, Any] | list[tuple[str, str]]) -> Any:
@@ -284,6 +404,6 @@ async def get_json(path: str, params: dict[str, Any] | list[tuple[str, str]]) ->
             if resp.status_code == 200:
                 return resp.json()
             logger.warning("GET %s → %s：%s", path, resp.status_code, resp.text[:200])
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        logger.warning("GET %s 连接异常：%s", path, e)
+    except (httpx.RequestError, ValueError, TypeError) as exc:
+        logger.warning("GET %s 读取失败：%s", path, type(exc).__name__)
     return None

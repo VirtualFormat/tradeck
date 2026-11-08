@@ -192,8 +192,8 @@ class MinuteAtomicWriteTest(_CacheDirCase):
     def test_save_minute_failure_leaves_no_tmp(self) -> None:
         from app.data import client_minute
 
-        with mock.patch.object(
-            pl.DataFrame, "write_parquet", side_effect=OSError("disk full")
+        with mock.patch(
+            "app.data.client_minute.pq.write_table", side_effect=OSError("disk full")
         ):
             with self.assertRaises(OSError):
                 client_minute.save_minute("600519.SH", 2026, self._df())
